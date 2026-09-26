@@ -1,0 +1,303 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>think-tank</title>
+<link rel="icon" href="/favicon.ico">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { --bg:#101418; --panel:#1a2026; --line:#2a333c; --fg:#d8dee4; --dim:#8b98a5; --acc:#58a6ff; --warn:#d29922; --done:#3fb950; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace; }
+  header { display:flex; align-items:center; gap:12px; padding:10px 16px; border-bottom:1px solid var(--line); }
+  header b { color:var(--acc); }
+  header small { color:var(--dim); }
+  main { display:flex; height:calc(100vh - 45px); }
+  #board { flex:1; display:flex; gap:8px; padding:12px; overflow-x:auto; }
+  .col { min-width:190px; width:190px; background:var(--panel); border:1px solid var(--line); border-radius:6px; padding:8px; }
+  .col h3 { margin:0 0 8px; font-size:11px; color:var(--dim); text-transform:uppercase; letter-spacing:.08em; }
+  .card { background:#222b34; border:1px solid var(--line); border-radius:5px; padding:6px 8px; margin-bottom:6px; cursor:pointer; }
+  .card:hover { border-color:var(--acc); }
+  .card.archived { opacity:.4; border-style:dashed; }
+  .card.stale { border-color:var(--warn); border-style:dashed; }
+  .card.done { border-left:3px solid var(--done); }
+  .card.done p { color:var(--done); opacity:.85; }
+  .sub.done > .st { color:var(--done); }
+  .sub.done { color:rgba(63,185,80,.85); }
+  .card .lease { font-size:10px; }
+  .card .id { color:var(--dim); font-size:11px; }
+  .card p { margin:2px 0 0; word-break:keep-all; }
+  .sub { margin:4px 0 0 6px; border-left:1px dashed var(--line); padding-left:6px; color:var(--fg); }
+  .sub:hover { color:#fff; }
+  .st { font-size:9px; opacity:.75; }
+  .tag { font-size:10px; color:var(--acc); }
+  #detail { width:420px; border-left:1px solid var(--line); padding:14px; overflow-y:auto; }
+  #detail h2 { font-size:14px; margin:0 0 2px; }
+  #detail .meta { color:var(--dim); font-size:11px; margin-bottom:10px; }
+  #detail pre { white-space:pre-wrap; word-break:keep-all; background:var(--panel); border:1px solid var(--line); border-radius:5px; padding:8px; }
+  .cmt { border-left:2px solid var(--acc); margin:6px 0; padding:2px 8px; }
+  .cmt small { color:var(--dim); }
+  button, input, select, textarea { font:inherit; background:#222b34; color:var(--fg); border:1px solid var(--line); border-radius:4px; padding:4px 8px; }
+  button:hover { border-color:var(--acc); cursor:pointer; }
+  form { display:flex; gap:6px; flex-wrap:wrap; margin-top:10px; }
+  .child { margin-left:12px; border-left:1px dashed var(--line); padding-left:8px; }
+  .k { color:var(--acc); }
+  #dclose { display:none; position:sticky; top:0; float:right; z-index:11; }
+  @media (max-width:720px) {
+    header { flex-wrap:wrap; gap:8px; }
+    main { flex-direction:column; height:auto; }
+    #board { padding:8px; }
+    .col { min-width:170px; width:170px; }
+    #dclose { display:block; }
+    #detail { position:fixed; left:0; right:0; bottom:0; width:auto; max-height:62vh;
+      border-left:none; border-top:1px solid var(--acc); background:var(--bg); z-index:10;
+      transform:translateY(100%); transition:transform .2s ease; }
+    #detail.open { transform:none; }
+    body { padding-bottom:8px; }
+  }
+</style>
+</head>
+<body>
+<header><b>think-tank</b><small id="counts"></small>
+  <form style="margin:0;display:flex;gap:6px" onsubmit="return newIssue(event)">
+    <input name="title" placeholder="새 이슈 등록" size="24" required>
+    <select name="state"><option>todo</option><option>backlog</option></select>
+    <button>등록</button>
+  </form>
+  <span style="flex:1"></span>
+  <select id="lab" onchange="load()" style="color:var(--fg);background:var(--panel);border:1px solid var(--line)"></select>
+  <label style="color:var(--dim);display:flex;align-items:center;gap:4px">archived
+    <input type="checkbox" id="arch" onchange="load()"></label>
+  <button onclick="toggleAgents()" id="agentbtn">Agents 0</button>
+  <a href="/api.html" style="color:var(--acc)">API(AI)</a>
+  <a href="/docs" style="color:var(--acc)">OpenAPI</a>
+  <button onclick="load()">새로고침</button>
+</header>
+<main>
+  <div id="board"></div>
+  <div id="detail"><button id="dclose" onclick="document.getElementById('detail').classList.remove('open')">✕ 닫기</button><div id="dcontent"><p style="color:var(--dim)">카드를 선택하세요.</p></div></div>
+  <div id="agentpanel" style="display:none;position:fixed;top:44px;right:10px;width:380px;max-height:70vh;overflow-y:auto;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:12px;z-index:50;box-shadow:0 8px 30px rgba(0,0,0,.5)"></div>
+</main>
+<script>
+const COLS = ["backlog","todo","in_progress","review","blocked","done"];
+const API = "";
+let current = null;
+const hueOf = s => { let h = 0; for (const c of s) h = (h * 31 + c.codePointAt(0)) % 360; return h; };
+const tsParse = t => new Date(t.replace(/([+-]\d\d)(\d\d)$/, "$1:$2"));
+const leaseInfo = i => {
+  if (!i.lease_by) return i.state === "in_progress" ? { color:"#566068", text:"무표기 진행", stale:false } : null;
+  const stale = i.lease_expires && tsParse(i.lease_expires) < new Date();
+  const h = hueOf(i.lease_by);
+  return { color: `hsl(${h},70%,55%)`, agent: i.lease_by, text: stale ? "⌛만료" : "🔒" + i.lease_by, stale };
+};
+
+async function j(path, opts) {
+  const r = await fetch(API + path, opts);
+  if (!r.ok) { alert((await r.json()).detail || r.status); throw new Error(r.status); }
+  return r.json();
+}
+const post = (path, body) => j(path, {method:"POST", headers:{"content-type":"application/json"}, body: JSON.stringify(body)});
+const patch = (id, body) => j("/issues/"+id, {method:"PATCH", headers:{"content-type":"application/json"}, body: JSON.stringify(body)});
+
+let agents = [];
+async function refreshAgents() {
+  try { agents = await j("/agents"); } catch (e) { agents = []; }
+  document.getElementById("agentbtn").textContent = "Agents " + agents.filter(a=>a.enabled).length;
+}
+
+async function load() {
+  let issues = await j("/issues?limit=500&archived=" + (document.getElementById("arch").checked ? "all" : "no"));
+  refreshAgents();
+  const board = document.getElementById("board");
+  board.innerHTML = "";
+  const byId = Object.fromEntries(issues.map(i => [i.id, i]));
+  const kidsOf = {};
+  for (const i of issues) {
+    if (i.parent_id && byId[i.parent_id]) (kidsOf[i.parent_id] ||= []).push(i);
+  }
+  const labSel = document.getElementById("lab");
+  const want = labSel.value;
+  const labels = [...new Set(issues.flatMap(i => i.labels))].sort();
+  labSel.innerHTML = '<option value="">라벨 전체</option>' + labels.map(l => `<option${l===want?" selected":""} value="${l}">${l}</option>`).join("");
+  if (!labSel.dataset.init) {
+    labSel.dataset.init = "1";
+    const u = new URLSearchParams(location.search).get("label");
+    if (u && labels.includes(u)) { labSel.value = u; return load(); }
+  }
+  if (want && labels.includes(want)) {
+    const keep = new Set();
+    const addSub = id => { keep.add(id); (kidsOf[id] || []).forEach(k => addSub(k.id)); };
+    for (const i of issues) if (i.labels.includes(want)) {
+      addSub(i.id);
+      for (let p = i.parent_id; p && byId[p]; p = byId[p].parent_id) keep.add(p);
+    }
+    issues = issues.filter(i => keep.has(i.id));
+  }
+  document.getElementById("counts").textContent = issues.length + " issues";
+  const roots = issues.filter(i => !i.parent_id || !byId[i.parent_id]);
+  const subRows = (parent) => (kidsOf[parent.id] || []).map(k => {
+    const li = leaseInfo(k);
+    const sty = li ? `cursor:pointer;border-left:3px solid ${li.stale ? "var(--warn)" : li.color};` : k.state === "done" ? "cursor:pointer;border-left:3px solid var(--done);" : "";
+    return `<div class="sub${k.state === "done" ? " done" : ""}" style="${sty}" onclick="event.stopPropagation();show('${k.id}')">
+       ${k.id.slice(-4)} <span class="st">[${k.state}]</span>${li ? ` <span style="color:${li.color}">${li.stale ? "⌛" : "🔒"}</span>` : ""} ${k.title}${k.assignee?` @${k.assignee}`:""}
+       ${(kidsOf[k.id]||[]).length ? subRows(k) : ""}
+     </div>`; });
+  for (const st of COLS) {
+    const rootsHere = roots.filter(x => x.state === st);
+    const col = document.createElement("div"); col.className = "col";
+    col.innerHTML = `<h3>${st} <span>${rootsHere.length}</span></h3>`;
+    for (const i of rootsHere) {
+      const li = leaseInfo(i);
+      const c = document.createElement("div");
+      c.className = "card" + (i.archived ? " archived" : "") + (li && li.stale ? " stale" : "") + (i.state === "done" ? " done" : "");
+      if (li) c.style.borderLeft = `3px solid ${li.color}`;
+      c.innerHTML = `<span class="id">${i.id}</span>
+        ${i.archived ? `<span class="tag">🗄archived</span>` : ""}
+        ${li ? `<span class="lease" style="color:${li.color}"> ${li.text}</span>` : ""}
+        ${i.labels.length?`<span class="tag"> ${i.labels.join(" ")}</span>`:""}
+        ${i.state==="blocked"&&i.waiting_for?`<span class="tag" style="color:var(--warn)">⏸ ${i.waiting_for}${i.waiting_actor?" @"+i.waiting_actor:""}${i.release_ready?" →해제가능":""}</span>`:""}
+        <p>${i.title}</p>${i.assignee?`<span class="tag">@${i.assignee}</span>`:""}
+        ${(kidsOf[i.id]||[]).length ? `<div class="sub">${subRows(i)}</div>` : ""}`;
+      c.onclick = () => show(i.id);
+      col.appendChild(c);
+    }
+    board.appendChild(col);
+  }
+  if (current) show(current, true);
+}
+
+async function show(id, keep) {
+  if (keep) {
+    const ae = document.activeElement;
+    if (ae && document.getElementById("detail").contains(ae)) return; // 타이핑 중 재렌더 금지
+  }
+  current = id;
+  if (!keep) history.replaceState(null, "", "#" + id);
+  const [i, tree] = await Promise.all([j("/issues/"+id), j("/issues/"+id+"/tree")]);
+  const d = document.getElementById("dcontent");
+  if (!keep) document.getElementById("detail").classList.add("open");
+  const kids = (n) => n.tree.map(k => { const li = leaseInfo(k); return `<div class="child" style="${li ? "border-left:3px solid " + (li.stale ? "var(--warn)" : li.color) : ""}"><span class="k">${k.id}</span> [${k.state}] ${li ? `<span style="color:${li.color}">${li.stale ? "⌛" : "🔒"}</span> ` : ""}${k.title} ${k.assignee?"@"+k.assignee:""}${k.tree.length?kids(k):""}</div>`; }).join("");
+  const nextStates = {backlog:["todo","cancelled"], todo:["in_progress","blocked","backlog","cancelled"],
+    in_progress:["blocked","done","todo","review"], review:["todo","blocked","done","cancelled"],
+    blocked:["in_progress","todo","cancelled"], done:["todo"], cancelled:["todo"]};
+  d.innerHTML = `
+    <h2>${i.title}</h2>
+    <div class="meta"><span class="k">${i.id}</span> · ${i.state} · ${i.priority?"p"+i.priority:"–"} · ${i.labels.join(" ")||"—"} · ${i.assignee?("@"+i.assignee):"미배정"} · v${i.version}<br>
+    created ${i.created_at}${i.completed_at?` · done ${i.completed_at}`:""}
+    ${i.lease_by ? `<br>🔒 lease <b>${i.lease_by}</b> · 만료 ${i.lease_expires?.slice(5,16)} · heartbeat ${i.heartbeat_at?.slice(5,16) || "–"}` : ""}
+    ${i.state==="blocked" && i.waiting_for ? `<br>⏸ waiting_for <b>${i.waiting_for}</b>${i.waiting_actor?` · 책임 ${i.waiting_actor}`:""}${i.blocked_detail?` · ${i.blocked_detail}`:""}${i.release_ready?` · <b style="color:var(--warn)">해제 가능</b>`:""}` : ""}</div>
+    <pre>${i.body || "(내용 없음)"}</pre>
+    <div style="margin:8px 0">이동: ${nextStates[i.state].map(s=>`<button onclick="move('${id}','${s}')">${s}</button>`).join(" ")}
+     ${i.state==="review" ? `· <button onclick="verifyCard('${id}')">✔ 결과 보고로 완료</button><input id="vfee" placeholder="성공 결과(예: pytest 5 passed)" style="width:220px">` : ""}
+     ${i.verified ? `· <span style="color:var(--done)">✓ ${{reported:"결과 보고",approved:"승인 예외",legacy:"기존 완료 기록"}[i.verification_status] || "기존 완료 기록"}${i.verified_evidence?` — ${i.verified_evidence.slice(0,80)}`:""}</span>` : ""}
+     ${["done","cancelled"].includes(i.state) ? (i.archived ? `· <button onclick="arch('${id}',false)">복원</button>` : `· <button onclick="arch('${id}',true)">아카이브</button>`) : ""}</div>
+    <form style="margin:8px 0;display:flex;gap:6px;align-items:center" onsubmit="return assign(event)">
+      배정: <input name="agent" size="16" placeholder="예: opencode@thinkpad" value="${i.assignee||""}">
+      <button>배정</button>
+      ${i.assignee ? `<button type="button" onclick="return unassignNow()">해제</button>` : ""}
+    </form>
+    <div>${kids(tree)}</div>
+    ${agents.some(a=>a.enabled) ? `
+    <form style="margin:8px 0;display:flex;gap:6px;align-items:center" onsubmit="return dispatchTo(event)">
+      <select name="agent" style="color:var(--fg);background:var(--panel);border:1px solid var(--line)">${agents.filter(a=>a.enabled).map(a=>`<option>${a.name}</option>`).join("")}</select>
+      <input name="au" value="human" size="6" placeholder="지시자">
+      <input name="msg" placeholder="agent에게 지시 (hook 발송)" style="flex:1" required>
+      <button>지시</button>
+    </form>` : `<p style="color:var(--dim);font-size:11px">등록 agent 없음 — 상단 Agents 버튼에서 webhook 등록</p>`}
+    <h3 style="font-size:12px;color:var(--dim)">진행 로그 / 대화</h3>
+    ${i.comments.map(c=>`<div class="cmt"><small>${c.ts} ${c.author}</small><br>${c.body}</div>`).join("")||"<p style='color:var(--dim)'>없음</p>"}
+    <form onsubmit="return cmt(event)">
+      <input name="author" placeholder="agent" value="human" size="8" required>
+      <input name="body" placeholder="로그 남기기" style="flex:1" required>
+      <button>추가</button>
+    </form>
+    <form onsubmit="return child(event,'${id}')">
+      <input name="title" placeholder="새 하위 이슈" style="flex:1" required>
+      <button>하위 생성</button>
+    </form>`;
+  if (!keep) {}
+}
+
+async function move(id, state) { await patch(id, {state}); load(); }
+async function verifyCard(id) {
+  const ev = (document.getElementById("vfee")?.value || "").trim();
+  await post(`/issues/${id}/verify`, {verifier: "board-ui", evidence: ev});
+  load();
+}
+async function assign(e) { e.preventDefault(); const v = e.target.agent.value.trim(); if (v) await patch(current, {assignee: v}); load(); return false; }
+async function unassignNow() { await patch(current, {assignee: ""}); load(); return false; }
+async function arch(id, v) { await patch(id, {archived: v}); load(); }
+async function cmt(e) {
+  e.preventDefault();
+  const f = e.target;
+  await post(`/issues/${current}/comments`, {author:f.author.value, body:f.body.value});
+  f.body.value=""; show(current);
+  return false;
+}
+async function child(e, parent) {
+  e.preventDefault();
+  await post("/issues", {title:e.target.title.value, parent_id:parent});
+  e.target.title.value=""; load();
+  return false;
+}
+async function dispatchTo(e) {
+  e.preventDefault();
+  const f = e.target;
+  await post(`/issues/${current}/dispatch`, {agent:f.agent.value, message:f.msg.value, author:f.au.value||"board"});
+  f.msg.value = "";
+  show(current);
+  return false;
+}
+
+function toggleAgents() {
+  const p = document.getElementById("agentpanel");
+  p.style.display = p.style.display === "none" ? "block" : "none";
+  if (p.style.display === "block") renderAgents();
+}
+
+function renderAgents() {
+  const p = document.getElementById("agentpanel");
+  p.innerHTML = `<b>등록 agent (webhook hook 대상)</b>
+    ${agents.map(a=>`<div class="cmt">
+      <small>${a.name} → <a href="${a.base_url}" style="color:var(--acc)">${a.base_url}</a> ${a.secret?"🔑":""} ${a.enabled?'<span style="color:var(--done)">on</span>':'<span style="color:var(--warn)">off</span>'}</small><br>
+      <small style="color:var(--dim)">ok ${a.last_ok?.slice(5,16)||"–"} · err ${a.last_err||"–"}</small>
+      <button onclick="agentPatch('${a.name}',{enabled:!${a.enabled?1:0}})">${a.enabled?"비활성":"활성"}</button>
+      <button onclick="delAgent('${a.name}')">삭제</button>
+    </div>`).join("") || "<p style='color:var(--dim)'>없음</p>"}
+    <form onsubmit="return addAgent(event)" style="margin-top:8px">
+      <input name="name" placeholder="agent명 (댓글 author와 일치)" required size="14">
+      <input name="url" placeholder="http://host:port/hook" style="width:100%;margin-top:4px" required>
+      <input name="secret" placeholder="secret(선택, Bearer)" style="width:100%;margin-top:4px">
+      <button>등록</button>
+    </form>`;
+}
+
+async function addAgent(e) {
+  e.preventDefault();
+  const f = e.target;
+  await post("/agents", {name:f.name.value, base_url:f.url.value, secret:f.secret.value});
+  await refreshAgents(); renderAgents();
+  return false;
+}
+async function agentPatch(name, body) {
+  await j("/agents/"+name, {method:"PATCH", headers:{"content-type":"application/json"}, body: JSON.stringify(body)});
+  await refreshAgents(); renderAgents();
+}
+async function delAgent(name) {
+  if (!confirm(name+" 삭제?")) return;
+  await j("/agents/"+name, {method:"DELETE"});
+  await refreshAgents(); renderAgents();
+}
+
+async function newIssue(e) {
+  e.preventDefault();
+  const f = e.target;
+  await post("/issues", {title:f.title.value, state:f.state.value});
+  f.title.value=""; load();
+  return false;
+}
+load().then(() => { if (location.hash) show(location.hash.slice(1)).catch(console.error); }).catch(console.error);
+setInterval(()=>load().catch(()=>{}), 5000);
+</script>
+</body>
+</html>

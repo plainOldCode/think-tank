@@ -1,0 +1,302 @@
+#!/usr/bin/env bash
+# tt — think-tank issue tracker CLI (server: REST API, see docs/API.md)
+set -uo pipefail
+URL="${TT_URL:-http://127.0.0.1:7800}"
+AGENT="${TT_AGENT:-$USER@$(hostname -s)}"
+JQ="jq -r"
+jfilter() { if [[ "${JSON:-0}" == 1 ]]; then jq .; else jq -r "$@"; fi; }
+
+usage() {
+  cat <<EOF
+tt — think-tank issue tracker ($URL)
+  tt new "title" [-p PARENT] [-b BODY] [-P p1..p4] [-l label,label] [-s backlog|todo]
+  tt pull [--label auto] [--hours N]  # todo+만료lease 중 atomic 수령 (cron은 --label 권장, hours 1~6)
+  tt heartbeat ID [--hours N]   # 작업 중 lease 연장 (30분 간격 권장)
+  tt list [state] [--all] [--archived] [--label L]  # 목록 (--label: 라벨 필터, armour+2.0 같은 값 포함)
+  tt search "쿼리"            # 제목+본문 검색 (한글 URL-인코딩 자동)
+  tt show ID                 # 상세 + 하위 + 코멘트
+  tt tree ID                 # 부모-자식 트리
+  tt claim ID [--hours N]      # 특정 이슈 명시적 수령
+  tt label ID add|rm 라벨       # 라벨 부여·제거 (readback 출력)
+  tt labels ID set A,B          # 라벨 통째 치환 (빈 값=전체 제거)
+  tt unassign ID                # assignee+lease 해제
+  tt edit ID [-T 제목] [-b 본문] [-P pN] [-p PARENT] [--assignee A] [--labels a,b] [--state S] [--if-match N]
+  tt ... --json                 # (어디든) 서버 원 JSON 그대로 — 스크립트/파이프라인용
+  tt note ID "로그"          # 진행 로그 코멘트
+  tt contract                # 현재 공통 방법론 조회
+  tt done ID ["로그"] [--report FILE]  # 완료 보고 (증거 없으면 review)
+  tt verify ID ["테스트 결과"] [--report FILE]  # review → done, 보고 형식 검사
+  tt state ID STATE          # 상태 이동 (상태 가드 있음)
+  tt block ID KIND [-a 액터] [-d 상세]  # blocked 전이+사족 (KIND: dependency|human|gate|external)
+  tt why ID                  # why-blocked: 게이트·기준·누락·권장 명령
+  tt archive ID|auto         # 아카이브 (auto: 완료 30일 경과분), tt unarchive ID 로 복원
+  tt push                    # local 커밋을 중계 리모트(mini:tt-repo)로 push — secret-scan 게이트 내장
+  tt agents                  # 등록 agent 목록 (hook 대상)
+  tt agent add NAME URL [secret] | tt agent rm NAME | tt agent enable|disable NAME
+  tt agent release|notify NAME on|off  # 능력 플래그: release=종지 명령, notify=blocked(human) 알림 수신
+  tt dispatch ID -A AGENT "지시"   # 보드→agent webhook 발송(지시는 댓글로 기록, 회신은 comments)
+  tt health                  # 서버 점검
+EOF
+}
+
+req() { curl -sf --max-time 10 -H 'content-type: application/json' "$@"; }
+
+# Preserve HTTP error detail without repeating a mutating request.
+completion_req() {
+  local response status body
+  response="$(curl -sS --max-time 10 -H 'content-type: application/json' -w '\n%{http_code}' "$@")" || return 1
+  status="${response##*$'\n'}"; body="${response%$'\n'*}"
+  if [[ "$status" != 2?? ]]; then
+    echo "실패: $(jq -r '.detail // .' <<<"$body" 2>/dev/null || printf '%s' "$body")" >&2
+    return 1
+  fi
+  printf '%s\n' "$body"
+}
+
+show_contract() {
+  [[ "$JSON" == 1 ]] && return 0
+  jq -r 'select(.work_contract != null) | "[TT contract \(.work_contract.version)] attempt=\(.execution_attempt) report_required=\(.work_contract.report_required // false)\n\(.work_contract.instructions)"' <<<"$1" >&2
+}
+
+JSON=0
+argv=(); for a in "$@"; do [[ "$a" == --json ]] && JSON=1 || argv+=("$a"); done
+set -- ${argv[@]+"${argv[@]}"}
+cmd="${1:-help}"; shift || true
+[[ $JSON -eq 1 ]] && JQ="jfilter"
+case "$cmd" in
+  contract)
+    req "$URL/work-contract" | $JQ '"[TT contract \(.version)]\n\(.instructions)"' ;;
+
+  health)
+    req "$URL/health" | $JQ '"ok: \(.name) \(.status)"' ;;
+
+  new)
+    title=""; parent=""; body=""; prio="null"; labels="[]"; state="todo"
+    while [[ $# -gt 0 ]]; do case "$1" in
+      -p) parent="$2"; shift 2;; -b) body="$2"; shift 2;;
+      -P) prio="$(tr -d pP <<<"$2")"; shift 2;; -l) labels="$(jq -cn --arg L "$2" '$L|split(",")')"; shift 2;;
+      -s) state="$2"; shift 2;; *) title="$1"; shift;; esac; done
+    [[ -z "$title" ]] && { echo "제목 필요"; exit 1; }
+    PARENT_JSON=null; [[ -n "$parent" ]] && PARENT_JSON="\"$parent\""
+    body_esc="$(jq -Rs . <<<"$body")"
+    payload="$(jq -cn --arg t "$title" --arg s "$state" --argjson p "$PARENT_JSON" --argjson pr "$prio" --argjson l "$labels" --argjson b "$body_esc" \
+      '{title:$t,state:$s,parent_id:$p,priority:$pr,labels:$l,body:$b}')"
+    req -X POST "$URL/issues" -d "$payload" | $JQ '.id + " [" + .state + "] " + .title' ;;
+
+  list)
+    arch=(); all=0; pos=""
+    while [[ $# -gt 0 ]]; do case "$1" in
+      --all) all=1; shift ;;
+      --archived) arch+=(--data-urlencode "archived=only"); shift ;;
+      --label) arch+=(--data-urlencode "label=$2"); shift 2 ;;
+      *) pos="$1"; shift ;;
+    esac; done
+    if [[ -n "$pos" ]]; then
+      req --get "$URL/issues" --data-urlencode "state=$pos" --data-urlencode "limit=500" ${arch[@]+"${arch[@]}"}
+    elif [[ $all -eq 1 ]]; then
+      req --get "$URL/issues" --data-urlencode "limit=500" --data-urlencode "archived=all" ${arch[@]+"${arch[@]}"} | jq -c '[.[] | select(.state!="cancelled")]'
+    else
+      req --get "$URL/issues" --data-urlencode "limit=500" ${arch[@]+"${arch[@]}"} | jq -c '[.[] | select(.state!="done" and .state!="cancelled")]'
+    fi | $JQ '.[] | "\(.id)  [\(.state|.[0:4])]  \(.priority|if .==null then "-" else "p"+tostring end)  \(.title)  \(if .assignee!="" then "@"+.assignee else "" end)"' ;;
+
+  search)
+    [[ -z "${1:-}" ]] && { echo "usage: tt search \"쿼리\"  (제목+본문 LIKE)" >&2; exit 1; }
+    req --get --data-urlencode "q=$1" --data-urlencode "limit=100" "$URL/issues" \
+      | $JQ '.[] | "\(.id)  [\(.state|.[0:4])]  \(.priority|if .==null then "-" else "p"+tostring end)  \(.title)  \(if .assignee!="" then "@"+.assignee else "" end)"' ;;
+
+  show)
+    req "$URL/issues/$1" | $JQ '"■ \(.id) [\(.state)] \(.title)",  "  parent: \(.parent_id // "-")  prio: \(.priority // "-")  labels: \(.labels|join(","))  assignee: \(.assignee // "-")  v\(.version)",  "  \(.body|gsub("\n"; "\n  "))",
+      (if (.children|length)>0 then "-- 하위 --" else empty end), (.children[] | "  ↳ \(.id) [\(.state)] \(.title)"),
+      (if (.comments|length)>0 then "-- 코멘트 --" else empty end), (.comments[] | "  \(.ts) \(.author): \(.body)")' ;;
+
+  tree)
+    req "$URL/issues/$1/tree" | $JQ 'def walk(d): ("  "*d) + "■ " + .id + " [\(.state)] " + .title + (if .assignee!="" then " @"+.assignee else "" end) + (if (.tree|length)>0 then "\n" + ([.tree[] | walk(d+1)] | join("\n")) else "" end); walk(0)' ;;
+
+  pull)
+    label="" ; hours=""
+    while [[ $# -gt 0 ]]; do case $1 in
+      --label) label="$2"; shift 2 ;;
+      --hours) hours="$2"; shift 2 ;;
+      *) shift ;;
+    esac; done
+    payload="$(jq -cn --arg a "$AGENT" --arg l "$label" --arg h "$hours" '{agent:$a} + (if $l=="" then {} else {require_label:$l} end) + (if $h=="" then {} else {hours:($h|tonumber)} end)')"
+    out="$(req -X POST "$URL/pull" -d "$payload")" || { echo "실패: lease 한도(활성 2) 초과 — heartbeat/done 후 재시도" >&2; exit 1; }
+    [[ -z "$out" || "$out" == "null" ]] && { echo "받을 작업 없음"; exit 1; }
+    show_contract "$out"
+    <<<"$out" $JQ '"수령→ ■ \(.id) [\(.state)] \(.title)\n\(.body)"' ;;
+
+  heartbeat)
+    id="$1"; shift; hours=""
+    [[ "${1:-}" == --hours ]] && hours="$2"
+    hb_payload="$(jq -cn --arg a "$AGENT" --arg h "$hours" '{agent:$a} + (if $h=="" then {} else {hours:($h|tonumber)} end)')"
+    out="$(req -X POST "$URL/issues/$id/lease" -d "$hb_payload")" || { echo "실패: lease 보유자가 아니거나 만료됨(회수될 수 있음)" >&2; exit 1; }
+    <<<"$out" $JQ '"♥ \(.id) lease \(.lease_by) → \(.lease_expires)"' ;;
+
+  claim)
+    id="$1"; shift; hours=""
+    [[ "${1:-}" == --hours ]] && hours="$2"
+    cl_payload="$(jq -cn --arg a "$AGENT" --arg h "$hours" '{agent:$a} + (if $h=="" then {} else {hours:($h|tonumber)} end)')"
+    out="$(req -X POST "$URL/issues/$id/claim" -d "$cl_payload")" || { echo "실패: 수령 불가(상태/선점 확인)" >&2; exit 1; }
+    show_contract "$out"
+    <<<"$out" $JQ '"■ \(.id) [\(.state)] \(.title) @\(.assignee)"' ;;
+
+  note)
+    req -X POST "$URL/issues/$1/comments" -d "$(jq -cn --arg a "$AGENT" --arg b "$2" '{author:$a,body:$b}')" >/dev/null || { echo "실패: 코멘트" >&2; exit 1; }
+    echo "note ok" ;;
+
+  done|verify)
+    [[ $# -lt 1 ]] && { echo "usage: tt $cmd ID [text] [--report FILE]" >&2; exit 1; }
+    id="$1"; shift; summary=""; report_file=""
+    while [[ $# -gt 0 ]]; do case "$1" in
+      --report)
+        [[ $# -lt 2 ]] && { echo "--report FILE 필요" >&2; exit 1; }
+        report_file="$2"; shift 2 ;;
+      *) summary="$1"; shift ;;
+    esac; done
+    if [[ "$cmd" == done ]]; then payload='{"state":"done"}'
+    else payload="$(jq -cn --arg a "$AGENT" --arg e "$summary" '{verifier:$a,evidence:$e}')"; fi
+    if [[ -n "$report_file" ]]; then
+      payload="$(jq -cn --argjson p "$payload" --slurpfile r "$report_file" \
+        'if ($r|length)==1 and ($r[0]|type)=="object" then $p + {completion_report:$r[0]} else error("one report object required") end')" || exit 1
+    fi
+    if [[ "$cmd" == done ]]; then
+      if [[ -n "$summary" ]]; then
+        completion_req -X POST "$URL/issues/$id/comments" -d "$(jq -cn --arg a "$AGENT" --arg b "$summary" '{author:$a,body:$b}')" >/dev/null || exit 1
+      fi
+      out="$(completion_req -X PATCH "$URL/issues/$id" -d "$payload")" || exit 1
+    else
+      out="$(completion_req -X POST "$URL/issues/$id/verify" -d "$payload")" || exit 1
+    fi
+    if [[ "$JSON" == 1 ]]; then
+      jq . <<<"$out"
+    elif [[ "$(jq -r '.state' <<<"$out")" == review ]]; then
+      echo "◆ $id → review (성공 결과 보고 필요)"
+      echo "  확정: tt verify $id --report report.json"
+      echo "  재작업: tt edit $id --state todo 후 tt claim $id"
+    else
+      jq -r '"✓ \(.id) \(.title) 완료 \(.completed_at) [\(.verification_status // "legacy")]"' <<<"$out"
+    fi ;;
+
+  state)
+    out="$(req -X PATCH "$URL/issues/$1" -d "{\"state\":\"$2\"}")" || { echo "실패: 존재하지 않거나 금지된 전이" >&2; exit 1; }
+    <<<"$out" $JQ '"■ \(.id) → \(.state)"' ;;
+
+  block)
+    [[ -z "${2:-}" ]] && { echo "usage: tt block ID <dependency|human|gate|external> [-a 책임액터] [-d 상세/의존ID]" >&2; exit 1; }
+    id="$1"; kind="$2"; actor=""; detail=""
+    shift 2
+    while [[ $# -gt 0 ]]; do case "$1" in
+      -a) actor="${2:-}"; shift 2 ;;
+      -d) detail="${2:-}"; shift 2 ;;
+      *) shift ;;
+    esac; done
+    payload="$(jq -cn --arg w "$kind" --arg a "$actor" --arg d "$detail" '{state:"blocked",waiting_for:$w} + (if $a=="" then {} else {waiting_actor:$a} end) + (if $d=="" then {} else {blocked_detail:$d} end)')"
+    out="$(req -X PATCH "$URL/issues/$id" -d "$payload")" || { echo "실패: blocked 전이/필드 확인" >&2; exit 1; }
+    <<<"$out" $JQ '"■ \(.id) → blocked (waiting_for=\(.waiting_for) actor=\(.waiting_actor // "-"))"' ;;
+
+  why)
+    req "$URL/issues/$1/why-blocked" | $JQ '"gate: \(.gate.kind)  actor: \(.waiting_actor // "-")", "기준: \(.criteria)", (if (.dependencies|length)>0 then "의존: " + ([.dependencies[] | "\(.id)=\(.state)"]|join(", ")) + "  누락: " + (.missing|if length>0 then join(",") else "없음" end) + "  해제가능: \(.release_ready)" else empty end), "근거: \(.evidence // "-")", "권장: " + (.next_commands|join("  |  "))' ;;
+
+  label)
+    [[ $# -lt 3 ]] && { echo "usage: tt label ID add|rm 라벨" >&2; exit 1; }
+    id="$1"; op="$2"; lab="$3"; ver="${5:-}"   # tt label ID add L --if-match N
+    cur="$(req "$URL/issues/$id" | jq -r '.labels|join(",")')"
+    payload="$(jq -cn --arg c "$cur" --arg l "$lab" --arg op "$op" --arg v "$ver" '
+      ($c|split(",")|map(select(.!=""))) as $cur
+      | (if $op=="add" then ($cur + [$l]|unique) elif $op=="rm" then ($cur - [$l]) else null end) as $new
+      | if $new==null then error("op는 add|rm") else {labels:$new} + (if $v=="" then {} else {expected_version:($v|tonumber)} end) end')"
+    out="$(req -X PATCH "$URL/issues/$id" -d "$payload")" || { echo "실패: 라벨 수정 거부(버전 충돌 확인)" >&2; exit 1; }
+    <<<"$out" $JQ '"🏷 \(.id) labels: \(.labels|join(",")) v\(.version)"' ;;
+
+  edit)
+    id="$1"; shift
+    payload="{}"
+    while [[ $# -gt 0 ]]; do case $1 in
+      -T) payload="$(jq -cn --argjson p "$payload" --arg v "$2" '$p + {title:$v}')"; shift 2 ;;
+      -b) payload="$(jq -cn --argjson p "$payload" --arg v "$2" '$p + {body:$v}')"; shift 2 ;;
+      -P) payload="$(jq -cn --argjson p "$payload" --arg v "${2#p}" '$p + {priority:($v|tonumber)}')"; shift 2 ;;
+      -p) payload="$(jq -cn --argjson p "$payload" --arg v "$2" '$p + {parent_id:$v}')"; shift 2 ;;
+      --assignee) payload="$(jq -cn --argjson p "$payload" --arg v "$2" '$p + {assignee:$v}')"; shift 2 ;;
+      --labels) payload="$(jq -cn --argjson p "$payload" --arg v "$2" '$p + {labels:($v|split(",")|map(select(.!="")))}')"; shift 2 ;;
+      --state) payload="$(jq -cn --argjson p "$payload" --arg v "$2" '$p + {state:$v}')"; shift 2 ;;
+      --if-match) payload="$(jq -cn --argjson p "$payload" --arg v "$2" '$p + {expected_version:($v|tonumber)}')"; shift 2 ;;
+      *) shift ;;
+    esac; done
+    [[ "$payload" == "{}" ]] && { echo "usage: tt edit ID [-T][-b][-P][-p][--assignee][--labels][--state][--if-match]" >&2; exit 1; }
+    out="$(req -X PATCH "$URL/issues/$id" -d "$payload")" || { echo "실패: 수정 거부(상태/버전 충돌 확인)" >&2; exit 1; }
+    <<<"$out" $JQ '"✎ \(.id) \(.title) prio:\(.priority // "-") parent:\(.parent_id // "-") v\(.version)"' ;;
+
+  archive)
+    if [[ "${1:-}" != "auto" ]]; then
+      req -X PATCH "$URL/issues/$1" -d '{"archived":true}' >/dev/null || { echo "실패" >&2; exit 1; }
+      echo "archived $1"; exit 0
+    fi
+    cutoff="$(date -d '30 days ago' +%FT%T 2>/dev/null || date -v-30d +%FT%T)"
+    n=0
+    for id in $(req "$URL/issues?state=done" | jq -r --arg c "$cutoff" '.[] | select(.completed_at < $c) | .id'); do
+      req -X PATCH "$URL/issues/$id" -d '{"archived":true}' >/dev/null && n=$((n+1))
+    done
+    echo "$n건 자동 아카이브 (완료 30일 경과)" ;;
+
+  unarchive)
+    req -X PATCH "$URL/issues/$1" -d '{"archived":false}' >/dev/null || { echo "실패" >&2; exit 1; }
+    echo "unarchived $1" ;;
+
+  unassign)
+    out="$(req -X PATCH "$URL/issues/$1" -d '{"assignee":""}')" || { echo "실패: 존재하지 않음" >&2; exit 1; }
+    <<<"$out" $JQ '"→ \(.id) assignee 해제(lease 소거 포함) [\(.state)]"' ;;
+
+  labels)
+    [[ "${2:-}" != set ]] && { echo "usage: tt labels ID set A,B(통째 치환, 빈 값=전체 제거)" >&2; exit 1; }
+    lb_payload="$(jq -cn --arg l "${3:-}" '{labels:($l|split(",")|map(select(.!="")))}')"
+    out="$(req -X PATCH "$URL/issues/$1" -d "$lb_payload")" || { echo "실패: 라벨 set 거부" >&2; exit 1; }
+    <<<"$out" $JQ '"🏷 \(.id) labels: \(.labels|join(",")) v\(.version)"' ;;
+
+  push)
+    repo="${TT_REPO:-$HOME/think-tank}"
+    (cd "$repo" && scripts/secret-scan.sh .) || { echo "비밀 스캔 실패 — push 중단 (위 패턴 확인)" >&2; exit 1; }
+    branch="$(git -C "$repo" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")"
+    unpushed="$(git -C "$repo" log --oneline @{push}.. 2>/dev/null || git -C "$repo" log --oneline origin/"$branch".."$branch" 2>/dev/null || git -C "$repo" log --oneline -1)"
+    [[ -n "$(git -C "$repo" status --porcelain)" ]] && echo "경고: 커밋되지 않은 변경 있음 (push 대상 아님)" >&2
+    git -C "$repo" push -q mini:tt-repo "$branch" >/dev/null || { echo "실패: mini 중계 push" >&2; exit 1; }
+    out="$(ssh -o BatchMode=yes mini "export PATH=/opt/homebrew/bin:\$PATH; git -C ~/tt-repo push origin $branch 2>&1 | tail -1")"
+    echo "push: ${unpushed:-커밋 없음} → $out" ;;
+
+  agents)
+    req "$URL/agents" | $JQ '.[] | "\(.name)  \(.base_url)  \(if .enabled==1 then "on" else "off" end)  ok=\(.last_ok // "-")  err=\(.last_err // "")"' ;;
+
+  agent)
+    sub="${1:-}"; [[ -z "$sub" ]] && { echo "usage: tt agent add NAME URL [secret] | rm NAME | enable|disable NAME | release|notify NAME on|off" >&2; exit 1; }
+    case "$sub" in
+      add)
+        [[ $# -lt 3 ]] && { echo "usage: tt agent add NAME URL [secret]" >&2; exit 1; }
+        payload="$(jq -n --arg n "$2" --arg u "$3" --arg s "${4:-}" '{name:$n, base_url:$u, secret:$s}')"
+        req -X POST "$URL/agents" -d "$payload" | $JQ '"등록: \(.name) → \(.base_url)"' ;;
+      rm)
+        req -X DELETE "$URL/agents/$2" | $JQ '"삭제: \(.ok)"' ;;
+      enable|disable)
+        [[ "$sub" == enable ]] && v=true || v=false
+        req -X PATCH "$URL/agents/$2" -d "{\"enabled\":$v}" | $JQ '"\(.name): \(if .enabled==1 then "활성" else "비활성" end)"' ;;
+      release|notify)
+        # 능력 플래그 토글: release=terminalize 중지 명령 수신(runner), notify=blocked(human) Level4 알림 수신(어댑터)
+        [[ $# -lt 3 ]] && { echo "usage: tt agent $sub NAME on|off" >&2; exit 1; }
+        [[ "$3" == on ]] && v=true || v=false
+        req -X PATCH "$URL/agents/$2" -d "{\"${sub}_hook\":$v}" | $JQ "\"\\(.name): ${sub}_hook=\\(.${sub}_hook)\"" ;;
+      *) usage; exit 1 ;;
+    esac ;;
+
+  dispatch)
+    [[ -z "${1:-}" ]] && { echo "usage: tt dispatch ID -A AGENT "지시" [-a author]" >&2; exit 1; }
+    id="$1"; shift; agent=""; author="$AGENT"; msg=""
+    while [[ $# -gt 0 ]]; do case $1 in
+      -A) agent="${2:-}"; shift 2 ;;
+      -a) author="${2:-}"; shift 2 ;;
+      *) msg="$1"; shift ;;
+    esac; done
+    [[ -z "$agent" || -z "$msg" ]] && { echo "usage: tt dispatch ID -A AGENT "지시"" >&2; exit 1; }
+    payload="$(jq -n --arg a "$agent" --arg m "$msg" --arg au "$author" '{agent:$a, message:$m, author:$au}')"
+    out="$(curl -sf --max-time 25 -H 'content-type: application/json' -X POST "$URL/issues/$id/dispatch" -d "$payload")" || { echo "dispatch 요청 실패" >&2; exit 1; }
+    echo "$out" | $JQ '"dispatch #\(.id) → \(.agent): \(.status) \(.detail)"' ;;
+
+  help|*) usage ;;
+esac
