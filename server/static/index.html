@@ -35,7 +35,8 @@
   #detail h2 { font-size:14px; margin:0 0 2px; }
   #detail .meta { color:var(--dim); font-size:11px; margin-bottom:10px; }
   #detail pre { white-space:pre-wrap; word-break:keep-all; background:var(--panel); border:1px solid var(--line); border-radius:5px; padding:8px; }
-  .cmt { border-left:2px solid var(--acc); margin:6px 0; padding:2px 8px; }
+  .cmt { border-left:2px solid var(--acc); border-bottom:1px dashed var(--line); margin:6px 0; padding:2px 8px 6px; }
+  .cmt:last-of-type { border-bottom:none; }
   .cmt.result { border-left-color:var(--done); }
   .cmt small { color:var(--dim); }
   button, input, select, textarea { font:inherit; background:#222b34; color:var(--fg); border:1px solid var(--line); border-radius:4px; padding:4px 8px; }
