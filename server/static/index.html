@@ -36,6 +36,7 @@
   #detail .meta { color:var(--dim); font-size:11px; margin-bottom:10px; }
   #detail pre { white-space:pre-wrap; word-break:keep-all; background:var(--panel); border:1px solid var(--line); border-radius:5px; padding:8px; }
   .cmt { border-left:2px solid var(--acc); margin:6px 0; padding:2px 8px; }
+  .cmt.result { border-left-color:var(--done); }
   .cmt small { color:var(--dim); }
   button, input, select, textarea { font:inherit; background:#222b34; color:var(--fg); border:1px solid var(--line); border-radius:4px; padding:4px 8px; }
   button:hover { border-color:var(--acc); cursor:pointer; }
@@ -101,6 +102,7 @@ const post = (path, body) => j(path, {method:"POST", headers:{"content-type":"ap
 const patch = (id, body) => j("/issues/"+id, {method:"PATCH", headers:{"content-type":"application/json"}, body: JSON.stringify(body)});
 
 let agents = [];
+let LAST = [];
 async function refreshAgents() {
   try { agents = await j("/agents"); } catch (e) { agents = []; }
   document.getElementById("agentbtn").textContent = "Agents " + agents.filter(a=>a.enabled).length;
@@ -108,6 +110,7 @@ async function refreshAgents() {
 
 async function load() {
   let issues = await j("/issues?limit=500&archived=" + (document.getElementById("arch").checked ? "all" : "no"));
+  LAST = issues.slice();
   refreshAgents();
   const board = document.getElementById("board");
   board.innerHTML = "";
@@ -206,7 +209,7 @@ async function show(id, keep) {
       <button>지시</button>
     </form>` : `<p style="color:var(--dim);font-size:11px">등록 agent 없음 — 상단 Agents 버튼에서 webhook 등록</p>`}
     <h3 style="font-size:12px;color:var(--dim)">진행 로그 / 대화</h3>
-    ${i.comments.map(c=>`<div class="cmt"><small>${esc(c.ts)} ${esc(c.author)}</small><br>${esc(c.body)}</div>`).join("")||"<p style='color:var(--dim)'>없음</p>"}
+    ${i.comments.map(c=>{const r=isResultComment(i,c);return `<div class="cmt${r?' result':''}"${r?' title="결과 보고"':''}><small>${esc(c.ts)} ${esc(c.author)}${r?' <span style="color:var(--done)">결과</span>':''}</small><br>${esc(c.body)}</div>`;}).join("")||"<p style='color:var(--dim)'>없음</p>"}
     <form onsubmit="return cmt(event)">
       <input name="author" placeholder="agent" value="human" size="8" required>
       <input name="body" placeholder="로그 남기기" style="flex:1" required>
@@ -228,6 +231,12 @@ async function verifyCard(id) {
 async function assign(e) { e.preventDefault(); const v = e.target.agent.value.trim(); if (v) await patch(current, {assignee: v}); load(); return false; }
 async function unassignNow() { await patch(current, {assignee: ""}); load(); return false; }
 async function arch(id, v) { await patch(id, {archived: v}); load(); }
+function isResultComment(i, c) {
+  if (/verification_status|completion_report|result:|rollup:|→\s*done|마감/.test(c.body)) return true;
+  if (i.completed_at) { try { return tsParse(c.ts) >= tsParse(i.completed_at); } catch (e) {} }
+  return false;
+}
+
 async function cmt(e) {
   e.preventDefault();
   const f = e.target;
@@ -253,12 +262,43 @@ async function dispatchTo(e) {
 function toggleAgents() {
   const p = document.getElementById("agentpanel");
   p.style.display = p.style.display === "none" ? "block" : "none";
-  if (p.style.display === "block") renderAgents();
+  if (p.style.display === "block") { renderAgents(); enrichLive(); }
+}
+
+async function enrichLive() {
+  const seen = new Set();
+  for (const i of LAST) {
+    const k = i.lease_by || i.assignee;
+    if (!k || i.archived || i.state !== "in_progress" || seen.has(k)) continue;
+    seen.add(k);
+    try {
+      const [d, dsp] = await Promise.all([j("/issues/"+i.id), j("/issues/"+i.id+"/dispatches").catch(()=>[])]);
+      const mine = (d.comments||[]).filter(c=>c.author===k).slice(-1)[0];
+      const last = (dsp||[]).slice(-1)[0];
+      const el = document.getElementById("live-"+k);
+      if (el && (mine || last))
+        el.innerHTML += `<br>${last?`<small style="color:var(--dim)">dispatch#${last.id} ${esc(last.status)}</small><br>`:""}${mine?`<small>최신: ${esc(mine.body.slice(0,90))}</small>`:""}`;
+    } catch (e) {}
+  }
 }
 
 function renderAgents() {
   const p = document.getElementById("agentpanel");
-  p.innerHTML = `<b>등록 agent (webhook hook 대상)</b>
+  const cur = {};
+  for (const i of LAST) {
+    const k = i.lease_by || i.assignee;
+    if (!k || i.archived) continue;
+    if (!cur[k] || (i.state === "in_progress" && cur[k].state !== "in_progress")) cur[k] = i;
+  }
+  const names = [...new Set([...agents.map(a=>a.name), ...Object.keys(cur)])].sort();
+  const live = names.map(n => {
+    const h = hueOf(n), i = cur[n];
+    return `<div class="cmt" style="border-left-color:hsl(${h},70%,55%)"><b style="color:hsl(${h},70%,65%)">${esc(n)}</b>${agents.some(a=>a.name===n)?' <small style="color:var(--dim)">🔑등록</small>':''}<br>
+      <small id="live-${esc(n)}">${i ? `현재 <a href="#${esc(i.id)}" style="color:var(--acc)" onclick="event.preventDefault();show('${esc(i.id)}')">${esc(i.id)} ${esc(i.title.slice(0,40))}</a> [${esc(i.state)}] lease ${esc(i.lease_expires?i.lease_expires.slice(5,16):"–")}` : "대기 중"}</small></div>`;
+  }).join("") || "<p style='color:var(--dim)'>활성 agent 없음</p>";
+  p.innerHTML = `<b>agents — 라이브</b>
+    <div style="margin:4px 0 10px">${live}</div>
+    <b>등록 agent (webhook hook 대상)</b>
     ${agents.map(a=>`<div class="cmt">
       <small>${esc(a.name)} → <a href="${esc(a.base_url)}" style="color:var(--acc)" target="_blank" rel="noopener">${esc(a.base_url)}</a> ${a.secret?"🔑":""} ${a.enabled?'<span style="color:var(--done)">on</span>':'<span style="color:var(--warn)">off</span>'}</small><br>
       <small style="color:var(--dim)">ok ${esc(a.last_ok?.slice(5,16)||"–")} · err ${esc(a.last_err||"–")}</small>
@@ -297,7 +337,7 @@ async function newIssue(e) {
   f.title.value=""; load();
   return false;
 }
-load().then(() => { if (location.hash) show(location.hash.slice(1)).catch(console.error); }).catch(console.error);
+load().then(() => { if (location.hash) show(location.hash.slice(1)).catch(console.error); if (location.search.includes("agents")) toggleAgents(); }).catch(console.error);
 setInterval(()=>load().catch(()=>{}), 5000);
 </script>
 </body>
