@@ -288,13 +288,14 @@ function renderAgents() {
   for (const i of LAST) {
     const k = i.lease_by || i.assignee;
     if (!k || i.archived) continue;
+    if (i.state !== "in_progress" && i.state !== "blocked") continue;
     if (!cur[k] || (i.state === "in_progress" && cur[k].state !== "in_progress")) cur[k] = i;
   }
   const names = [...new Set([...agents.map(a=>a.name), ...Object.keys(cur)])].sort();
   const live = names.map(n => {
     const h = hueOf(n), i = cur[n];
     return `<div class="cmt" style="border-left-color:hsl(${h},70%,55%)"><b style="color:hsl(${h},70%,65%)">${esc(n)}</b>${agents.some(a=>a.name===n)?' <small style="color:var(--dim)">🔑등록</small>':''}<br>
-      <small id="live-${esc(n)}">${i ? `현재 <a href="#${esc(i.id)}" style="color:var(--acc)" onclick="event.preventDefault();show('${esc(i.id)}')">${esc(i.id)} ${esc(i.title.slice(0,40))}</a> [${esc(i.state)}] lease ${esc(i.lease_expires?i.lease_expires.slice(5,16):"–")}` : "대기 중"}</small></div>`;
+      <small id="live-${esc(n)}">${i ? `현재 <a href="#${esc(i.id)}" style="color:var(--acc)" onclick="event.preventDefault();show('${esc(i.id)}')">${esc(i.id)} ${esc(i.title.slice(0,40))}</a> [${esc(i.state)}] ${i.lease_expires ? (tsParse(i.lease_expires) < new Date() ? '<span style="color:var(--warn)">⌛만료</span>' : 'lease '+esc(i.lease_expires.slice(5,16))) : "lease 없음"}` : "대기 중"}</small></div>`;
   }).join("") || "<p style='color:var(--dim)'>활성 agent 없음</p>";
   p.innerHTML = `<b>agents — 라이브</b>
     <div style="margin:4px 0 10px">${live}</div>
