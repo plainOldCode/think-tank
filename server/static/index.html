@@ -71,6 +71,7 @@
   <label style="color:var(--dim);display:flex;align-items:center;gap:4px">archived
     <input type="checkbox" id="arch" onchange="load()"></label>
   <button onclick="toggleAgents()" id="agentbtn">Agents 0</button>
+  <button onclick="toggleCancelled()" id="cxbtn" title="cancel된 카드 열 표시/숨김">취소됨</button>
   <a href="/api.html" style="color:var(--acc)">API(AI)</a>
   <a href="/docs" style="color:var(--acc)">OpenAPI</a>
   <button onclick="load()">새로고침</button>
@@ -82,6 +83,8 @@
 </main>
 <script>
 const COLS = ["backlog","todo","in_progress","review","blocked","done"];
+let SHOW_CX = localStorage.getItem("tt-show-cancelled") === "1";
+function toggleCancelled() { SHOW_CX = !SHOW_CX; localStorage.setItem("tt-show-cancelled", SHOW_CX ? "1" : "0"); load(); }
 const API = "";
 let current = null;
 const esc = s => (s === null || s === undefined ? "" : String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;"));
@@ -147,7 +150,8 @@ async function load() {
        ${esc(k.id.slice(-4))} <span class="st">[${esc(k.state)}]</span>${li ? ` <span style="color:${li.color}">${li.stale ? "⌛" : "🔒"}</span>` : ""} ${esc(k.title)}${k.assignee?` @${esc(k.assignee)}`:""}
        ${(kidsOf[k.id]||[]).length ? subRows(k) : ""}
      </div>`; });
-  for (const st of COLS) {
+  document.getElementById("cxbtn").style.opacity = SHOW_CX ? "1" : ".45";
+  for (const st of (SHOW_CX ? COLS.concat("cancelled") : COLS)) {
     const rootsHere = roots.filter(x => x.state === st);
     const col = document.createElement("div"); col.className = "col";
     col.innerHTML = `<h3>${st} <span>${rootsHere.length}</span></h3>`;
