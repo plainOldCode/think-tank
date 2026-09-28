@@ -195,6 +195,27 @@ def test_claim_respects_lease_limit(client):
     assert client.post(f"/issues/{ids[2]}/claim", json={"agent": agent}).status_code == 409
 
 
+def test_claim_lease_limit_env_override(client, monkeypatch):
+    """TT_MAX_LEASES=3 → 3건째 claim 통과, 4건째 409(경계 포함). 기본값(2)은 위 테스트가 보호."""
+    monkeypatch.setenv("TT_MAX_LEASES", "3")
+    agent = "env@test"
+    ids = [client.post("/issues", json={"title": f"E{i}", "state": "todo"}).json()["id"] for i in range(4)]
+    for i in ids[:3]:
+        assert client.post(f"/issues/{i}/claim", json={"agent": agent}).status_code == 200
+    r = client.post(f"/issues/{ids[3]}/claim", json={"agent": agent})
+    assert r.status_code == 409 and "max=3" in r.json()["detail"]
+
+
+def test_pull_lease_limit_env_override(client, monkeypatch):
+    monkeypatch.setenv("TT_MAX_LEASES", "1")
+    a = mk(client, title="p1")
+    b = mk(client, title="p2")
+    assert client.post("/pull", json={"agent": "one@test"}).json()["id"] == a["id"]
+    assert client.post("/pull", json={"agent": "one@test"}).status_code == 409
+    monkeypatch.delenv("TT_MAX_LEASES")  # 기본 2로 복귀 — env는 호출 시점 읽기(재시작 불필요)
+    assert client.post("/pull", json={"agent": "one@test"}).json()["id"] == b["id"]
+
+
 def test_unassign_clears_lease(client):
     iid = client.post("/issues", json={"title": "U", "state": "todo"}).json()["id"]
     client.post(f"/issues/{iid}/claim", json={"agent": "ua@test"})
