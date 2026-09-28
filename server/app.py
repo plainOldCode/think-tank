@@ -22,6 +22,16 @@ STATE_ENUM = sorted(dbmod.STATES)
 DONE_GATE = os.environ.get("TT_DONE_GATE", "gate").lower()
 NOTIFY_BASE = os.environ.get("TT_NOTIFY_BASE", "").rstrip("/")
 
+
+def max_leases() -> int:
+    """활성 lease 보유 한도(claim/pull 공통) — TT_MAX_LEASES(기본 2). 호출 시점 읽기:
+    재시작 없이도 반영 가능하고 테스트가 env 격리로 경계를 검증한다. 1 미만 값은 2로 폴백."""
+    try:
+        n = int(os.environ.get("TT_MAX_LEASES", "2"))
+    except ValueError:
+        return 2
+    return n if n >= 1 else 2
+
 DONE_GATE_MSG = ("done 증거 없음 또는 실패/미확정 보고 — 현재 회차의 성공 결과가 필요합니다. "
                  "tt done {iid} --report report.json 또는 tt verify {iid} --report report.json. "
                  "재작업: tt edit {iid} --state todo 후 claim. force_done/close는 승인 예외입니다.")
@@ -271,8 +281,8 @@ def create_app(db_path: str) -> FastAPI:
                 raise HTTPException(409, f"already claimed by {row['assignee']}")
             held = c.execute("SELECT COUNT(*) n FROM issues WHERE lease_by=? AND lease_expires>?",
                              (p.agent, dbmod.now())).fetchone()["n"]
-            if held >= 2:
-                raise HTTPException(409, "lease limit: active leases=2 — heartbeat or done first")
+            if held >= max_leases():
+                raise HTTPException(409, f"lease limit: active leases={held} (max={max_leases()}) — heartbeat or done first")
             bump(c, issue_id, {**reset_evidence(c, issue_id), "state": "in_progress", "assignee": p.agent, "started_at": dbmod.now(),
                                "work_contract": json.dumps(contract, ensure_ascii=False),
                                "execution_attempt": row["execution_attempt"] + 1,
@@ -298,8 +308,8 @@ def create_app(db_path: str) -> FastAPI:
         with con() as c:
             held = c.execute("SELECT COUNT(*) n FROM issues WHERE lease_by=? AND lease_expires>?",
                              (p.agent, ts)).fetchone()["n"]
-            if held >= 2:
-                raise HTTPException(409, "lease limit: active leases=2 — heartbeat or done first")
+            if held >= max_leases():
+                raise HTTPException(409, f"lease limit: active leases={held} (max={max_leases()}) — heartbeat or done first")
             sql = ("SELECT id, state FROM issues WHERE archived=0 AND ("
                    "(state='todo' AND assignee='') OR "
                    "(state='in_progress' AND lease_expires IS NOT NULL AND lease_expires<?))")
