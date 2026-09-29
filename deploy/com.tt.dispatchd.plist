@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- tt-dispatchd — mini 배포: cp → ~/Library/LaunchAgents/com.tt.dispatchd.plist
+     ⚠ YOU = 배포 대상 머신의 실계정명. 서버 plist와 동일 계정 사용.
+     launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.tt.dispatchd.plist
+     TT_AUTO_DISPATCH=0: 대기(로그만). TT_DISPATCH_DRYRUN=1: 결정만 기록, 쓰기 없음. -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Label</key><string>com.tt.dispatchd</string>
+<key>ProgramArguments</key><array>
+<string>/Users/YOU/think-tank/.venv/bin/python</string>
+<string>/Users/YOU/think-tank/server/dispatchd.py</string>
+</array>
+<key>WorkingDirectory</key><string>/Users/YOU/think-tank/server</string>
+<key>EnvironmentVariables</key><dict>
+<key>TT_URL</key><string>http://127.0.0.1:7800</string>
+<key>TT_AGENT</key><string>dispatchd</string>
+<key>TT_AUTO_DISPATCH</key><string>1</string>
+<key>TT_DISPATCH_INTERVAL</key><string>30</string>
+<key>TT_DISPATCH_DRYRUN</key><string>0</string>
+</dict>
+<key>RunAtLoad</key><true/>
+<key>KeepAlive</key><true/>
+<key>StandardOutPath</key><string>/tmp/tt-dispatchd.out.log</string>
+<key>StandardErrorPath</key><string>/tmp/tt-dispatchd.err.log</string>
+</dict></plist>
