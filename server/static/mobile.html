@@ -74,7 +74,9 @@ body.sheet-open { overflow:hidden; }
 <script>
 const TABS = [["review","리뷰","rev"],["in_progress","진행중","prog"],["todo","시작 대기","todo"],["blocked","막힘","block"],["done","완료","done"]];
 let LAST = "", tab = localStorage.getItem("tt-m-tab") || "review";
+const BUILD = "__TT_BUILD__";
 let OPEN = new Set(), DRAFT = {};
+try { DRAFT = JSON.parse(localStorage.getItem("tt-m-draft") || "{}"); for (const id of JSON.parse(localStorage.getItem("tt-m-open") || "[]")) OPEN.add(id); } catch (e) { DRAFT = {}; }
 let sub = localStorage.getItem("tt-m-sub") || "lease";
 let AGENTS = [], SID = "";
 function tsDate(s){ const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})([+-]\d{2})(\d{2})$/.exec(s||""); if(!m) return null;
@@ -116,7 +118,17 @@ async function load(){
   const sig = JSON.stringify(rows);
   if (sig !== LAST) { LAST = sig; render(rows); }
 }
-function collectDrafts(){ for (const id of OPEN){ const el = $("#ci-"+CSS.escape(id)); if (el && el.value) DRAFT[id] = el.value; } }
+function collectDrafts(){ for (const id of OPEN){ const el = $("#ci-"+CSS.escape(id)); if (el && el.value) DRAFT[id] = el.value; }
+  localStorage.setItem("tt-m-draft", JSON.stringify(DRAFT));
+  localStorage.setItem("tt-m-open", JSON.stringify([...OPEN])); }
+async function checkBuild(){
+  try {
+    const t = await (await fetch("/m", {cache:"no-store"})).text();
+    const mm = t.match(/const BUILD = "(\d+)"/);
+    if (mm && mm[1] !== "__TT_BUILD__" && mm[1] !== BUILD) { collectDrafts(); document.dispatchEvent(new CustomEvent("tt-reload")); location.reload(); }
+  } catch (e) { }
+}
+setInterval(checkBuild, 300000);
 async function refreshDetail(id){
   try {
     const i = await j("/issues/"+id);

@@ -4,7 +4,7 @@ import pathlib
 import re
 import urllib.request
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -1032,7 +1032,9 @@ def create_app(db_path: str) -> FastAPI:
 
     @app.get("/m", include_in_schema=False)
     def mobile():
-        return FileResponse(os.path.join(static_dir, "mobile.html"), headers={"Cache-Control": "no-store"})
+        path = os.path.join(static_dir, "mobile.html")
+        html = open(path, encoding="utf-8").read().replace("__TT_BUILD__", str(int(os.path.getmtime(path))))
+        return HTMLResponse(html, headers={"Cache-Control": "no-store"})
 
     app.mount("/", StaticFiles(directory=static_dir, html=True), name="static")
     return app

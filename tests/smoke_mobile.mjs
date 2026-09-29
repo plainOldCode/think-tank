@@ -8,7 +8,7 @@ import { dirname, join } from "path";
 import { fileURLToPath } from "url";
 const here = dirname(fileURLToPath(import.meta.url));
 const html = readFileSync(join(here, "..", "server", "static", "mobile.html"), "utf8");
-const js = html.match(/<script>([\s\S]*?)<\/script>/)[1].replace("load(); setInterval(load, 6000);", "");
+const js = html.match(/<script>([\s\S]*?)<\/script>/)[1].replace("load(); setInterval(load, 6000);", "").replace("setInterval(checkBuild, 300000);", "");
 const noMe = !!process.env.SMOKE_NO_ME;
 const store = noMe ? {} : { "tt-m-me": "me@x" };
 globalThis.localStorage = { getItem: k => store[k] ?? null, setItem: (k, v) => store[k] = v };
@@ -19,6 +19,15 @@ globalThis.document = {
   querySelector: s => els[s] ?? (els[s] = { innerHTML: "", textContent: "", value: "", style: {}, focus() {}, classList: { add(){}, remove(){}, toggle(){}, contains: () => false } }),
 };
 globalThis.CSS = { escape: s => s };
+globalThis.CustomEvent = class { constructor(t){ this.type = t; } };
+globalThis.location = { reload(){ globalThis.__reloaded = true; } };
+const listeners = {};
+globalThis.document.addEventListener = (t, fn) => { (listeners[t] = listeners[t] || []).push(fn); };
+globalThis.document.dispatchEvent = () => true;
+const _qs = globalThis.document.querySelector;
+globalThis.document.querySelector = s => (s === "head" ? (els.head = els.head || { appendChild(){} }) : _qs(s));
+globalThis.setInterval = () => {};
+globalThis.fetchReal = globalThis.fetch;
 const lease = new Date(Date.now() + 36e5).toISOString().slice(0, 19) + "+0000";
 const two = [
   { id: "A1", state: "todo", title: "t", labels: [] },
@@ -33,6 +42,7 @@ let n = 0;
 const calls = [];
 globalThis.fetch = async (u, o) => {
   calls.push([u, o?.body]);
+  if (u === "/m") return { ok: true, text: async () => 'const BUILD = "9999999"' };
   if (u.includes("/agents")) return { ok: true, json: async () => [{ name: "agent-1@host1", enabled: 1, last_ok: "2026-09-29T10:00:00+0900" }] };
   if (!u.startsWith("/issues")) return { ok: true, json: async () => [] };
   return { ok: true, json: async () => structuredClone(n++ < 2 ? two : three) };
@@ -81,6 +91,10 @@ if (!noMe) {
   await passConfirm(1);
   const v = calls.find(([u]) => u.includes("/verify"));
   if (!v || !v[1].includes("me@x") || !v[1].includes("expected_version")) throw new Error("verify payload wrong: " + (v && v[1]));
+  // build 버전 불일치 → auto-reload + state 영속화
+  await globalThis.checkBuild();
+  if (!globalThis.__reloaded) throw new Error("build 불일치인데 reload 안 됨");
+  if (!store["tt-m-draft"] || !store["tt-m-open"]) throw new Error("reload 전 state 영속화 누락");
   const r = spawnSync(process.execPath, [fileURLToPath(import.meta.url)], {
     env: { ...process.env, SMOKE_NO_ME: "1" }, encoding: "utf8",
   });
