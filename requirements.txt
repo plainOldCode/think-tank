@@ -1,0 +1,8 @@
+# CI(pytest job) 최소 집합 — server/ 및 tests/ 실측 import 기준.
+# fastapi/pydantic: server/app.py, verification.py. uvicorn: tests/test_contract_cli.py.
+# httpx: pytest 9 환경에서 fastapi TestClient(TestClient=httpx 기반) 실행에 필수.
+fastapi==0.137.1
+pydantic==2.13.4
+uvicorn==0.49.0
+httpx==0.28.1
+pytest

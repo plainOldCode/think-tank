@@ -1,0 +1,54 @@
+# CI — 필수 검사 3종(pytest, smoke-node, secret-scan).
+# probe(순회 감시자)가 job id 문자열 그대로를 REQUIRED_CHECKS로 대조한다:
+# tests/test_ci_workflow.py::REQUIRED_CHECKS 와 본 파일 job id 집합의 일치성은
+# 같은 테스트의 job_ids 회귀가 강제한다. 이름을 바꾸면 두 곳을 동시에 바꿔야 한다.
+# 권한: contents:read 만(워크플로 자체에 시크릿 요구 0건 — 외부 PR 유입 안전).
+name: CI
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: install
+        run: pip install -r requirements.txt
+      - name: test
+        run: pytest -q
+
+  smoke-node:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: smoke board legacy quiet
+        run: node tests/smoke_board_legacy_quiet.mjs
+      - name: smoke board progress
+        run: node tests/smoke_board_progress.mjs
+      - name: smoke mobile
+        run: node tests/smoke_mobile.mjs
+
+  secret-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: secret scan
+        run: bash scripts/secret-scan.sh .
