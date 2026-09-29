@@ -1,0 +1,26 @@
+// mobile.html 스크립트 런타임 스모크 (브라우저 없는 대체 검증). 실행: node tests/smoke_mobile.mjs
+import { readFileSync } from "fs";
+import { dirname, join } from "path";
+import { fileURLToPath } from "url";
+const here = dirname(fileURLToPath(import.meta.url));
+const html = readFileSync(join(here, "..", "server", "static", "mobile.html"), "utf8");
+const js = html.match(/<script>([\s\S]*?)<\/script>/)[1].replace("load(); setInterval(load, 6000);", "");
+const store = {}; globalThis.localStorage = { getItem: k => store[k] ?? null, setItem: (k, v) => store[k] = v };
+const els = {};
+globalThis.document = { querySelector: s => els[s] ?? (els[s] = { innerHTML: "", textContent: "", classList: { add(){}, remove(){}, toggle(){}, contains: () => false } }) };
+globalThis.CSS = { escape: s => s };
+const two = [{ id: "A1", state: "todo", title: "t", labels: [] }, { id: "B2", state: "review", title: "r", labels: [], version: 1 }];
+let n = 0;
+globalThis.fetch = async () => ({ ok: true, json: async () => structuredClone(n++ < 2 ? two : [{ id: "A1", state: "in_progress", title: "t", labels: [] }]) });
+(0, eval)(js);
+const { load, pick } = globalThis;
+await load();
+if (!els["#list"].innerHTML.includes("B2")) throw new Error("1st render broken");
+const before = els["#list"].innerHTML;
+await load();
+if (els["#list"].innerHTML !== before) throw new Error("identical data re-rendered");
+await load();
+if (!els["#list"].innerHTML.includes("empty")) throw new Error("3rd render not applied");
+pick("in_progress");
+if (!els["#list"].innerHTML.includes("A1")) throw new Error("pick broken");
+console.log("smoke ok");
