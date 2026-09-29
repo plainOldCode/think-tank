@@ -50,6 +50,8 @@ RUNNER_SELF = os.environ.get("TT_RUNNER_SELF", os.path.abspath(__file__))
 PY = sys.executable or "/usr/bin/python3"
 POLL_INTERVAL_S = int(os.environ.get("TT_RUNNER_POLL", "60"))
 WATCH_INTERVAL_S = 5
+# 진행 투영 주기 (TT M3EREF97-FXWQ): 지문 변경 시에는 즉시, 그 외에는 이 주기로 POST.
+PROGRESS_S = int(os.environ.get("TT_RUNNER_PROGRESS_S", "30"))
 DEFAULT_TIMEOUT_S = 1800
 OVERRIDE_KEYS = {"model", "reasoning", "workspace", "continue_session"}
 APPROVE_WORDS = {"승인", "approve"}
@@ -174,6 +176,38 @@ def tt_comment(issue_id, body):
     if isinstance(r, dict) and r.get("HTTP") not in (None, 0):
         log("TT-COMMENT-FAIL #%s HTTP %s" % (issue_id, r["HTTP"]))
     return r
+
+
+def tt_progress(issue_id, dispatch_id, payload):
+    """진행 투영 POST (TT M3EREF97-FXWQ): dispatch 레코드만 갱신하는 쓰기.
+    deliver()의 헤더 규약 상속(X-Tt-Dispatch + Bearer 자기 secret). best-effort —
+    200만 성공으로 보고 나머지(HTTP 4xx/타임아웃/오프라인)는 조용히 무시·무재시도."""
+    if not TT:
+        return
+    try:
+        data = json.dumps(payload, ensure_ascii=False).encode()
+        req = urllib.request.Request(
+            TT + "/issues/%s/dispatches/%s/progress" % (issue_id, dispatch_id),
+            data=data, method="POST",
+            headers={"content-type": "application/json",
+                     "x-tt-dispatch": str(dispatch_id)})
+        sec = load_secret(fail_closed=False)
+        if sec:
+            req.add_header("authorization", "Bearer " + sec)
+        with urllib.request.urlopen(req, timeout=10) as r:
+            r.read()
+    except Exception:
+        pass
+
+
+def progress_projection(ent, state, tail=None, session=None):
+    """장부 ent → 서버 진행 투영 한 발. 코멘트 경로와 완전 분리(코멘트 수 변화 0)."""
+    payload = {"state": state, "machine": machine_name(),
+               "session": session or ent.get("session") or "",
+               "ts": time.strftime("%Y-%m-%dT%H:%M:%S%z")}
+    if tail is not None:
+        payload["tail"] = tail
+    tt_progress(ent["issue_id"], ent["dispatch_id"], payload)
 
 
 # ---------- 레지스트리 ----------
@@ -609,20 +643,24 @@ def execute_once(p, session):
     if ctx_session and ctx_session == ent.get("session") and session_alive(ctx_session) \
             and continue_session(prof, ctx_session, message, key):
         update_run(key, status="running", mode="continue", started=time.time())
+        progress_projection(ent, "running")  # 계속 재지시도 실행 개시 — 동일 투영
         tt_comment(ent["issue_id"], "runner:%s dispatch#%s → tmux %s 계속 (send-keys)"
                    % (machine_name(), p["dispatch_id"], ctx_session))
         log("CONTINUE dispatch#%s session=%s" % (p["dispatch_id"], ctx_session))
         return
     # 신규 세션 (계속 실패/세션 소멸 시 자동 폴백)
+    progress_projection(ent, "queued")  # 세션 준비 — machine/session 병기
     try:
         start_session(key, prof, ent["session"], workspace)
     except Exception as e:
         update_run(key, status="failed", detail=str(e))
-        tt_comment(ent["issue_id"], "runner:%s dispatch#%s 시작 실패: %s" % (machine_name(), p["dispatch_id"], mask(str(e))))
+        progress_projection(ent, "failed")  # 시작 실패도 활성 목록에 남기지 않는다
+        tt_comment(ent["issue_id"], "runner:%s dispatch#%s 시작 실패: %s" % (p["dispatch_id"], mask(str(e))))
         log("START-FAIL dispatch#%s %s" % (p["dispatch_id"], e))
         return
     update_run(key, status="running", mode="new", started=time.time(), workspace=workspace,
                timeout_s=prof.get("timeout_s", DEFAULT_TIMEOUT_S), profile=prof.get("profile_name"))
+    progress_projection(ent, "running")  # 세션 기동 확인(tmux new-session rc=0) 후
     tt_comment(ent["issue_id"], "runner:%s dispatch#%s → tmux %s (queued, ws=%s)"
                % (machine_name(), p["dispatch_id"], ent["session"], workspace))
     log("START dispatch#%s session=%s ws=%s" % (p["dispatch_id"], ent["session"], workspace))
@@ -728,6 +766,7 @@ def finalize(runs_dir_name, key, ent, exit_code, tail=""):
                    % (machine_name(), did, session, mask(summary)))
         log("DONE dispatch#%s exit=0 session=%s" % (did, session))
         update_run(key, status="done", exit=exit_code, ended=time.time())
+        progress_projection(ent, "finished")
         return "done"
     # (M3BZS1G3 ①) 실패 출력에서 입력/승인 요구 시그니처 → crashed가 아니라 BLOCKED.
     # 재시도 하지 않고 사람에게 결정 지점을 넘긴다(TT측 waiting_for=human 연결).
@@ -739,12 +778,14 @@ def finalize(runs_dir_name, key, ent, exit_code, tail=""):
                    % (machine_name(), did, sig, exit_code, session, mask(combined[-1500:])))
         log("BLOCKED dispatch#%s signature=%s exit=%s session=%s" % (did, sig, exit_code, session))
         update_run(key, status="blocked", exit=exit_code, blocked_on=sig, ended=time.time())
+        progress_projection(ent, "failed")  # 세션은 종료 — 사람 대기 = 실행 미활성
         return "blocked"
     detail = tail or summary
     tt_comment(issue, "runner:%s dispatch#%s failed exit=%s session=%s\n%s"
                % (machine_name(), did, exit_code, session, mask(detail)))
     log("FAILED dispatch#%s exit=%s" % (did, exit_code))
     update_run(key, status="failed", exit=exit_code, ended=time.time())
+    progress_projection(ent, "failed")
     return "failed"
 
 
@@ -789,12 +830,14 @@ def stall_check(key, ent, now):
             tmux_run("kill-session", "-t", session, capture_output=True)
         except Exception:
             pass
+        progress_projection(ent, "failed")  # kill 사유 코멘트는 아래 tt_comment(기존 관례)
         tt_comment(ent["issue_id"], "runner:%s dispatch#%s STALL-killed — %ds 이상 pane 무음(exit와 무관) session=%s"
                    % (machine_name(), ent["dispatch_id"], int(silent_for), session))
         log("STALL-KILL dispatch#%s silent=%ds session=%s" % (ent["dispatch_id"], int(silent_for), session))
         update_run(key, status="failed", detail="stall-killed", ended=time.time())
         return True
     if silent_for > STALL_SILENCE_S and not ent.get("stall_notified"):
+        progress_projection(ent, "stalled")  # stalled 판정 소유권: 오직 이 지점(서버 재계산 금지)
         tt_comment(ent["issue_id"], "runner:%s dispatch#%s STALL — %ds째 pane 출력 무음(TIMEOUT 아님, %ds 더 무음 시 kill). "
                    "waiting_for=agent. pane tail:\n%s"
                    % (machine_name(), ent["dispatch_id"], int(silent_for), STALL_KILL_AFTER_S,
@@ -835,10 +878,43 @@ def watch_once():
                 tmux_run("kill-session", "-t", session, capture_output=True)
             except Exception:
                 pass
+            progress_projection(ent, "failed")
             tt_comment(ent["issue_id"], "runner:%s dispatch#%s TIMEOUT killed at %s session=%s"
                        % (machine_name(), ent["dispatch_id"], time.strftime("%F %T"), session))
             log("TIMEOUT dispatch#%s killed session=%s" % (ent["dispatch_id"], session))
             update_run(key, status="failed", detail="timeout", ended=time.time())
+            continue
+        # 진행 투영 tick (TT M3EREF97-FXWQ): 지문 변경 = 진행, 변경 없어도 PROGRESS_S 주기마다
+        # 갱신 POST(last_progress_at 전진). stalled/복구 판정은 stall_check 소유 —
+        # stall 임계 초과 무음에서는 스킵(running으로 되돌림 없음; 같은 순회 stall_check가 선행).
+        fp = pane_fingerprint(session, key)
+        if fp is None:
+            continue
+        now_ts = time.time()
+        silent_for = now_ts - (ent.get("pane_ts") or ent.get("started") or now_ts)
+        if silent_for > STALL_SILENCE_S:
+            continue
+        if fp != ent.get("progress_fp") or now_ts - (ent.get("progress_sent") or 0) > PROGRESS_S:
+            update_run(key, progress_fp=fp, progress_sent=now_ts)
+            progress_projection(ent, "running", tail=progress_tail(key, session))
+
+
+def progress_tail(key, session):
+    """진행 꼬리 소스: 실행 산출 파일(.out→.log, finalize와 동일 우선순위) 마지막 줄.
+    codex/plain 드라이버는 stdout을 파일로 돌려 pane가 실행 내내 비어 있다 —
+    파일이 실제 진행 신호다(pane_fingerprint가 mtime를 쓰는 것과 같은 근거). 파일이
+    없으면 pane capture로 폴백(계속 모드 send-keys 대화형 셸 등). best-effort."""
+    base = os.path.join(RUNTIME_DIR, key.replace("#", "_"))
+    for suffix in (".out", ".log"):
+        try:
+            with open(base + suffix) as f:
+                f.seek(max(0, os.path.getsize(base + suffix) - 4096))
+                lines = [l for l in f.read().splitlines() if l.strip()]
+                if lines:
+                    return mask(lines[-1])[:200]
+        except OSError:
+            pass
+    return mask((session_tail(session, 200).rstrip().splitlines() or [""])[-1])[:200]
 
 
 def watcher_loop(stop):
@@ -1027,6 +1103,7 @@ def release_issue(issue_id, reason=""):
             except Exception:
                 pass
             killed.append(session)
+        progress_projection(ent, "finished")  # 의도적 종료 — 활성 목록에서 소멸시킨다
         tt_comment(ent["issue_id"], "runner:%s dispatch#%s cancelled — 카드 terminalize로 실행 중지"
                    " (session=%s, %s)" % (machine_name(), ent.get("dispatch_id"), session, reason))
         log("RELEASE issue=%s key=%s session=%s (%s)" % (issue_id, k, session, reason))

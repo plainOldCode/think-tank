@@ -466,6 +466,164 @@ def test_reconcile_skips_non_release_hook_agents(client, hook_server):
     assert client.patch(f"/issues/{j['id']}", json={"state": "done"}).status_code == 200
 
 
+# ---- 진행 투영 + 활성 조회 (TT M3EREF97-FXWQ, dispatch#57) ----
+
+def reg_agent(client, hook, name="run", secret="sekret"):
+    r = client.post("/agents", json={"name": name, "base_url": hook, "secret": secret})
+    assert r.status_code == 201, r.text
+    return r.json()
+
+
+def make_dispatch(client, iid, agent="run", msg="실행해"):
+    r = client.post(f"/issues/{iid}/dispatch", json={"agent": agent, "message": msg})
+    assert r.status_code == 201, r.text
+    return r.json()["id"]
+
+
+def progress_post(client, iid, did, payload, secret="sekret", dispatch_hdr=True):
+    headers = {}
+    if secret is not None:
+        headers["authorization"] = "Bearer " + secret
+    if dispatch_hdr:
+        headers["x-tt-dispatch"] = str(did)
+    return client.post(f"/issues/{iid}/dispatches/{did}/progress", json=payload, headers=headers)
+
+
+def one_dispatch(client, iid, did):
+    rows = client.get(f"/issues/{iid}/dispatches").json()
+    return next(d for d in rows if d["id"] == did)
+
+
+def test_progress_projection_updates_dispatch_record(client, hook_server):
+    """[수용1] 진행 POST → dispatch 레코드 갱신(투영) + 코멘트 무생성 + tail 클램프."""
+    i = mk(client, title="진행 투영")
+    reg_agent(client, hook_server)
+    did = make_dispatch(client, i["id"])
+    before = [c["id"] for c in client.get(f"/issues/{i['id']}").json()["comments"]]
+
+    r = progress_post(client, i["id"], did, {"state": "queued", "machine": "mac-mini",
+                                             "session": "tt-run-1", "ts": "2026-09-29T12:00:00+0900"})
+    assert r.status_code == 200, r.text
+    got = one_dispatch(client, i["id"], did)
+    assert got["run_state"] == "queued" and got["machine"] == "mac-mini"
+    assert got["session"] == "tt-run-1" and got["started_at"] == "2026-09-29T12:00:00+0900"
+    # queued는 진행(ts/tail 병기) 대상 아님 — last_progress_at 미갱신
+    assert got["last_progress_at"] is None and got["last_tail"] == ""
+
+    for k in range(3):
+        rr = progress_post(client, i["id"], did, {"state": "running", "tail": "step %d" % k})
+        assert rr.status_code == 200
+    got = one_dispatch(client, i["id"], did)
+    assert got["run_state"] == "running" and got["last_tail"] == "step 2"
+    assert got["last_progress_at"]
+    # machine/session 선택 누락 → 기존 값 유지(공백으로 덮지 않음)
+    assert got["machine"] == "mac-mini" and got["session"] == "tt-run-1"
+    # 기존 키 보존 (additive)
+    assert {"id", "issue_id", "agent", "author", "message", "context", "status", "detail", "ts"} <= set(got)
+    # 코멘트 수 증가 0 — 진행은 코멘트를 만들지 않는다
+    after = client.get(f"/issues/{i['id']}").json()["comments"]
+    assert [c["id"] for c in after] == before
+
+    # tail 서버 클램프 (422 아님)
+    progress_post(client, i["id"], did, {"state": "running", "tail": "x" * 600})
+    assert len(one_dispatch(client, i["id"], did)["last_tail"]) <= 500
+
+    # finished: run_state·ended_at만 갱신 — tail 병기 안 함, 코멘트 무
+    prev_tail = one_dispatch(client, i["id"], did)["last_tail"]
+    f = progress_post(client, i["id"], did, {"state": "finished", "tail": "y" * 10})
+    assert f.status_code == 200
+    got = one_dispatch(client, i["id"], did)
+    assert got["run_state"] == "finished" and got["ended_at"]
+    assert got["last_tail"] == prev_tail
+    assert [c["id"] for c in client.get(f"/issues/{i['id']}").json()["comments"]] == before
+    # 상태 머신 가드 없음: finished 후 running 재전송 → run_state 되돌아감(과잉 차단 금지)
+    assert progress_post(client, i["id"], did, {"state": "running"}).status_code == 200
+    assert one_dispatch(client, i["id"], did)["run_state"] == "running"
+
+
+def test_progress_post_error_matrix(client, hook_server):
+    i = mk(client, title="진행 검증")
+    reg_agent(client, hook_server)
+    did = make_dispatch(client, i["id"])
+    j = mk(client, title="other")
+    assert progress_post(client, i["id"], 99999, {"state": "running"}).status_code == 404
+    assert progress_post(client, j["id"], did, {"state": "running"}).status_code == 404
+    assert progress_post(client, i["id"], did, {"state": "running"}, secret="wrong").status_code == 403
+    assert progress_post(client, i["id"], did, {"state": "vibes"}).status_code == 422
+    assert progress_post(client, i["id"], did, {"tail": "state 누락"}).status_code == 422
+    # unknown 필드는 무시되고 유효 필드만 반영
+    r = progress_post(client, i["id"], did, {"state": "running", "unknown_field": 1})
+    assert r.status_code == 200 and r.json()["run_state"] == "running"
+    # state만 있고 선택 필드 전부 누락 → 200 부분 갱신
+    r = progress_post(client, i["id"], did, {"state": "stalled"})
+    assert r.status_code == 200 and r.json()["run_state"] == "stalled"
+    # x-tt-dispatch 헤더 누락은 강제 아님(deliver 규약은 Bearer) — Bearer가 실제 검증
+    r = client.post(f"/issues/{i['id']}/dispatches/{did}/progress",
+                    json={"state": "running"}, headers={"authorization": "Bearer sekret"})
+    assert r.status_code == 200
+    # secret 빈 agent → 헤더 생략 허용 (deliver의 secret 옵션 규약 동일)
+    reg_agent(client, hook_server, name="open", secret="")
+    did2 = make_dispatch(client, i["id"], agent="open", msg="두 번째")
+    r = client.post(f"/issues/{i['id']}/dispatches/{did2}/progress", json={"state": "running"})
+    assert r.status_code == 200
+
+
+def test_agents_active_lists_only_executing(client, hook_server):
+    """[수용3] 활성=queued/running/stalled만; finished/failed/''(미실행) 제외; 빈 DB는 200 []."""
+    i = mk(client, title="활성 카드")
+    i2 = mk(client, title="미실행 카드")
+    reg_agent(client, hook_server)
+    dids = {}
+    for st in ("queued", "running", "stalled", "finished", "failed"):
+        did = make_dispatch(client, i["id"], msg="실행 %s" % st)
+        r = progress_post(client, i["id"], did,
+                          {"state": st, "machine": "smokebox", "session": "tt-run-%s" % did,
+                           "tail": "진행 중" if st == "running" else None})
+        assert r.status_code == 200, (st, r.text)
+        dids[st] = did
+    did_none = make_dispatch(client, i2["id"], msg="아직 미실행")
+
+    r = client.get("/agents/active")
+    assert r.status_code == 200
+    act = {d["dispatch_id"]: d for d in r.json()}
+    assert set(act) == {dids["queued"], dids["running"], dids["stalled"]}
+    assert did_none not in act
+    a = act[dids["running"]]
+    assert a["run_state"] == "running" and a["machine"] == "smokebox"
+    assert a["session"] == "tt-run-%d" % dids["running"]
+    assert a["issue_id"] == i["id"] and a["issue_title"] == "활성 카드"
+    assert a["agent"] == "run" and a["last_tail"] == "진행 중"
+    assert a["started_at"] and a["last_progress_at"]
+    assert isinstance(a["elapsed_s"], int) and a["elapsed_s"] >= 0
+    # 종료 POST → 활성 목록에서 소멸
+    progress_post(client, i["id"], dids["queued"], {"state": "finished"})
+    assert dids["queued"] not in {d["dispatch_id"] for d in client.get("/agents/active").json()}
+
+
+def test_agents_active_empty_is_200_empty_list(client):
+    r = client.get("/agents/active")
+    assert r.status_code == 200 and r.json() == []
+
+
+def test_dispatches_backcompat_untouched_rows(client, hook_server):
+    """진행 미수신(비-tmux) dispatch: 신규 컬럼은 기본값, 기존 응답과 키 동일."""
+    i = mk(client, title="레거시 형태")
+    reg_agent(client, hook_server, secret="")
+    did = make_dispatch(client, i["id"], agent="run")
+    got = one_dispatch(client, i["id"], did)
+    assert got["run_state"] == "" and got["machine"] == "" and got["session"] == ""
+    assert got["started_at"] is None and got["last_progress_at"] is None
+    assert got["last_tail"] == "" and got["ended_at"] is None
+    # 응답 키에 신규 7종만 추가 — 기존 키 개명/삭제 없음
+    assert {"run_state", "machine", "session", "started_at", "last_progress_at",
+            "last_tail", "ended_at"} <= set(got)
+
+
+def test_agents_active_before_dynamic_route(client):
+    """/agents/active는 동적 라우트와 충돌 없이 정적 경로로 동작."""
+    assert client.get("/agents/active").status_code == 200
+
+
 def test_agent_release_hook_flag(client):
     a = client.post("/agents", json={"name": "r1", "base_url": "http://x/h", "release_hook": True}).json()
     assert a["release_hook"] == 1

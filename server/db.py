@@ -82,7 +82,14 @@ CREATE TABLE IF NOT EXISTS dispatches (
   context TEXT NOT NULL DEFAULT '',
   status TEXT NOT NULL,
   detail TEXT NOT NULL DEFAULT '',
-  ts TEXT NOT NULL
+  ts TEXT NOT NULL,
+  run_state TEXT NOT NULL DEFAULT '',
+  machine TEXT NOT NULL DEFAULT '',
+  session TEXT NOT NULL DEFAULT '',
+  started_at TEXT,
+  last_progress_at TEXT,
+  last_tail TEXT NOT NULL DEFAULT '',
+  ended_at TEXT
 );
 """
 
@@ -137,6 +144,19 @@ def connect(path):
                 "notify_hook INTEGER NOT NULL DEFAULT 0"):
         try:
             con.execute(f"ALTER TABLE agents ADD COLUMN {col}")
+        except sqlite3.OperationalError:
+            pass
+    # dispatch 실행 상태 투영 (TT M3EREF97-FXWQ): 기존 행은 '' = 비-tmux·러너 미수신.
+    # status(웹훅 전달 상태)와 층위가 다르다 — 진행 상태의 단일 소스는 러너(서버 재계산 금지).
+    for col in ("run_state TEXT NOT NULL DEFAULT ''",
+                "machine TEXT NOT NULL DEFAULT ''",
+                "session TEXT NOT NULL DEFAULT ''",
+                "started_at TEXT",
+                "last_progress_at TEXT",
+                "last_tail TEXT NOT NULL DEFAULT ''",
+                "ended_at TEXT"):
+        try:
+            con.execute(f"ALTER TABLE dispatches ADD COLUMN {col}")
         except sqlite3.OperationalError:
             pass
     return con

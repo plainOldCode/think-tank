@@ -99,7 +99,9 @@ curl -s -H 'content-type: application/json' -X PATCH /issues/ID -d '{"state":"do
 | PATCH | `/agents/{name}` | `{base_url?, secret?, enabled?, release_hook?, notify_hook?}` | 수정 |
 | DELETE | `/agents/{name}` | – | 삭제 |
 | POST | `/issues/{id}/dispatch` | `{agent:STR, message:STR, author?="board"}` | **지시(hook)**: message를 댓글 기록 후 agent `base_url`로 webhook POST(10s). 성공 시 dispatch 로그 반환, 실패는 `⚠ hook dispatch ... 실패` 시스템 댓글 자동 |
-| GET | `/issues/{id}/dispatches` | – | 발송 이력 `{id,status:queued|ok|error,detail,context}` |
+| GET | `/issues/{id}/dispatches` | – | 발송 이력 `{id,status:queued|ok|error,detail,context, run_state,machine,session,started_at,last_progress_at,last_tail,ended_at}` — 실행 투영 필드 병기(미수신 행은 `run_state:''`) |
+| POST | `/issues/{id}/dispatches/{did}/progress` | `{state:"queued|running|stalled|finished|failed", tail?STR(≤500 클램프), ts?ISO, machine?STR, session?STR}` | 러너→서버 진행 투영. dispatch 레코드만 갱신(코멘트 무생성, last-write-wins). 헤더 `x-tt-dispatch` + `Bearer <agent secret>`(secret 빈 agent는 생략 허용). running/stalled만 tail/ts 반영, finished/failed는 run_state·ended_at만. 미존재/issue 불일치 404, secret 불일치 403, state 누락/비enum 422 |
+| GET | `/agents/active` | – | 활성 실행 목록(`run_state ∈ {queued,running,stalled}`만): `[{dispatch_id,issue_id,issue_title,agent,machine,session,run_state,started_at,last_progress_at,elapsed_s,last_tail}]`. stalled는 러너 판정값 그대로 노출(서버 재계산 없음). 빈 결과 200+[] |
 
 ## agent 등록과 대화 (hook/callback)
 ### agent 통합 두 방식 (둘 중 하나 — dispatch 수신 전제)
