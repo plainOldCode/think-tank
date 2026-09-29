@@ -15,5 +15,6 @@ jobs:
         with:
           node-version: "22"
       - run: pip install fastapi uvicorn pydantic httpx pytest
+      - run: bash scripts/secret-scan.sh .
       - run: pytest tests/ -q
       - run: node tests/smoke_mobile.mjs
