@@ -56,7 +56,7 @@ body.sheet-open { overflow:hidden; }
 .sheet button { display:block; width:100%; text-align:left; background:var(--bg); border:1px solid var(--line);
   color:var(--tx); border-radius:9px; padding:13px 14px; margin-top:8px; font-size:14.5px; cursor:pointer; }
 .sheet button small { color:var(--dim); font-size:11.5px; display:block; margin-top:2px; }
-.toast { position:fixed; bottom:76px; left:50%; transform:translateX(-50%); background:#0b0e13cc;
+.toast { position:fixed; bottom:76px; left:50%; transform:translateX(-50%); background:#0b0e13ee; z-index:12;
          border:1px solid var(--line); color:var(--tx); padding:9px 14px; border-radius:9px; font-size:13px;
          opacity:0; transition:opacity .25s; pointer-events:none; max-width:88vw; }
 .toast.show { opacity:1; }
@@ -86,10 +86,17 @@ function setSub(v){ sub = v; localStorage.setItem("tt-m-sub",v); render(JSON.par
 let ME = localStorage.getItem("tt-m-me") || "";
 const $ = s => document.querySelector(s);
 const esc = s => String(s??"").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
-function toast(m){ const t=$("#toast"); t.textContent=m; t.classList.add("show"); setTimeout(()=>t.classList.remove("show"),2600); }
+function toast(m){ const t=$("#toast"); t.textContent=m;
+  const up = document.body.classList.contains("sheet-open");
+  t.style.top = up ? "14%" : "auto"; t.style.bottom = up ? "auto" : "76px";
+  t.classList.add("show"); clearTimeout(toast._h); toast._h = setTimeout(() => t.classList.remove("show"), 2600); }
 function setMe(){ const v=prompt("작업자 이름(claim/verify 서명)", ME); if(v){ ME=v.trim(); localStorage.setItem("tt-m-me",ME); $("#me").textContent=ME; } return ME; }
 function who(){ return ME; }
-function saveMe(v){ ME=(v||"").trim(); if (ME){ localStorage.setItem("tt-m-me",ME); $("#me").textContent=ME; } return ME; }
+function saveMe(v){ ME=(v||"").trim(); if (ME){ localStorage.setItem("tt-m-me",ME); $("#me").textContent=ME;
+    try{ const h=JSON.parse(localStorage.getItem("tt-m-names")||"[]").filter(n=>n!==ME); h.unshift(ME); localStorage.setItem("tt-m-names",JSON.stringify(h.slice(0,5))); }catch(e){} } return ME; }
+function nameHist(){ try{ return JSON.parse(localStorage.getItem("tt-m-names")||"[]"); }catch(e){ return []; } }
+function nameField(){ const h=nameHist(); const dl=h.map(n=>`<option value="${esc(n)}">`).join("");
+  return `<input id="mein" list="mnames" placeholder="작업자 이름 (예: name@laptop) — claim/서명용" value="${esc(ME)}" style="width:100%;margin-top:8px;background:var(--bg);border:1px solid var(--line);border-radius:9px;color:var(--tx);padding:12px;font-size:14.5px"><datalist id="mnames">${dl}</datalist>`; }
 async function j(path, opts){ const r = await fetch(path, opts); const d = await r.json().catch(()=>({}));
   if(!r.ok) throw new Error(d.detail || r.status); return d; }
 async function api(path, method, body){ try{ return await j(path,{method, headers:{"content-type":"application/json"}, body:JSON.stringify(body)}); }
@@ -195,7 +202,7 @@ async function start(id){
 function startMenu(id){
   SID = id;
   let html = `<h4>이 카드를 누가 진행할까요?</h4>`;
-  if (!ME) html += `<input id="mein" placeholder="작업자 이름 (예: name@laptop) — claim/서명용" style="width:100%;margin-top:8px;background:var(--bg);border:1px solid var(--line);border-radius:9px;color:var(--tx);padding:12px;font-size:14.5px">`;
+  if (!ME) html += nameField();
   const list = AGENTS.filter(a => a.enabled);
   html += `<button onclick="pickFromSheet('__me__')">내가 진행 (claim + lease 3h)</button>`;
   if (!list.length) html += `<button disabled>등록 agent 목록 로드 실패 — 새로고침 후 재시도</button>`;
@@ -213,8 +220,15 @@ function openSheet(html){
 }
 async function pickFromSheet(aid){
   const id = SID;
-  if (!ME && !saveMe($("#mein").value)) { toast("작업자 이름을 먼저 입력해주세요"); return; }
-  if (aid === "__me__") { closeSheet(); return start(id); }
+  if (aid === "__me__") {
+    if (!ME && !saveMe($("#mein").value)) {
+      const el = $("#mein");
+      if (el) { el.style.borderColor = "var(--block)"; el.focus(); }
+      toast("이름을 입력한 뒤 진행해주세요 (agent 지시는 이름 없이 가능)");
+      return;
+    }
+    closeSheet(); return start(id);
+  }
   showDispatch(id, aid);
 }
 function showDispatch(id, aid){
@@ -225,7 +239,7 @@ function showDispatch(id, aid){
 }
 async function sendDispatch(id, aid){
   const msg = ($("#dmsg").value.trim()) || "이 카드를 진행해주세요";
-  if (await api("/issues/"+id+"/dispatch","POST",{agent:aid, message:msg, author:who()})) { toast("➤ "+aid+" dispatch — 회신은 댓글"); closeSheet(); }
+  if (await api("/issues/"+id+"/dispatch","POST",{agent:aid, message:msg, author:who() || "board"})) { toast("➤ "+aid+" dispatch — 회신은 댓글"); closeSheet(); }
 }
 function closeSheet(){ $("#sheet").classList.remove("open"); $("#scrim").classList.remove("open"); document.body.classList.remove("sheet-open"); }
 async function send(id, state){
@@ -238,14 +252,19 @@ async function beat(id){
 async function pass(id, version){
   SID = id;
   let html = `<h4>완료 통과 근거 한 줄 (서버 저장·감사용)</h4>`;
-  if (!ME) html += `<input id="mein" placeholder="작업자 이름 (claim/서명용)" style="width:100%;margin-top:8px;background:var(--bg);border:1px solid var(--line);border-radius:9px;color:var(--tx);padding:12px;font-size:14.5px">`;
+  if (!ME) html += nameField();
   html += `<input id="pev" placeholder="예: 재실행 통과, 스모크 green" style="width:100%;margin-top:8px;background:var(--bg);border:1px solid var(--line);border-radius:9px;color:var(--tx);padding:12px;font-size:14.5px">
     <button class="ok" onclick="passConfirm(${version})">✓ done 처리</button>
     <button class="back" style="margin-top:8px;width:100%" onclick="closeSheet()">취소</button>`;
   openSheet(html);
 }
 async function passConfirm(version){
-  if (!ME && !saveMe($("#mein").value)) { toast("작업자 이름을 먼저 입력해주세요"); return; }
+  if (!ME && !saveMe($("#mein").value)) {
+    const el = $("#mein");
+    if (el) { el.style.borderColor = "var(--block)"; el.focus(); }
+    toast("위 작업자 이름을 먼저 입력한 뒤 눌러주세요");
+    return;
+  }
   const ev = ($("#pev").value.trim()) || "mobile pass";
   if (await api("/issues/"+SID+"/verify","POST",{verifier:who(), evidence:ev, expected_version:version}) !== undefined) { toast("\u2713 done"); closeSheet(); }
   load();

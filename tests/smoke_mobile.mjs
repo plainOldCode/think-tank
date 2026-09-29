@@ -16,7 +16,7 @@ const els = {};
 const bodyClasses = new Set();
 globalThis.document = {
   body: { classList: { add: c => bodyClasses.add(c), remove: c => bodyClasses.delete(c), contains: c => bodyClasses.has(c) } },
-  querySelector: s => els[s] ?? (els[s] = { innerHTML: "", textContent: "", value: "", focus() {}, classList: { add(){}, remove(){}, toggle(){}, contains: () => false } }),
+  querySelector: s => els[s] ?? (els[s] = { innerHTML: "", textContent: "", value: "", style: {}, focus() {}, classList: { add(){}, remove(){}, toggle(){}, contains: () => false } }),
 };
 globalThis.CSS = { escape: s => s };
 const lease = new Date(Date.now() + 36e5).toISOString().slice(0, 19) + "+0000";
@@ -90,11 +90,21 @@ if (!noMe) {
   await load(); await load(); await load();
   startMenu("A1");
   if (!els["#sheet"].innerHTML.includes("id=\"mein\"")) throw new Error("no-me: input missing");
-  els["#mein"] = els["#mein"] || {};
-  els["#mein"].value = "fresh@phone";
+  // 이름 없이도 agent 선택(step2)은 진행 가능 — dispatch author는 board
   await pickFromSheet("agent-1@host1");
+  if (!els["#sheet"].innerHTML.includes("id=\"dmsg\"")) throw new Error("no-me: 이름 없이 step2 진행돼야 함");
+  // 이름 없는 claim(내가 진행)은 차단
+  startMenu("A1");
+  if (!els["#sheet"].innerHTML.includes("datalist")) throw new Error("이름 히스토리 datalist 누락");
+  els["#mein"] = els["#mein"] || { value: "" };
+  els["#mein"].value = "";
+  await pickFromSheet("__me__");
+  if (!els["#toast"].textContent.includes("이름")) throw new Error("claim 가이드 toast 누락");
+  if (store["tt-m-me"]) throw new Error("빈 이름이 저장됨");
+  els["#mein"].value = "fresh@phone";
+  await pickFromSheet("__me__");
   if (store["tt-m-me"] !== "fresh@phone") throw new Error("no-me: 이름 미저장");
-  if (!els["#sheet"].innerHTML.includes("id=\"dmsg\"")) throw new Error("no-me: step2 sheet 없음");
+  showDispatch("A1", "agent-1@host1");
   els["#dmsg"] = els["#dmsg"] || { value: "" };
   els["#dmsg"].value = "진행해줘";
   await sendDispatch("A1", "agent-1@host1");
