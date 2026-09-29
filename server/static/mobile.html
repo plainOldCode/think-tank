@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>tt · mobile</title>
+<style>
+:root { --bg:#10131a; --card:#1a2029; --line:#2a3140; --tx:#d8dee9; --dim:#7d8698;
+        --todo:#6ea8fe; --prog:#c3a6ff; --rev:#f0c674; --block:#f47f7f; --done:#7fc98a; }
+* { box-sizing:border-box; margin:0; }
+body { background:var(--bg); color:var(--tx); font:15px/1.45 -apple-system,'Noto Sans KR',sans-serif; padding-bottom:70px; }
+header { position:sticky; top:0; z-index:5; background:var(--bg); border-bottom:1px solid var(--line);
+         padding:10px 12px; display:flex; align-items:center; gap:8px; }
+header b { font-size:16px; }
+header .me { margin-left:auto; color:var(--dim); font-size:12px; }
+nav { position:fixed; bottom:0; left:0; right:0; z-index:5; display:flex; background:var(--card);
+      border-top:1px solid var(--line); padding-bottom:env(safe-area-inset-bottom); }
+nav button { flex:1; background:none; border:0; color:var(--dim); font-size:12.5px; padding:9px 0 7px; cursor:pointer; }
+nav button.on { color:var(--tx); font-weight:600; }
+nav .n { display:block; font-size:16px; }
+main { padding:10px 10px 0; display:flex; flex-direction:column; gap:9px; }
+.card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:11px 12px; }
+.card .id { color:var(--dim); font-size:11.5px; letter-spacing:.02em; }
+.card h3 { font-size:14.5px; font-weight:600; margin:2px 0 6px; }
+.tag { font-size:11px; color:var(--dim); margin-right:6px; }
+.acts { display:flex; gap:8px; flex-wrap:wrap; margin-top:8px; }
+.acts button { border:0; border-radius:8px; padding:10px 14px; font-size:13.5px; font-weight:600; cursor:pointer; }
+.go { background:var(--todo); color:#0b0e13; } .ok { background:var(--done); color:#0b0e13; }
+.rev { background:var(--rev); color:#0b0e13; } .back { background:var(--card); border:1px solid var(--line); color:var(--tx); }
+.hb { background:#2a3140; color:var(--prog); }
+.det { display:none; margin-top:9px; border-top:1px dashed var(--line); padding-top:8px; font-size:13px; }
+.det.open { display:block; }
+.det .body { white-space:pre-wrap; color:var(--dim); max-height:200px; overflow:auto; }
+.cm { border-left:2px solid var(--line); margin:6px 0 0; padding:2px 0 2px 8px; font-size:12.5px; }
+.cm b { color:var(--dim); font-weight:600; }
+.addc { display:flex; gap:6px; margin-top:8px; }
+.addc input { flex:1; background:var(--bg); border:1px solid var(--line); border-radius:8px; color:var(--tx); padding:9px 10px; font-size:13px; }
+.addc button { background:var(--todo); border:0; border-radius:8px; padding:0 13px; font-weight:600; }
+.empty { text-align:center; color:var(--dim); padding:34px 0; }
+.toast { position:fixed; bottom:76px; left:50%; transform:translateX(-50%); background:#0b0e13cc;
+         border:1px solid var(--line); color:var(--tx); padding:9px 14px; border-radius:9px; font-size:13px;
+         opacity:0; transition:opacity .25s; pointer-events:none; max-width:88vw; }
+.toast.show { opacity:1; }
+</style>
+</head>
+<body class="tt-mobile">
+<header><b>tt</b><span class="tag" id="upd"></span><span class="me" id="me" onclick="setMe()"></span></header>
+<main id="list"></main>
+<nav id="tabs"></nav>
+<div class="toast" id="toast"></div>
+<script>
+const TABS = [["review","리뷰","rev"],["in_progress","내 작업","prog"],["todo","시작 대기","todo"],["blocked","막힘","block"],["done","완료","done"]];
+let LAST = [], tab = localStorage.getItem("tt-m-tab") || "review";
+let ME = localStorage.getItem("tt-m-me") || "skshim@tp-13";
+const $ = s => document.querySelector(s);
+const esc = s => String(s??"").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+function toast(m){ const t=$("#toast"); t.textContent=m; t.classList.add("show"); setTimeout(()=>t.classList.remove("show"),2600); }
+function setMe(){ const v=prompt("작업자 이름(claim/verify署名)", ME); if(v){ ME=v; localStorage.setItem("tt-m-me",v); $("#me").textContent=ME; } }
+async function j(path, opts){ const r = await fetch(path, opts); const d = await r.json().catch(()=>({}));
+  if(!r.ok) throw new Error(d.detail || r.status); return d; }
+async function api(path, method, body){ try{ return await j(path,{method, headers:{"content-type":"application/json"}, body:JSON.stringify(body)}); }
+  catch(e){ toast("⚠ "+e.message); } }
+function act(fn){ return e => { e.stopPropagation(); fn(); }; }
+
+async function load(){
+  try { LAST = await j("/issues?archived=no"); } catch(e){ toast("⚠ "+e.message); return; }
+  $("#me").textContent = ME;
+  $("#upd").textContent = new Date().toTimeString().slice(0,5);
+  renderTabs(); render();
+}
+function renderTabs(){
+  $("#tabs").innerHTML = TABS.map(([st,label]) => {
+    const n = LAST.filter(i => i.state === st).length;
+    return `<button class="${tab===st?"on":""}" onclick="pick('${st}')"><span class="n">${n}</span>${label}</button>`;
+  }).join("");
+}
+function pick(t){ tab=t; localStorage.setItem("tt-m-tab",t); renderTabs(); render(); }
+function render(){
+  const rows = LAST.filter(i => i.state === tab)
+    .sort((a,b) => (b.updated_at||"").localeCompare(a.updated_at||""));
+  $("#list").innerHTML = rows.length ? rows.map(card).join("") : `<div class="empty">${TABS.find(t=>t[0]===tab)[1]} 없음</div>`;
+}
+function card(i){
+  const short = i.id.slice(-4);
+  let acts = "";
+  if (i.state === "review") acts =
+    `<button class="ok" onclick="pass('${esc(i.id)}',${i.version})">완료 처리</button>
+     <button class="back" onclick="send('${esc(i.id)}','todo')">↩ 되돌림</button>`;
+  if (i.state === "todo") acts =
+    (i.assignee && i.assignee !== ME ? `<span class="tag">@${esc(i.assignee)}</span>`
+     : `<button class="go" onclick="start('${esc(i.id)}')">▶ 시작(claim)</button>`);
+  if (i.state === "in_progress") {
+    if (i.lease_by === ME || i.assignee === ME) acts =
+      `<button class="rev" onclick="send('${esc(i.id)}','review')">→ 리뷰 요청</button>
+       <button class="hb" onclick="beat('${esc(i.id)}')">♥ 연장</button>`;
+    else acts = `<span class="tag">@${esc(i.assignee||"?")} 진행중</span>`;
+  }
+  if (i.state === "blocked") acts = `<span class="tag" style="color:var(--block)">wait: ${esc(i.waiting_actor||"?" )}</span>
+    <button class="back" onclick="send('${esc(i.id)}','todo')">↩ 되돌림</button>`;
+  if (i.state === "done") acts = i.verification_status ? `<span class="tag">${esc(i.verification_status)}</span>` : "";
+  return `<div class="card" id="c-${esc(i.id)}">
+    <span class="id">${esc(i.id)}</span> ${i.priority?`<span class="tag">p${i.priority}</span>`:""}${i.labels.map(l=>`<span class="tag">#${esc(l)}</span>`).join("")}
+    <h3>${esc(i.title)}</h3>
+    ${i.assignee?`<span class="tag">@${esc(i.assignee)}</span>`:""}${i.lease_expires?`<span class="tag">lease ${esc(i.lease_expires.slice(5,16))}</span>`:""}
+    <div class="acts">${acts}<button class="back" onclick="toggle('${esc(i.id)}')">자세히</button></div>
+    <div class="det" id="d-${esc(i.id)}"><div class="body">불러오는 중…</div>
+      <div id="cs-${esc(i.id)}"></div>
+      <div class="addc"><input id="ci-${esc(i.id)}" placeholder="댓글 한 줄" enterkeyhint="send">
+        <button onclick="comment('${esc(i.id)}')">↑</button></div></div>
+  </div>`;
+}
+async function toggle(id){
+  const d = $("#d-"+CSS.escape(id));
+  d.classList.toggle("open");
+  if (!d.classList.contains("open")) return;
+  try {
+    const i = await j("/issues/"+id);
+    d.querySelector(".body").textContent = i.body || "(본문 없음)";
+    $("#cs-"+CSS.escape(id)).innerHTML = (i.comments||[]).slice(-4).map(c =>
+      `<div class="cm"><b>${esc(c.author)} ${esc((c.ts||"").slice(5,16))}</b><br>${esc(c.body).slice(0,400)}</div>`).join("");
+  } catch(e){ toast("⚠ "+e.message); }
+}
+async function comment(id){
+  const el = $("#ci-"+CSS.escape(id)); const b = el.value.trim(); if(!b) return;
+  if (await api("/issues/"+id+"/comments","POST",{author:ME, body:b}) !== undefined){ el.value=""; toggleKeep(id); toast("댓글 등록"); }
+}
+async function toggleKeep(id){ const d=$("#d-"+CSS.escape(id)); d.classList.remove("open"); toggle(id); }
+async function start(id){
+  await api("/issues/"+id,"PATCH",{assignee:ME});
+  if (await api("/issues/"+id+"/claim","POST",{agent:ME})) toast("▶ 시작 — lease 3h");
+  load();
+}
+async function send(id, state){
+  if (await api("/issues/"+id,"PATCH",{state})) load();
+}
+async function beat(id){
+  if (await api("/issues/"+id+"/lease","POST",{agent:ME})) toast("♥ lease 연장");
+}
+async function pass(id, version){
+  const ev = prompt("완료 통과 근거 한 줄 (서버 저장·감사용)");
+  if (ev === null) return;
+  if (await api("/issues/"+id+"/verify","POST",{verifier:ME, evidence:ev||"mobile pass", expected_version:version}) !== undefined) toast("✓ done");
+  load();
+}
+load(); setInterval(load, 6000);
+</script>
+</body>
+</html>

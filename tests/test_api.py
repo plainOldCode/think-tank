@@ -612,3 +612,10 @@ def test_notify_hook_flag_toggle(client):
     a = client.post("/agents", json={"name": "n1", "base_url": "http://x/h", "notify_hook": True}).json()
     assert a["notify_hook"] == 1
     assert client.patch("/agents/n1", json={"notify_hook": False}).json()["notify_hook"] == 0
+
+
+def test_mobile_route(client):
+    r = client.get("/m")
+    assert r.status_code == 200
+    assert "text/html" in r.headers["content-type"]
+    assert "tt-mobile" in r.text
