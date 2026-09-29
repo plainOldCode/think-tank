@@ -33,12 +33,11 @@ def _budget_blocked(i):
 
 
 def ci_passed(pr):
-    """CI green(순수): checks 1+ 전부 SUCCESS + head_sha 워크플로 run completed/success."""
+    """CI green(순수): check-runs 1+ 전부 SUCCESS.
+    (9dbba0c 실사례 — gh run list의 headSha 반영이 체크 완료보다 늦어 사냥 실패;
+    gh pr checks는 HEAD check-runs 기준이라 이 병목이 없다 — run list는 병목이며 중복.)"""
     checks = pr.get("checks") or []
-    if not checks or any(c.get("state") != "SUCCESS" for c in checks):
-        return False
-    runs = [r for r in (pr.get("runs") or []) if r.get("headSha") == pr.get("head_sha")]
-    return any(r.get("status") == "completed" and r.get("conclusion") == "success" for r in runs)
+    return bool(checks) and all(c.get("state") == "SUCCESS" for c in checks)
 
 
 CARD_IN_BRANCH = re.compile(r"tt/(M[A-Z0-9]{6,9}-[A-Z0-9]{4})")
@@ -164,8 +163,6 @@ def collect_prs():
     """open PR + checks + 최근 run — PR 단위 실패는 체크 없음으로 취급(개 PR은 계속 본업)."""
     out = []
     try:
-        runs = gh_json("run", "list", "--repo", REPO, "--limit", "30",
-                       "--json", "headSha,status,conclusion") or []
         prs = gh_json("pr", "list", "--repo", REPO, "--state", "open",
                       "--json", "number,headRefName,headRefOid") or []
     except Exception:
@@ -176,7 +173,7 @@ def collect_prs():
         except Exception:
             checks = []
         out.append({"number": p["number"], "branch": p.get("headRefName", ""),
-                    "head_sha": p.get("headRefOid", ""), "checks": checks, "runs": runs})
+                    "head_sha": p.get("headRefOid", ""), "checks": checks})
     return out
 
 

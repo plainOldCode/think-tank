@@ -121,18 +121,16 @@ def test_done_done_without_parent_falls_to_pool():
 
 
 def test_ci_passed_rules():
-    ok = {"number": 3, "head_sha": "abc", "checks": [{"name": "ci", "state": "SUCCESS"}],
-          "runs": [{"headSha": "abc", "status": "completed", "conclusion": "success"}]}
+    ok = {"number": 3, "head_sha": "abc", "checks": [{"name": "ci", "state": "SUCCESS"}]}
     assert dispatchd.ci_passed(ok) is True
-    assert dispatchd.ci_passed(dict(ok, runs=[{"headSha": "abc", "status": "completed", "conclusion": "failure"}])) is False
     assert dispatchd.ci_passed(dict(ok, checks=[])) is False
-    assert dispatchd.ci_passed(dict(ok, runs=[{"headSha": "abc", "status": "in_progress", "conclusion": None}])) is False
-    assert dispatchd.ci_passed(dict(ok, runs=[{"headSha": "zzz", "status": "completed", "conclusion": "success"}])) is False
+    assert dispatchd.ci_passed(dict(ok, checks=[{"name": "ci", "state": "FAILURE"}])) is False
+    assert dispatchd.ci_passed(dict(ok, checks=[{"name": "ci", "state": "SUCCESS"},
+                                                {"name": "smoke", "state": "PENDING"}])) is False
 
 
 GREEN_PR = {"number": 3, "head_sha": "abc", "branch": "tt/M3PXXXXX-9ABC-ci-probe",
-            "checks": [{"name": "ci", "state": "SUCCESS"}],
-            "runs": [{"headSha": "abc", "status": "completed", "conclusion": "success"}]}
+            "checks": [{"name": "ci", "state": "SUCCESS"}]}
 
 
 def test_decide_merges_green_pr_with_card():
@@ -149,7 +147,7 @@ def test_decide_no_merge_without_ci():
     iss = issue("M3PXXXXX-9ABC", state="in_progress", assignee="codex",
                 lease_expires="2026-09-29T23:00:00+0900", execution_attempt=1)
     iss["work_contract"] = {"version": "tt-tdd-v2:x"}
-    cold = dict(GREEN_PR, checks=[], runs=[])
+    cold = dict(GREEN_PR, checks=[])
     acts = decide(snap([iss], prs=[cold]))
     assert not [a for a in acts if a["action"] == "merge"]
 
