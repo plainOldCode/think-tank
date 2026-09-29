@@ -161,19 +161,23 @@ def gh_exec(*args):
 
 
 def collect_prs():
-    """open PR + checks + 최근 run — gh 부재/미인증 시 [] (probe 라운드 무해화)."""
+    """open PR + checks + 최근 run — PR 단위 실패는 체크 없음으로 취급(개 PR은 계속 본업)."""
+    out = []
     try:
         runs = gh_json("run", "list", "--repo", REPO, "--limit", "30",
                        "--json", "headSha,status,conclusion") or []
-        out = []
-        for p in gh_json("pr", "list", "--repo", REPO, "--state", "open",
-                         "--json", "number,headRefName,headRefOid") or []:
-            checks = gh_json("pr", "checks", p["number"], "--repo", REPO, "--json", "name,state") or []
-            out.append({"number": p["number"], "branch": p.get("headRefName", ""),
-                        "head_sha": p.get("headRefOid", ""), "checks": checks, "runs": runs})
-        return out
+        prs = gh_json("pr", "list", "--repo", REPO, "--state", "open",
+                      "--json", "number,headRefName,headRefOid") or []
     except Exception:
         return []
+    for p in prs:
+        try:
+            checks = gh_json("pr", "checks", p["number"], "--repo", REPO, "--json", "name,state") or []
+        except Exception:
+            checks = []
+        out.append({"number": p["number"], "branch": p.get("headRefName", ""),
+                    "head_sha": p.get("headRefOid", ""), "checks": checks, "runs": runs})
+    return out
 
 
 def execute(url, act):
