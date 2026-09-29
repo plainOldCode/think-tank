@@ -76,6 +76,7 @@ CLI: `tt contract`, `tt done ID --report FILE`, `tt verify ID --report FILE`. �
 - 2026-09-23: PATCH `assignee:""` 시 lease_by/lease_expires 동시 소거 (unassign = lease 해제 세트). CLI: `unassign`, `labels set`, `edit --assignee/--labels/--state`, `--json`, `label add|rm`, `search`, `--hours`, `list --archived`, claim도 lease 2한도 적용
 - 2026-09-23: lease 시스템(`lease_by/lease_expires/heartbeat_at`, TTL 1h, require_label, steal), `GET /install.sh`(자기 CLI를 요청 base_url로 구워 서빙), `archived` 컬럼+필터, `GET /issues?q=`
 
+- 2026-09-29: **계약 v2 (3단계 필수)** — `TT_CONTRACT_VERSION=2` 전환 시 신규 claim/pull은 `tt-tdd-v2` 계약 고정: 보고 JSON이 `design`(criteria+verification+evidence)/`implementation`(summary+commands)/`verification`(commands+evidence) 3블록 전부 필수, method `tdd|planned`(alternative 폐지). 스키마는 단일 모델 버전 게이트 — v1 보고는 v1 고정 카드에서만 통과, 혼용 422. 유효 보고 done은 self-completion으로 done 유지(verification_status=reported), 보고 없는 done은 review 강등(기존과 동일).
 - 2026-09-26: **버전 고정 작업 계약과 완료 보고** — `/work-contract`, claim/pull/dispatch 계약 전달, runner 신규·재개 프롬프트 주입, `TT_REQUIRE_REPORT=1` opt-in 보고 필수 모드. `completion_report`의 TDD/대체 검증·성공 여부·회차·버전 검사, `verification_status`로 보고/승인/과거 기록 구분. 오류 보정: 실패/키워드만 있는 증거의 완료 판정, 재오픈/범위 변경/새 수령의 오래된 증거 재사용, 생성 시 상태 우회. CLI done 중복 PATCH 제거, 코멘트 실패 시 중단, review도 `--json` 준수. 라우트와 기존 승인 예외는 유지.
 
 - 2026-09-26: **업그레이드 중 기존 작업 호환성** — 운영 SQLite 복제 검증에서 빈 work_contract에 현재 서버의 보고 필수 정책이 소급 적용되는 문제를 재현·수정. 기존 진행/검토 회차는 호환 마감 가능하며 새 claim/pull/범위 변경부터 고정 계약 적용. 회귀 116건과 복제본 HTTP 시나리오 30개 통과; 상세는 [배포 전 검증 기록](predeployment-sqlite-validation-20260926.md).

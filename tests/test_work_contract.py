@@ -333,3 +333,77 @@ def test_upgrade_keeps_unpinned_work_compatible_until_next_claim(tmp_path, monke
     assert strict.patch(f"/issues/{iid}", json={"state": "done"}).json()["state"] == "review"
     result = strict.post(f"/issues/{iid}/verify", json={"verifier": "worker", "completion_report": report(claimed)})
     assert result.status_code == 200 and result.json()["state"] == "done"
+
+
+def v2_report(attempt):
+    return {
+        "contract_version": "IGNORED",
+        "attempt": attempt,
+        "method": "planned",
+        "design": {"criteria": "3단계 보고서가 검증된다", "verification": "test_work_contract의 이 테스트(수정 전 실패)"},
+        "implementation": {"summary": "v2 계약 스위치", "commands": "edit work_contract.py + api.md"},
+        "verification": {"commands": "pytest tests/test_work_contract.py -q", "evidence": "passed"},
+        "result": "passed",
+        "limitations": "",
+    }
+
+
+def test_env_switch_serves_v2_contract(tmp_path, monkeypatch):
+    monkeypatch.setenv("TT_CONTRACT_VERSION", "2")
+    c = TestClient(create_app(str(tmp_path / "v2.db")))
+    contract = c.get("/work-contract").json()
+    assert contract["version"].startswith("tt-tdd-v2:")
+    assert "3단계" in contract["instructions"]
+    issue = c.post("/issues", json={"title": "v2 flow"}).json()
+    claimed = c.post(f"/issues/{issue['id']}/claim", json={"agent": "worker"}).json()
+    assert claimed["work_contract"]["version"].startswith("tt-tdd-v2:")
+    report = v2_report(claimed["execution_attempt"])
+    report["contract_version"] = claimed["work_contract"]["version"]
+    done = c.patch(f"/issues/{issue['id']}", json={
+        "state": "done", "version": issue["version"] + 1, "completion_report": report})
+    assert done.status_code == 200, done.text
+    assert done.json()["state"] == "done" and done.json()["verification_status"] == "reported"
+    # 보고 없이 done 시도(재개 후)는 review 강등 — 3단계 없이는 자기완결 인정 없음
+    c.patch(f"/issues/{issue['id']}", json={"state": "todo", "version": done.json()["version"]})
+    again = c.post(f"/issues/{issue['id']}/claim", json={"agent": "worker"}).json()
+    reopened = c.patch(f"/issues/{issue['id']}", json={"state": "in_progress", "version": again["version"]})
+    demoted = c.patch(f"/issues/{issue['id']}", json={"state": "done", "version": reopened.json()["version"]})
+    assert demoted.status_code == 200 and demoted.json()["state"] == "review", demoted.text
+
+
+def test_v1_report_rejected_on_v2_pinned_card(tmp_path, monkeypatch):
+    monkeypatch.setenv("TT_CONTRACT_VERSION", "2")
+    c = TestClient(create_app(str(tmp_path / "v2b.db")))
+    issue = c.post("/issues", json={"title": "mixed"}).json()
+    claimed = c.post(f"/issues/{issue['id']}/claim", json={"agent": "worker"}).json()
+    legacy = {"contract_version": claimed["work_contract"]["version"], "attempt": claimed["execution_attempt"],
+              "method": "tdd", "red_command": "pytest", "red_evidence": "1 failed",
+              "command": "pytest", "result": "passed", "evidence": "1 passed"}
+    response = c.patch(f"/issues/{issue['id']}", json={
+        "state": "done", "version": issue["version"] + 1, "completion_report": legacy})
+    assert response.status_code == 422
+
+
+def test_mixed_v1_and_v2_claims_one_db(tmp_path, monkeypatch):
+    db = str(tmp_path / "mixed.db")
+    monkeypatch.setenv("TT_CONTRACT_VERSION", "1")
+    c = TestClient(create_app(db))
+    old_issue = c.post("/issues", json={"title": "pinned v1"}).json()
+    old_claim = c.post(f"/issues/{old_issue['id']}/claim", json={"agent": "w1"}).json()
+    assert old_claim["work_contract"]["version"].startswith("tt-tdd-v1:")
+    monkeypatch.setenv("TT_CONTRACT_VERSION", "2")
+    c2 = TestClient(create_app(db))
+    new_issue = c2.post("/issues", json={"title": "pinned v2"}).json()
+    new_claim = c2.post(f"/issues/{new_issue['id']}/claim", json={"agent": "w2"}).json()
+    assert new_claim["work_contract"]["version"].startswith("tt-tdd-v2:")
+    legacy = {"contract_version": old_claim["work_contract"]["version"], "attempt": old_claim["execution_attempt"],
+              "method": "tdd", "red_command": "pytest", "red_evidence": "1 failed",
+              "command": "pytest", "result": "passed", "evidence": "1 passed"}
+    r1 = c.patch(f"/issues/{old_issue['id']}", json={
+        "state": "done", "version": old_issue["version"] + 1, "completion_report": legacy})
+    assert r1.status_code == 200, r1.text
+    report = v2_report(new_claim["execution_attempt"])
+    report["contract_version"] = new_claim["work_contract"]["version"]
+    r2 = c2.patch(f"/issues/{new_issue['id']}", json={
+        "state": "done", "version": new_issue["version"] + 1, "completion_report": report})
+    assert r2.status_code == 200, r2.text
