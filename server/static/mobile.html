@@ -112,7 +112,7 @@ function render(all){
     .sort((a,b) => (b.updated_at||"").localeCompare(a.updated_at||""));
   let html = "";
   if (tab === "in_progress") {
-    const leased = rows.filter(r => (leaseLeft(r) ?? -1) > 0);
+    const leased = rows.filter(r => (leaseLeft(r) ?? -1) > 0 || !!r.lease_by);
     const bar = `<div class="subtabs">
       <button class="${sub==="lease"?"on":""}" onclick="event.stopPropagation();setSub('lease')">청구중 ${leased.length}</button>
       <button class="${sub==="all"?"on":""}" onclick="event.stopPropagation();setSub('all')">전체 ${rows.length}</button></div>`;
