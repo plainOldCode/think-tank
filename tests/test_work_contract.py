@@ -348,6 +348,29 @@ def v2_report(attempt):
     }
 
 
+@pytest.mark.parametrize("contract_version", ["1", "2"])
+def test_contract_assigns_pr_creation_and_green_merge_to_separate_actors(
+    tmp_path, monkeypatch, contract_version
+):
+    monkeypatch.setenv("TT_CONTRACT_VERSION", contract_version)
+    client = TestClient(create_app(str(tmp_path / "pr-merge-contract.db")))
+    contract = client.get("/work-contract").json()
+    instructions = contract["instructions"]
+
+    assert "tt/<카드ID>-<slug>" in instructions
+    assert "GitHub PR 개설까지 수행한다" in instructions
+    assert "CI green" in instructions
+    assert "카드 연결·완료 보고" in instructions
+    assert "probe가 해당 PR을 병합한다" in instructions
+    assert "main 직접 커밋·직push는 금지" in instructions
+    assert "예외는 dispatch message에 명시된 경우만 유효" in instructions
+    assert "병합 권한과 시점은 사용자" not in instructions
+
+    issue = client.post("/issues", json={"title": "PR responsibility"}).json()
+    claimed = client.post(f"/issues/{issue['id']}/claim", json={"agent": "worker"}).json()
+    assert claimed["work_contract"] == contract
+
+
 def test_env_switch_serves_v2_contract(tmp_path, monkeypatch):
     monkeypatch.setenv("TT_CONTRACT_VERSION", "2")
     c = TestClient(create_app(str(tmp_path / "v2.db")))

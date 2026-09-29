@@ -82,3 +82,4 @@ CLI: `tt contract`, `tt done ID --report FILE`, `tt verify ID --report FILE`. �
 - 2026-09-26: **버전 고정 작업 계약과 완료 보고** — `/work-contract`, claim/pull/dispatch 계약 전달, runner 신규·재개 프롬프트 주입, `TT_REQUIRE_REPORT=1` opt-in 보고 필수 모드. `completion_report`의 TDD/대체 검증·성공 여부·회차·버전 검사, `verification_status`로 보고/승인/과거 기록 구분. 오류 보정: 실패/키워드만 있는 증거의 완료 판정, 재오픈/범위 변경/새 수령의 오래된 증거 재사용, 생성 시 상태 우회. CLI done 중복 PATCH 제거, 코멘트 실패 시 중단, review도 `--json` 준수. 라우트와 기존 승인 예외는 유지.
 
 - 2026-09-26: **업그레이드 중 기존 작업 호환성** — 운영 SQLite 복제 검증에서 빈 work_contract에 현재 서버의 보고 필수 정책이 소급 적용되는 문제를 재현·수정. 기존 진행/검토 회차는 호환 마감 가능하며 새 claim/pull/범위 변경부터 고정 계약 적용. 회귀 116건과 복제본 HTTP 시나리오 30개 통과; 상세는 [배포 전 검증 기록](predeployment-sqlite-validation-20260926.md).
+- 2026-09-29: **3-1 병합 책임 개정 (M3PPRJFY-V6EA)** — 실행자는 카드 브랜치의 커밋·검증과 GitHub PR 개설까지 수행한다. CI green 및 카드 연결·완료 보고 검증 후 probe가 병합한다. v1/v2 계약 문구를 함께 바꾸며, 이미 수령한 회차의 고정 계약은 유지한다.
