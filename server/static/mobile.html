@@ -43,6 +43,16 @@ main { padding:10px 10px 0; display:flex; flex-direction:column; gap:9px; }
 .subtabs button { background:var(--card); border:1px solid var(--line); color:var(--dim); border-radius:20px;
   padding:7px 14px; font-size:13px; cursor:pointer; }
 .subtabs button.on { color:#0b0e13; background:var(--prog); border-color:var(--prog); font-weight:600; }
+#scrim { position:fixed; inset:0; background:#0008; z-index:8; display:none; }
+#scrim.open { display:block; }
+.sheet { position:fixed; left:0; right:0; bottom:0; z-index:9; background:var(--card);
+  border-top:1px solid var(--line); border-radius:14px 14px 0 0; padding:14px 14px calc(14px + env(safe-area-inset-bottom));
+  transform:translateY(110%); transition:transform .22s; }
+.sheet.open { transform:none; }
+.sheet h4 { font-size:13px; color:var(--dim); font-weight:500; }
+.sheet button { display:block; width:100%; text-align:left; background:var(--bg); border:1px solid var(--line);
+  color:var(--tx); border-radius:9px; padding:13px 14px; margin-top:8px; font-size:14.5px; cursor:pointer; }
+.sheet button small { color:var(--dim); font-size:11.5px; display:block; margin-top:2px; }
 .toast { position:fixed; bottom:76px; left:50%; transform:translateX(-50%); background:#0b0e13cc;
          border:1px solid var(--line); color:var(--tx); padding:9px 14px; border-radius:9px; font-size:13px;
          opacity:0; transition:opacity .25s; pointer-events:none; max-width:88vw; }
@@ -54,11 +64,14 @@ main { padding:10px 10px 0; display:flex; flex-direction:column; gap:9px; }
 <main id="list"></main>
 <nav id="tabs"></nav>
 <div class="toast" id="toast"></div>
+<div id="scrim" onclick="closeSheet()"></div>
+<div class="sheet" id="sheet"></div>
 <script>
 const TABS = [["review","리뷰","rev"],["in_progress","진행중","prog"],["todo","시작 대기","todo"],["blocked","막힘","block"],["done","완료","done"]];
 let LAST = "", tab = localStorage.getItem("tt-m-tab") || "review";
 let OPEN = new Set(), DRAFT = {};
 let sub = localStorage.getItem("tt-m-sub") || "lease";
+let AGENTS = [], SID = "";
 function tsDate(s){ const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})([+-]\d{2})(\d{2})$/.exec(s||""); if(!m) return null;
   const off = (+m[7])*60 + (m[7].startsWith("-") ? -(+m[8]) : +m[8]);
   return new Date(Date.UTC(+m[1], +m[2]-1, +m[3], +m[4], +m[5], +m[6]) - off*60000); }
@@ -81,7 +94,7 @@ function act(fn){ return e => { e.stopPropagation(); fn(); }; }
 
 async function load(){
   let rows;
-  try { rows = await j("/issues?archived=no"); } catch(e){ toast("⚠ "+e.message); return; }
+  try { [rows, AGENTS] = await Promise.all([j("/issues?archived=no"), j("/agents").catch(() => [])]); } catch(e){ toast("⚠ "+e.message); return; }
   $("#me").textContent = ME;
   $("#upd").textContent = new Date().toTimeString().slice(0,5);
   renderTabs(rows);
@@ -174,6 +187,24 @@ async function start(id){
   await api("/issues/"+id,"PATCH",{assignee:me});
   if (await api("/issues/"+id+"/claim","POST",{agent:me})) toast("▶ 시작 — lease 3h");
   load();
+}
+function startMenu(id){
+  if (!who()) return;
+  SID = id;
+  let html = `<h4>이 카드를 누가 진행할까요?</h4><button onclick="pickAgent('__me__')">내가 진행 (claim + lease 3h)</button>`;
+  for (const a of AGENTS.filter(a => a.enabled))
+    html += `<button onclick="pickAgent('${esc(a.name)}')">${esc(a.name)}<small>${a.last_ok ? "✓ 마지막 수신 ok" : "delivery 실패 기록 확인"}</small></button>`;
+  $("#sheet").innerHTML = html;
+  $("#sheet").classList.add("open"); $("#scrim").classList.add("open");
+}
+function closeSheet(){ $("#sheet").classList.remove("open"); $("#scrim").classList.remove("open"); }
+async function pickAgent(aid){
+  const id = SID; closeSheet();
+  if (aid === "__me__") return start(id);
+  const me = who(); if(!me) return;
+  const msg = prompt(aid+" \u2192 내릴 지시 한 줄 (dispatch · 상태는 상대가 claim 시에만 이동)", "이 카드를 진행해주세요");
+  if (msg === null) return;
+  if (await api("/issues/"+id+"/dispatch","POST",{agent:aid, message:msg, author:me})) toast("➤ "+aid+" dispatch — 회신은 댓글");
 }
 async function send(id, state){
   if (await api("/issues/"+id,"PATCH",{state})) load();

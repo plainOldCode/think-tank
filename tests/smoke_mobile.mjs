@@ -12,7 +12,12 @@ globalThis.CSS = { escape: s => s };
 const two = [{ id: "A1", state: "todo", title: "t", labels: [] }, { id: "B2", state: "review", title: "r", labels: [], version: 1 },
   { id: "M3", state: "in_progress", title: "mine", labels: [], assignee: "me@x" }, { id: "O4", state: "in_progress", title: "other", labels: [], assignee: "someone" }];
 let n = 0;
-globalThis.fetch = async () => ({ ok: true, json: async () => structuredClone(n++ < 2 ? two : [{ id: "M3", state: "in_progress", title: "mine", labels: [], assignee: "me@x", lease_by: "me@x", lease_expires: new Date(Date.now()+36e5).toISOString().slice(0,19)+"+0000" }, { id: "E5", state: "in_progress", title: "expired", labels: [], assignee: "other@gx", lease_by: "other@gx", lease_expires: "2026-01-01T00:00:00+0900" }, { id: "O4", state: "in_progress", title: "nolease", labels: [], assignee: "someone" }]) });
+const calls = [];
+globalThis.fetch = async (u, o) => {
+  calls.push([u, o?.body]);
+  if (u.includes("/agents")) return { ok: true, json: async () => [{ name: "agent-1@host1", enabled: 1, last_ok: 1 }] };
+  return { ok: true, json: async () => structuredClone(n++ < 2 ? two : [{ id: "M3", state: "in_progress", title: "mine", labels: [], assignee: "me@x", lease_by: "me@x", lease_expires: new Date(Date.now()+36e5).toISOString().slice(0,19)+"+0000" }, { id: "E5", state: "in_progress", title: "expired", labels: [], assignee: "other@gx", lease_by: "other@gx", lease_expires: "2026-01-01T00:00:00+0900" }, { id: "O4", state: "in_progress", title: "nolease", labels: [], assignee: "someone" }]) };
+};
 (0, eval)(js);
 const { load, pick } = globalThis;
 await load();
@@ -36,4 +41,12 @@ if (list.includes("O4")) throw new Error("lease 없는 카드는 전체에만");
 setSub("all");
 if (!els["#list"].innerHTML.includes("O4")) throw new Error("all에서 O4 누락");
 setSub("lease");
+startMenu("A1");
+const sheet = els["#sheet"].innerHTML;
+if (!sheet.includes("agent-1@host1") || !sheet.includes("내가 진행")) throw new Error("start menu missing agents");
+globalThis.prompt = () => "이 카드를 진행해주세요";
+await pickAgent("agent-1@host1");
+const d = calls.find(([u]) => u.includes("/dispatch"));
+if (!d) throw new Error("dispatch not called");
+if (!d[1].includes('"agent":"agent-1@host1"') || !d[1].includes("진행해주세요")) throw new Error("dispatch payload wrong: " + d[1]);
 console.log("smoke ok");
