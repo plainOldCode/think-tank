@@ -184,6 +184,8 @@ def test_install_script(client):
     body = r.text
     assert body.startswith("#!/bin/sh")
     assert "http://testserver" in body and "127.0.0.1:7800" not in body
+    import re
+    assert not re.search(r"http://100\.[0-9.]+", body), "실 tailnet IP가 소스에 하드코딩됨 — serve-time 주입계약 위반"
     assert "chmod +x" in body and "TT_EOF" in body
 
 
