@@ -38,7 +38,7 @@ globalThis.fetch = async (u, o) => {
   return { ok: true, json: async () => structuredClone(n++ < 2 ? two : three) };
 };
 (0, eval)(js);
-const { load, pick, pickAgent, startMenu, pickFromSheet, setSub } = globalThis;
+const { load, pick, startMenu, pickFromSheet, setSub, sendDispatch, pass, passConfirm } = globalThis;
 
 await load();
 if (!noMe) {
@@ -65,19 +65,28 @@ if (!noMe) {
   if (!sheet.includes("onclick=\"pickFromSheet('agent-1@host1')\"")) throw new Error("agent 버튼 배선 누락");
   if (!bodyClasses.has("sheet-open")) throw new Error("배경 스크롤 잠금 누락");
   if (!sheet.includes("id=\"mein\"") && !store["tt-m-me"]) throw new Error("mein 필드 있어야 함(ME 저장돼 있으면 생략 정상)");
-  globalThis.prompt = () => "이 카드를 진행해주세요";
-  await pickAgent("agent-1@host1");
+  await pickFromSheet("agent-1@host1");
+  if (!els["#sheet"].innerHTML.includes("id=\"dmsg\"")) throw new Error("step2 dispatch sheet 없음");
+  els["#dmsg"] = els["#dmsg"] || { value: "" };
+  els["#dmsg"].value = "이 카드를 진행해주세요";
+  await sendDispatch("A1", "agent-1@host1");
   if (bodyClasses.has("sheet-open")) throw new Error("closeSheet 잠금 해제 누락");
   const d = calls.find(([u]) => u.includes("/dispatch"));
   if (!d) throw new Error("dispatch not called");
   if (!d[1].includes('"agent":"agent-1@host1"') || !d[1].includes("me@x")) throw new Error("dispatch payload wrong: " + d[1]);
+  pass("B2", 1);
+  if (!els["#sheet"].innerHTML.includes("id=\"pev\"")) throw new Error("pass sheet 없음");
+  els["#pev"] = els["#pev"] || { value: "" };
+  els["#pev"].value = "스모크 통과 확인";
+  await passConfirm(1);
+  const v = calls.find(([u]) => u.includes("/verify"));
+  if (!v || !v[1].includes("me@x") || !v[1].includes("expected_version")) throw new Error("verify payload wrong: " + (v && v[1]));
   const r = spawnSync(process.execPath, [fileURLToPath(import.meta.url)], {
     env: { ...process.env, SMOKE_NO_ME: "1" }, encoding: "utf8",
   });
   if (r.status !== 0) throw new Error("no-me run failed: " + r.stderr.slice(0, 300));
   console.log("smoke ok (본문 + no-me 서브)");
 } else {
-  globalThis.prompt = () => "이 카드를 진행해주세요";
   await load(); await load(); await load();
   startMenu("A1");
   if (!els["#sheet"].innerHTML.includes("id=\"mein\"")) throw new Error("no-me: input missing");
@@ -85,7 +94,11 @@ if (!noMe) {
   els["#mein"].value = "fresh@phone";
   await pickFromSheet("agent-1@host1");
   if (store["tt-m-me"] !== "fresh@phone") throw new Error("no-me: 이름 미저장");
-  const last = calls[calls.length - 1];
-  if (!last[0].includes("/dispatch") || !last[1].includes("fresh@phone")) throw new Error("no-me: author 오류 " + last[1]);
+  if (!els["#sheet"].innerHTML.includes("id=\"dmsg\"")) throw new Error("no-me: step2 sheet 없음");
+  els["#dmsg"] = els["#dmsg"] || { value: "" };
+  els["#dmsg"].value = "진행해줘";
+  await sendDispatch("A1", "agent-1@host1");
+  const last = calls.find(([u]) => u.includes("/dispatch"));
+  if (!last || !last[1].includes("fresh@phone")) throw new Error("no-me: author 오류 " + (last && last[1]));
   console.log("no-me ok");
 }

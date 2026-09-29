@@ -206,19 +206,28 @@ function startMenu(id){
   document.body.classList.add("sheet-open");
   if (!ME) $("#mein").focus();
 }
+function openSheet(html){
+  $("#sheet").innerHTML = html;
+  $("#sheet").classList.add("open"); $("#scrim").classList.add("open");
+  document.body.classList.add("sheet-open");
+}
 async function pickFromSheet(aid){
+  const id = SID;
   if (!ME && !saveMe($("#mein").value)) { toast("작업자 이름을 먼저 입력해주세요"); return; }
-  await pickAgent(aid);
+  if (aid === "__me__") { closeSheet(); return start(id); }
+  showDispatch(id, aid);
+}
+function showDispatch(id, aid){
+  openSheet(`<h4>${esc(aid)} 에게 지시 (dispatch · 상태는 상대가 claim 시에만 이동)</h4>
+    <textarea id="dmsg" rows="3" style="width:100%;margin-top:8px;background:var(--bg);border:1px solid var(--line);border-radius:9px;color:var(--tx);padding:12px;font-size:14.5px">이 카드를 진행해주세요</textarea>
+    <button class="go" onclick="sendDispatch('${esc(id)}','${esc(aid)}')">➤ dispatch 발송</button>
+    <button class="back" style="margin-top:8px;width:100%" onclick="startMenu('${esc(id)}')">← 뒤로</button>`);
+}
+async function sendDispatch(id, aid){
+  const msg = ($("#dmsg").value.trim()) || "이 카드를 진행해주세요";
+  if (await api("/issues/"+id+"/dispatch","POST",{agent:aid, message:msg, author:who()})) { toast("➤ "+aid+" dispatch — 회신은 댓글"); closeSheet(); }
 }
 function closeSheet(){ $("#sheet").classList.remove("open"); $("#scrim").classList.remove("open"); document.body.classList.remove("sheet-open"); }
-async function pickAgent(aid){
-  const id = SID; closeSheet();
-  if (aid === "__me__") return start(id);
-  const me = who(); if(!me) return startMenu(id);
-  const msg = prompt(aid+" \u2192 내릴 지시 한 줄 (dispatch · 상태는 상대가 claim 시에만 이동)", "이 카드를 진행해주세요");
-  if (msg === null) return;
-  if (await api("/issues/"+id+"/dispatch","POST",{agent:aid, message:msg, author:me})) toast("➤ "+aid+" dispatch — 회신은 댓글");
-}
 async function send(id, state){
   if (await api("/issues/"+id,"PATCH",{state})) load();
 }
@@ -227,10 +236,18 @@ async function beat(id){
   if (await api("/issues/"+id+"/lease","POST",{agent:me})) toast("♥ lease 연장");
 }
 async function pass(id, version){
-  const me = who(); if(!me) return;
-  const ev = prompt("완료 통과 근거 한 줄 (서버 저장·감사용)");
-  if (ev === null) return;
-  if (await api("/issues/"+id+"/verify","POST",{verifier:me, evidence:ev||"mobile pass", expected_version:version}) !== undefined) toast("✓ done");
+  SID = id;
+  let html = `<h4>완료 통과 근거 한 줄 (서버 저장·감사용)</h4>`;
+  if (!ME) html += `<input id="mein" placeholder="작업자 이름 (claim/서명용)" style="width:100%;margin-top:8px;background:var(--bg);border:1px solid var(--line);border-radius:9px;color:var(--tx);padding:12px;font-size:14.5px">`;
+  html += `<input id="pev" placeholder="예: 재실행 통과, 스모크 green" style="width:100%;margin-top:8px;background:var(--bg);border:1px solid var(--line);border-radius:9px;color:var(--tx);padding:12px;font-size:14.5px">
+    <button class="ok" onclick="passConfirm(${version})">✓ done 처리</button>
+    <button class="back" style="margin-top:8px;width:100%" onclick="closeSheet()">취소</button>`;
+  openSheet(html);
+}
+async function passConfirm(version){
+  if (!ME && !saveMe($("#mein").value)) { toast("작업자 이름을 먼저 입력해주세요"); return; }
+  const ev = ($("#pev").value.trim()) || "mobile pass";
+  if (await api("/issues/"+SID+"/verify","POST",{verifier:who(), evidence:ev, expected_version:version}) !== undefined) { toast("\u2713 done"); closeSheet(); }
   load();
 }
 load(); setInterval(load, 6000);
