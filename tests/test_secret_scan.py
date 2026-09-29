@@ -56,3 +56,10 @@ def test_new_diff_hit_still_blocks(tmp_path):
     r = scan(repo, "HEAD~1")
     assert r.returncode == 1
     assert "leak.md" in r.stdout
+
+
+def test_conflict_marker_blocks(tmp_path):
+    repo = make_repo(tmp_path)
+    commit_file(repo, "base.md", ["base line"])
+    commit_file(repo, "bad.md", ["<<<" + "<<<< HEAD", "clean", "<<<" + "<<<< x"])
+    assert scan(repo, "HEAD~1").returncode == 1

@@ -14,6 +14,7 @@ PATTERNS=(
   'ghp_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{20,}' # GitHub 토큰
   'sk-[A-Za-z0-9_-]{20,}'                     # API 키 (OpenAI 등)
   '-----BEGIN (?:RSA|EC|OPENSSH|DSA|PGP) PRIVATE KEY-----' # 프라이빗 키
+  '<<<<<<< |>>>>>>> '                                       # unresolved conflict marker
 )
 if [[ -f scripts/secret-patterns.local ]]; then
   while IFS= read -r line; do [[ -n "$line" && ! "$line" == \#* ]] && PATTERNS+=("$line"); done < scripts/secret-patterns.local
