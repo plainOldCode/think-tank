@@ -82,8 +82,7 @@ function tsDate(s){ const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(
   return new Date(Date.UTC(+m[1], +m[2]-1, +m[3], +m[4], +m[5], +m[6]) - off*60000); }
 function leaseLeft(i){ const t = tsDate(i.lease_expires); return t ? Math.round((t - Date.now())/60000) : null; }
 function leaseTag(i){ const m = leaseLeft(i); if (m === null) return "";
-  const hb = tsDate(i.heartbeat_at);
-  const alive = hb && (Date.now() - hb.getTime()) < 180000 && (m ?? -1) > 0;
+  const alive = (m ?? -1) > 0;
   const dot = alive ? '<span class="hbdot"></span>' : "";
   const txt = m <= 0 ? "lease 만료" : m < 60 ? "잔여 "+m+"m" : "잔여 "+(m/60).toFixed(1)+"h";
   return `${dot}<span class="tag" style="color:${m <= 0 ? "var(--warn)" : "var(--prog)"}">${txt}</span>`; }

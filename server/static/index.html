@@ -108,7 +108,7 @@ const tsParse = t => new Date(t.replace(/([+-]\d\d)(\d\d)$/, "$1:$2"));
 const leaseInfo = i => {
   if (!i.lease_by) return i.state === "in_progress" ? { color:"#566068", text:"무표기 진행", stale:false } : null;
   const stale = i.lease_expires && tsParse(i.lease_expires) < new Date();
-  const alive = i.heartbeat_at && (new Date() - tsParse(i.heartbeat_at)) < 180000;
+  const alive = !stale;
   const h = hueOf(i.lease_by);
   return { color: `hsl(${h},70%,55%)`, agent: i.lease_by, text: stale ? "⌛만료" : alive ? "●작업중" : "🔒" + i.lease_by, stale, alive };
 };

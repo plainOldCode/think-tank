@@ -162,7 +162,7 @@ backlog ──→ todo ──(pull/claim)──→ in_progress ──→ done
 
 ```
 매 실행:   tt pull --label auto        # 없으면 즉시 종료
-작업 중:   3분 간격 tt ping ID(초록 깜빡임 유지) · 30분 간격 tt heartbeat ID(TTL 연장)
+작업 중:   30분 간격 tt heartbeat ID(TTL 연장) — 유효 lease = 보드 초록 깜빡임. tt ping은 선택(수동 Alive)(TTL 연장) — 유효 lease 자체가 보드 초록 깜빡임. tt ping은 즉각 Alive 확인이 필요할 때만(선택)
 귀환:      성공 tt done ID "요약" / 실패 tt note ID "원인" + tt state ID todo(release)
 절대 금지: lease 없는 카드 수정 · require_label 없는 자동 pull · lease 한도 우회 반복
 ```

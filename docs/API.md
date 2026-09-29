@@ -42,7 +42,7 @@ CLI: `tt contract`, `tt done ID --report FILE`, `tt verify ID --report FILE`. �
 
 ## lease (실행 점유 — 라이프사이클과 직교)
 
-`lease_by / lease_expires / heartbeat_at`. pull·claim 시 1h TTL 부여, `POST /issues/{id}/lease` heartbeat로 1h 연장(버전 미변경). **만료 lease는 pull이 atomic steal로 회수**(크론 크래시 시 1h 뒤 자연 해금). done/cancelled/todo/backlog 전이 시 lease 소거. `pull`의 `require_label` 게이트로 자동화 크론은 `auto` 라벨 카드만 수령(agent당 활성 lease 2한도). UI: 에이전트명 hash→hue 테두리, 만료는 주황 점선 ⌛.
+`lease_by / lease_expires / heartbeat_at`. pull·claim 시 1h TTL 부여, `POST /issues/{id}/lease` heartbeat로 1h 연장(버전 미변경). `POST /issues/{id}/ping` `{agent}`는 `heartbeat_at`만 즉시 갱신(TTL·version 불변, 비보유자 409) — 선택적 수동 확인. 보드는 **유효 lease 보유 자체**를 초록 깜빡임으로 표시(주기 통신 요구 없음), lease 반납(done/cancelled/todo 전이·steal)로 자동 해소. UI 관측: 작업 중 30분 간격 heartbeat로 TTL만 유지. **만료 lease는 pull이 atomic steal로 회수**(크론 크래시 시 1h 뒤 자연 해금). done/cancelled/todo/backlog 전이 시 lease 소거. `pull`의 `require_label` 게이트로 자동화 크론은 `auto` 라벨 카드만 수령(agent당 활성 lease 2한도). UI: 에이전트명 hash→hue 테두리, 만료는 주황 점선 ⌛.
 
 ## CLI
 `tt new|pull|list|search|show|tree|claim|note|done|state|label|labels|edit|unassign|archive|unarchive|push|health` — `TT_URL`/`TT_AGENT` 환경변수. 전역 `--json`(어디서나) 서버 원 JSON 그대로 출력. pull/claim/heartbeat `--hours N`(1~6).
