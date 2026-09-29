@@ -139,7 +139,9 @@ def test_decide_merges_green_pr_with_card():
                 lease_expires="2026-09-29T23:00:00+0900", execution_attempt=1)
     iss["work_contract"] = {"version": "tt-tdd-v2:x"}
     acts = decide(snap([iss], prs=[GREEN_PR]))
+    # head_sha 동봉: execute가 병합 직전 재확인(expected)으로 쓴다(t_501e6ec3)
     assert acts == [{"agent": "probe", "issue": "M3PXXXXX-9ABC", "action": "merge", "pr": 3,
+                     "head_sha": "abc",
                      "reason": "CI green + 카드 계약/수령 검증 — gh pr merge"}]
 
 

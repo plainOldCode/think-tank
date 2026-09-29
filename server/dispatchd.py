@@ -117,6 +117,7 @@ def decide(snap):
             continue
         if ci_passed(p):
             actions.append({"agent": "probe", "issue": iid, "action": "merge", "pr": p["number"],
+                            "head_sha": p.get("head_sha", ""),
                             "reason": "CI green + 카드 계약/수령 검증 — gh pr merge"})
 
     # ③ 예산 소진 카드 — dispatch 대신 needs-human (auto 풀 전수)
@@ -165,7 +166,13 @@ def gh_exec(*args):
 
 
 def collect_prs():
-    """open PR + checks + 최근 run — PR 단위 실패는 체크 없음으로 취급(개 PR은 계속 본업)."""
+    """open PR + checks — PR 단위 실패는 체크 없음으로 취급(개 PR은 계속 본업).
+
+    실측(t_501e6ec3, 2026-09-29): gh pr list --head 는 exact prefix 필터 —
+    'tt/' 같은 접두어는 []를 돌려 후보 0건(probe 실명)이 된다. 전체 open 목록을
+    받고 브랜치 역참조는 decide에서. checks 없는 PR(실 PR#3 'no checks
+    reported' 예외)은 [] 격리 후 ci_passed(빈 checks)=False 가 자연 차단.
+    """
     out = []
     try:
         prs = gh_json("pr", "list", "--repo", REPO, "--state", "open",
@@ -185,6 +192,27 @@ def collect_prs():
 def execute(url, act):
     kind = act["action"]
     if kind == "merge":
+        # 판정-집행 경합 흡수(t_501e6ec3 통합 회귀): collect 시점 head_sha와
+        # 병합 직전 현재 headRefOid가 다르면 폐기(다음 라운드 자연 재시도).
+        # 재시도 안전성: gh가 non-mergeable이면 merge 자체를 거부(405)하므로
+        # 스킵해도 중복 병합은 구조적으로 발생하지 않는다.
+        # 실측: gh pr view 는 번호 위치 인자, 단일 필드도 JSON 객체
+        # '{"headRefOid":"<sha>"}' 로 온다(문자열 strip('"')면 영구 불일치).
+        expected = act.get("head_sha") or ""
+        if expected:
+            try:
+                cur = gh_json("pr", "view", act["pr"], "--repo", REPO,
+                              "--json", "headRefOid") or {}
+                current = cur.get("headRefOid") or ""
+            except Exception as e:
+                print(time.strftime("%F %T"),
+                      f"merge skip PR#{act['pr']}: head 재확인 실패({e}) — 안전 스킵", flush=True)
+                return
+            if current != expected:
+                print(time.strftime("%F %T"),
+                      f"merge skip PR#{act['pr']}: head 변경됨 "
+                      f"({expected[:8]}→{current[:8]})", flush=True)
+                return
         gh_exec("pr", "merge", act["pr"], "--repo", REPO, "--squash", "--delete-branch")
         i = api(url, f"/issues/{act['issue']}")
         target = i["state"]
