@@ -33,6 +33,9 @@
    (`tt/<카드ID>-<slug>`) 그 위에서 커밋·검증하고, GitHub PR로 main에 반영한다.
    메인 브랜치 직접 커밋·직push는 금지. PR이 CI(pytest+smoke)를 통과하면 probe가
    병합한다(merge 전 보고 제출을 권장 — 보고 없는 카드는 review로 남는다).
+   대상 저장소는 카드에 명시된 것(예: `repo: owner/name`)을 따르며 생략 시 think-tank다.
+   다른 저장소의 카드는 그 저장소에 CI 워크플로(pytest/npm test 등 그 프로젝트 커맨드)가
+   갖춰져 있어야 probe 병합 대상이 된다 — CI 없으면 green이 성립하지 않는다.
    예외는 dispatch message에 명시된 경우만 유효(유지보수자 동기화 경로).
 4. **검증 가능한 단위부터 병렬화한다.** 한 단위의 재현·구현·검증 루프를 확인한 뒤
    독립된 작업을 병렬화한다. 같은 작업 공간을 동시에 수정하지 않는다.
@@ -85,6 +88,9 @@ CLI가 이 옵션을 지원하지 않으면 API PATCH `/issues/ID`에 `{state:"d
    (`tt/<카드ID>-<slug>`) 그 위에서 커밋·검증하고, GitHub PR로 main에 반영한다.
    메인 브랜치 직접 커밋·직push는 금지. PR이 CI(pytest+smoke)를 통과하면 probe가
    병합한다(merge 전 보고 제출을 권장 — 보고 없는 카드는 review로 남는다).
+   대상 저장소는 카드에 명시된 것(예: `repo: owner/name`)을 따르며 생략 시 think-tank다.
+   다른 저장소의 카드는 그 저장소에 CI 워크플로(pytest/npm test 등 그 프로젝트 커맨드)가
+   갖춰져 있어야 probe 병합 대상이 된다 — CI 없으면 green이 성립하지 않는다.
    예외는 dispatch message에 명시된 경우만 유효(유지보수자 동기화 경로).
 4. **검증 가능한 단위부터 병렬화한다.** 한 단위의 재현·구현·검증 루프를 확인한 뒤
    독립된 작업을 병렬화한다. 같은 작업 공간을 동시에 수정하지 않는다.
