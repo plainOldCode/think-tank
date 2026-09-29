@@ -2,6 +2,7 @@
 import pytest
 
 from dispatchd import decide
+import dispatchd
 
 NOW = "2026-09-29T21:00:00+0900"
 
@@ -22,8 +23,8 @@ def agent(name="hermes@mini", **kw):
     return base
 
 
-def snap(issues=(), agents=(agent(),), auto=True):
-    return {"auto": auto, "now": NOW, "agents": list(agents), "issues": list(issues)}
+def snap(issues=(), agents=(agent(),), auto=True, prs=()):
+    return {"auto": auto, "now": NOW, "agents": list(agents), "issues": list(issues), "prs": list(prs)}
 
 
 def act(iss, kind, reason):
@@ -117,3 +118,46 @@ def test_done_done_without_parent_falls_to_pool():
                  updated_at="2026-09-29T20:00:00+0900")
     pool = issue("P1", labels=["auto"])
     assert decide(snap([done, pool])) == [act("P1", "work", "pool")]
+
+
+def test_ci_passed_rules():
+    ok = {"number": 3, "head_sha": "abc", "checks": [{"name": "ci", "state": "SUCCESS"}]}
+    assert dispatchd.ci_passed(ok) is True
+    assert dispatchd.ci_passed(dict(ok, checks=[])) is False
+    assert dispatchd.ci_passed(dict(ok, checks=[{"name": "ci", "state": "FAILURE"}])) is False
+    assert dispatchd.ci_passed(dict(ok, checks=[{"name": "ci", "state": "SUCCESS"},
+                                                {"name": "smoke", "state": "PENDING"}])) is False
+
+
+GREEN_PR = {"number": 3, "head_sha": "abc", "branch": "tt/M3PXXXXX-9ABC-ci-probe",
+            "checks": [{"name": "ci", "state": "SUCCESS"}]}
+
+
+def test_decide_merges_green_pr_with_card():
+    from dispatchd import ci_passed
+    iss = issue("M3PXXXXX-9ABC", state="in_progress", assignee="codex",
+                lease_expires="2026-09-29T23:00:00+0900", execution_attempt=1)
+    iss["work_contract"] = {"version": "tt-tdd-v2:x"}
+    acts = decide(snap([iss], prs=[GREEN_PR]))
+    assert acts == [{"agent": "probe", "issue": "M3PXXXXX-9ABC", "action": "merge", "pr": 3,
+                     "reason": "CI green + 카드 계약/수령 검증 — gh pr merge"}]
+
+
+def test_decide_no_merge_without_ci():
+    iss = issue("M3PXXXXX-9ABC", state="in_progress", assignee="codex",
+                lease_expires="2026-09-29T23:00:00+0900", execution_attempt=1)
+    iss["work_contract"] = {"version": "tt-tdd-v2:x"}
+    cold = dict(GREEN_PR, checks=[])
+    acts = decide(snap([iss], prs=[cold]))
+    assert not [a for a in acts if a["action"] == "merge"]
+
+
+def test_decide_no_merge_without_card_or_reportless_ok():
+    # 카드 없음(PR이 고아) → merge 없음
+    acts = decide(snap([issue("A", labels=["auto"])], prs=[GREEN_PR]))
+    assert not [a for a in acts if a["action"] == "merge"]
+    # attempt=0(수령 전) → merge 없음
+    iss = issue("M3PXXXXX-9ABC", state="in_progress", execution_attempt=0)
+    iss["work_contract"] = {"version": "tt-tdd-v2:x"}
+    acts = decide(snap([iss], prs=[GREEN_PR]))
+    assert not [a for a in acts if a["action"] == "merge"]
