@@ -59,7 +59,7 @@ class IssueCreate(BaseModel):
 class ClaimIn(BaseModel):
     agent: str
     require_label: str | None = None
-    hours: int = 1
+    hours: int = 6
 
     def safe_hours(self):
         return max(1, min(6, self.hours))
@@ -67,7 +67,7 @@ class ClaimIn(BaseModel):
 
 class LeaseIn(BaseModel):
     agent: str
-    hours: int = 1
+    hours: int = 6
 
     def safe_hours(self):
         return max(1, min(6, self.hours))

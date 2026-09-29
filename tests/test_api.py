@@ -807,3 +807,12 @@ def test_mobile_build_injected(client):
     assert r.headers["cache-control"] == "no-store"
     assert "__TT_BUILD__" not in r.text
     assert re.search(r'const BUILD = "\d+"', r.text), "build id 미주입"
+
+
+def test_lease_default_hours_is_six(client):
+    import datetime as dt
+    i = mk(client)
+    a = client.post(f"/issues/{i['id']}/claim", json={"agent": "long@run"}).json()
+    exp = dt.datetime.strptime(a["lease_expires"], "%Y-%m-%dT%H:%M:%S%z")
+    now = dt.datetime.now(exp.tzinfo)
+    assert 5.5 < (exp - now).total_seconds() / 3600 <= 6.1, a["lease_expires"]
