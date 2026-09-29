@@ -6,6 +6,8 @@ launchd com.tt.dispatchd (mini), TT_AUTO_DISPATCH=1 이어야 동작.
 """
 import json
 import os
+import re
+import subprocess
 import time
 import urllib.request
 
@@ -28,6 +30,23 @@ def _budget_blocked(i):
     if (i.get("execution_attempt") or 0) >= 2:
         return "attempt>=2"
     return None
+
+
+def ci_passed(pr):
+    """CI green(순수): checks 1+ 전부 SUCCESS + head_sha 워크플로 run completed/success."""
+    checks = pr.get("checks") or []
+    if not checks or any(c.get("state") != "SUCCESS" for c in checks):
+        return False
+    runs = [r for r in (pr.get("runs") or []) if r.get("headSha") == pr.get("head_sha")]
+    return any(r.get("status") == "completed" and r.get("conclusion") == "success" for r in runs)
+
+
+CARD_IN_BRANCH = re.compile(r"tt/(M[A-Z0-9]{6,9}-[A-Z0-9]{4})")
+
+
+def card_from_branch(branch):
+    m = CARD_IN_BRANCH.search(branch or "")
+    return m.group(1) if m else None
 
 
 def decide(snap):
@@ -87,6 +106,19 @@ def decide(snap):
         actions.append({"agent": name, "issue": target["id"], "action": "work",
                         "reason": reason})
 
+    # ⓪(사실상 우선) probe: CI green PR + 카드 연결/수령/계약 검증 → gh pr merge
+    by_id = {i["id"]: i for i in issues}
+    for p in snap.get("prs") or []:
+        iid = card_from_branch(p.get("branch", ""))
+        i = by_id.get(iid) if iid else None
+        if not iid or i is None or i["state"] in ("done", "cancelled"):
+            continue
+        if not i.get("work_contract") or (i.get("execution_attempt") or 0) < 1:
+            continue
+        if ci_passed(p):
+            actions.append({"agent": "probe", "issue": iid, "action": "merge", "pr": p["number"],
+                            "reason": "CI green + 카드 계약/수령 검증 — gh pr merge"})
+
     # ③ 예산 소진 카드 — dispatch 대신 needs-human (auto 풀 전수)
     for i in _auto_todo(issues, claimed):
         why = _budget_blocked(i)
@@ -110,8 +142,59 @@ def get_version(url, iid):
     return api(url, f"/issues/{iid}").get("version")
 
 
+REPO = os.environ.get("TT_REPO_SLUG", "plainOldCode/think-tank")
+
+
+def _gh(args):
+    r = subprocess.run(["gh", *[str(a) for a in args]], capture_output=True, text=True, timeout=120)
+    if r.returncode != 0:
+        raise RuntimeError(f"gh {' '.join(map(str, args))}: {r.stderr[:300]}")
+    return r.stdout
+
+
+def gh_json(*args):
+    return json.loads(_gh(list(args)) or "null")
+
+
+def gh_exec(*args):
+    return _gh(list(args))
+
+
+def collect_prs():
+    """open PR + checks + 최근 run — gh 부재/미인증 시 [] (probe 라운드 무해화)."""
+    try:
+        runs = gh_json("run", "list", "--repo", REPO, "--limit", "30",
+                       "--json", "headSha,status,conclusion") or []
+        out = []
+        for p in gh_json("pr", "list", "--repo", REPO, "--state", "open",
+                         "--json", "number,headRefName,headRefOid") or []:
+            checks = gh_json("pr", "checks", p["number"], "--repo", REPO, "--json", "name,state") or []
+            out.append({"number": p["number"], "branch": p.get("headRefName", ""),
+                        "head_sha": p.get("headRefOid", ""), "checks": checks, "runs": runs})
+        return out
+    except Exception:
+        return []
+
+
 def execute(url, act):
     kind = act["action"]
+    if kind == "merge":
+        gh_exec("pr", "merge", act["pr"], "--repo", REPO, "--squash", "--delete-branch")
+        i = api(url, f"/issues/{act['issue']}")
+        target = i["state"]
+        if i["state"] == "in_progress":
+            target = "done" if i.get("completion_report") else "review"
+        if target != i["state"]:
+            try:
+                api(url, f"/issues/{act['issue']}", "PATCH",
+                    {"version": i["version"], "state": target})
+            except Exception:
+                i2 = api(url, f"/issues/{act['issue']}")
+                api(url, f"/issues/{act['issue']}", "PATCH",
+                    {"version": i2["version"], "state": "review"})
+        api(url, f"/issues/{act['issue']}/comments", "POST",
+            {"author": "probe", "body": f"probe: PR#{act['pr']} merged (CI green) — 상태 {target}"})
+        return
     v = get_version(url, act["issue"])
     if kind == "resume":
         api(url, f"/issues/{act['issue']}", "PATCH", {"state": "todo", "version": v})
@@ -161,6 +244,7 @@ def main():
     while True:
         try:
             snap = snapshot(url)
+            snap["prs"] = collect_prs()
             acts = decide(snap)
             for a in acts:
                 print(time.strftime("%F %T"), a, flush=True)

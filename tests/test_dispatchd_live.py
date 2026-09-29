@@ -9,6 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import dispatchd
+import work_contract
 from app import create_app
 
 
@@ -76,3 +77,53 @@ def test_needs_human_drops_auto_and_notes(live):
         assert any("[auto]" in c["body"] for c in got2["comments"])
     finally:
         os.environ.pop("TT_AUTO_DISPATCH", None)
+
+
+@pytest.fixture
+def live_v2(tmp_path, monkeypatch):
+    monkeypatch.setenv("TT_CONTRACT_VERSION", "2")
+    c = TestClient(create_app(str(tmp_path / "v2.db")))
+    monkeypatch.setattr(dispatchd, "api", _make_api(c))
+    return c
+
+
+def _claim_contract_issue(c, agent="codex"):
+    iid = new_issue(c, "t", labels=("auto",))["id"]
+    r = c.post(f"/issues/{iid}/claim", json={"agent": agent, "require_label": "auto"})
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def test_execute_merge_reported_card_done(live_v2, monkeypatch):
+    i = _claim_contract_issue(live_v2)
+    iid = i["id"]
+    assert i["work_contract"]["version"].startswith("tt-tdd-v2:")
+    calls = []
+    monkeypatch.setattr(dispatchd, "gh_exec", lambda *a: calls.append(list(map(str, a))) or "")
+    import json as _j; print("CARD-REP:", str(live_v2.get(f"/issues/{iid}").json()["completion_report"])[:80], "WC:", live_v2.get(f"/issues/{iid}").json()["work_contract"]["version"][:14])
+    rep = {"contract_version": i["work_contract"]["version"], "attempt": i["execution_attempt"],
+           "method": "planned",
+           "design": {"criteria": "CI green PR 병합", "verification": "live_v2 왕복",
+                      "evidence": "수정 전 decide에 merge 없음"},
+           "implementation": {"summary": "probe merge 라운드", "commands": "pytest"},
+           "verification": {"commands": "pytest -k merge", "evidence": "1 passed"},
+           "result": "passed", "limitations": "없음"}
+    r = live_v2.patch(f"/issues/{iid}", json={"version": i["version"], "state": "done",
+                                              "completion_report": rep})
+    assert r.status_code == 200, r.text
+    assert r.json()["state"] == "done"
+    a = live_v2.get(f"/issues/{iid}").json()
+    print("AFTER-DONE-PATCH:", a["state"], a["version"], a["verification_status"])
+    dispatchd.execute("/t", {"action": "merge", "issue": iid, "pr": 3})
+    b = live_v2.get(f"/issues/{iid}").json()
+    print("AFTER-EXEC:", b["state"], b["version"])
+    assert calls and calls[0][:2] == ["pr", "merge"]
+    got = live_v2.get(f"/issues/{iid}").json()
+    assert got["state"] == "done" and got["verification_status"] == "reported"
+
+
+def test_execute_merge_reportless_demotes_review(live_v2, monkeypatch):
+    i = _claim_contract_issue(live_v2)
+    monkeypatch.setattr(dispatchd, "gh_exec", lambda *a: "")
+    dispatchd.execute("/t", {"action": "merge", "issue": i["id"], "pr": 4})
+    assert live_v2.get(f"/issues/{i['id']}").json()["state"] == "review"
