@@ -37,6 +37,8 @@ main { padding:10px 10px 0; display:flex; flex-direction:column; gap:9px; }
 .addc input { flex:1; background:var(--bg); border:1px solid var(--line); border-radius:8px; color:var(--tx); padding:9px 10px; font-size:13px; }
 .addc button { background:var(--todo); border:0; border-radius:8px; padding:0 13px; font-weight:600; }
 .empty { text-align:center; color:var(--dim); padding:34px 0; }
+@keyframes hbpulse { 0%,100% { opacity:1; } 50% { opacity:.25; } }
+.hbdot { display:inline-block; width:9px; height:9px; border-radius:50%; background:var(--done); animation:hbpulse 1.1s infinite; margin-right:4px; vertical-align:1px; }
 .card.mine { border-left:3px solid var(--prog); }
 .card.other { opacity:.62; }
 .subtabs { display:flex; gap:7px; padding:2px 0 4px; }
@@ -80,8 +82,11 @@ function tsDate(s){ const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(
   return new Date(Date.UTC(+m[1], +m[2]-1, +m[3], +m[4], +m[5], +m[6]) - off*60000); }
 function leaseLeft(i){ const t = tsDate(i.lease_expires); return t ? Math.round((t - Date.now())/60000) : null; }
 function leaseTag(i){ const m = leaseLeft(i); if (m === null) return "";
+  const hb = tsDate(i.heartbeat_at);
+  const alive = hb && (Date.now() - hb.getTime()) < 180000 && (m ?? -1) > 0;
+  const dot = alive ? '<span class="hbdot"></span>' : "";
   const txt = m <= 0 ? "lease 만료" : m < 60 ? "잔여 "+m+"m" : "잔여 "+(m/60).toFixed(1)+"h";
-  return `<span class="tag" style="color:${m <= 0 ? "var(--warn)" : "var(--prog)"}">${txt}</span>`; }
+  return `${dot}<span class="tag" style="color:${m <= 0 ? "var(--warn)" : "var(--prog)"}">${txt}</span>`; }
 function setSub(v){ sub = v; localStorage.setItem("tt-m-sub",v); render(JSON.parse(LAST||"[]")); }
 let ME = localStorage.getItem("tt-m-me") || "";
 const $ = s => document.querySelector(s);

@@ -785,3 +785,16 @@ def test_mobile_no_store(client):
     r = client.get("/m")
     assert r.status_code == 200
     assert "no-store" in r.headers.get("cache-control", "")
+
+
+def test_ping_alive_only(client):
+    i = mk(client)
+    client.post(f"/issues/{i['id']}/claim", json={"agent": "a1"})
+    got = client.get(f"/issues/{i['id']}").json()
+    r = client.post(f"/issues/{i['id']}/ping", json={"agent": "a1"})
+    assert r.status_code == 200
+    after = r.json()
+    assert after["lease_expires"] == got["lease_expires"]
+    assert after["version"] == got["version"]
+    bad = client.post(f"/issues/{i['id']}/ping", json={"agent": "other"})
+    assert bad.status_code == 409

@@ -20,6 +20,7 @@
   .card:hover { border-color:var(--acc); }
   .card.archived { opacity:.4; border-style:dashed; }
   .card.stale { border-color:var(--warn); border-style:dashed; }
+  @keyframes hbpulse { 0%,100% { opacity:1; } 50% { opacity:.28; } }
   .card.done { border-left:3px solid var(--done); }
   .card.done p { color:var(--done); opacity:.85; }
   .sub.done > .st { color:var(--done); }
@@ -107,8 +108,9 @@ const tsParse = t => new Date(t.replace(/([+-]\d\d)(\d\d)$/, "$1:$2"));
 const leaseInfo = i => {
   if (!i.lease_by) return i.state === "in_progress" ? { color:"#566068", text:"무표기 진행", stale:false } : null;
   const stale = i.lease_expires && tsParse(i.lease_expires) < new Date();
+  const alive = i.heartbeat_at && (new Date() - tsParse(i.heartbeat_at)) < 180000;
   const h = hueOf(i.lease_by);
-  return { color: `hsl(${h},70%,55%)`, agent: i.lease_by, text: stale ? "⌛만료" : "🔒" + i.lease_by, stale };
+  return { color: `hsl(${h},70%,55%)`, agent: i.lease_by, text: stale ? "⌛만료" : alive ? "●작업중" : "🔒" + i.lease_by, stale, alive };
 };
 
 async function j(path, opts) {
@@ -239,7 +241,11 @@ function renderBoard(issues) {
     const li = leaseInfo(k);
     const sty = li ? `cursor:pointer;border-left:3px solid ${li.stale ? "var(--warn)" : li.color};` : k.state === "done" ? "cursor:pointer;border-left:3px solid var(--done);" : "";
     return `<div class="sub${k.state === "done" ? " done" : ""}" style="${sty}" onclick="event.stopPropagation();show('${esc(k.id)}')">
+<<<<<<< HEAD
        ${esc(k.id.slice(-4))} <span class="st">[${esc(k.state)}]</span>${li ? ` <span style="color:${li.color}">${li.stale ? "⌛" : "🔒"}</span>` : ""} ${chipFor(k.id)} ${esc(k.title)}${k.assignee?` @${esc(k.assignee)}`:""}
+=======
+       ${esc(k.id.slice(-4))} <span class="st">[${esc(k.state)}]</span>${li ? ` <span style="color:${li.alive ? "var(--done)" : li.color};${li.alive ? "animation:hbpulse 1.1s infinite" : ""}">${li.stale ? "⌛" : li.alive ? "●" : "🔒"}</span>` : ""} ${esc(k.title)}${k.assignee?` @${esc(k.assignee)}`:""}
+>>>>>>> 83f00eb (TT ping: agent 자기 살아있음 보고 + 보드 초록 깜빡임 — 사용자 요구(FXWQ tmux 관찰과 별개로 claim 생존 자체의 표시))
        ${(kidsOf[k.id]||[]).length ? subRows(k) : ""}
      </div>`; });
   document.getElementById("cxbtn").style.opacity = SHOW_CX ? "1" : ".45";
@@ -254,7 +260,7 @@ function renderBoard(issues) {
       if (li) c.style.borderLeft = `3px solid ${li.color}`;
       c.innerHTML = `<span class="id">${esc(i.id)}</span>
         ${i.archived ? `<span class="tag">🗄archived</span>` : ""}
-        ${li ? `<span class="lease" style="color:${li.color}"> ${esc(li.text)}</span>` : ""}
+        ${li ? `<span class="lease" style="color:${li.alive ? "var(--done)" : li.color};${li.alive ? "animation:hbpulse 1.1s infinite" : ""}"> ${esc(li.text)}</span>` : ""}
         ${i.labels.length?`<span class="tag"> ${esc(i.labels.join(" "))}</span>`:""}
         ${i.state==="blocked"&&i.waiting_for?`<span class="tag" style="color:var(--warn)">⏸ ${esc(i.waiting_for)}${i.waiting_actor?" @"+esc(i.waiting_actor):""}${i.release_ready?" →해제가능":""}</span>`:""}
         <p>${esc(i.title)}</p>${i.assignee?`<span class="tag">@${esc(i.assignee)}</span>`:""}
@@ -277,7 +283,7 @@ async function show(id, keep) {
   const [i, tree, dsp] = await Promise.all([j("/issues/"+id), j("/issues/"+id+"/tree"), jQuiet("/issues/"+id+"/dispatches")]);
   const d = document.getElementById("dcontent");
   if (!keep) document.getElementById("detail").classList.add("open");
-  const kids = (n) => n.tree.map(k => { const li = leaseInfo(k); return `<div class="child" style="${li ? "border-left:3px solid " + (li.stale ? "var(--warn)" : li.color) : ""}"><span class="k">${esc(k.id)}</span> [${esc(k.state)}] ${li ? `<span style="color:${li.color}">${li.stale ? "⌛" : "🔒"}</span> ` : ""}${esc(k.title)} ${k.assignee?"@"+esc(k.assignee):""}${k.tree.length?kids(k):""}</div>`; }).join("");
+  const kids = (n) => n.tree.map(k => { const li = leaseInfo(k); return `<div class="child" style="${li ? "border-left:3px solid " + (li.stale ? "var(--warn)" : li.color) : ""}"><span class="k">${esc(k.id)}</span> [${esc(k.state)}] ${li ? `<span style="color:${li.alive ? "var(--done)" : li.color};${li.alive ? "animation:hbpulse 1.1s infinite" : ""}">${li.stale ? "⌛" : li.alive ? "●" : "🔒"}</span> ` : ""}${esc(k.title)} ${k.assignee?"@"+esc(k.assignee):""}${k.tree.length?kids(k):""}</div>`; }).join("");
   const nextStates = {backlog:["todo","cancelled"], todo:["in_progress","blocked","backlog","cancelled"],
     in_progress:["blocked","done","todo","review"], review:["todo","blocked","done","cancelled"],
     blocked:["in_progress","todo","cancelled"], done:["todo"], cancelled:["todo"]};

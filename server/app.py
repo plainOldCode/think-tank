@@ -326,6 +326,19 @@ def create_app(db_path: str) -> FastAPI:
             row = get_issue(c, issue_id)
         return dbmod.to_dict(row)
 
+    @app.post("/issues/{issue_id}/ping", summary="Low-cost alive ping: refresh heartbeat_at only (no lease extension, no version bump). Agents: ping every ≤3min while working → green pulse on board.",
+              include_in_schema=True)
+    def ping(issue_id: str, p: LeaseIn):
+        with con() as c:
+            row = get_issue(c, issue_id)
+            if row["lease_by"] != p.agent:
+                raise HTTPException(409, f"lease held by {row['lease_by'] or 'nobody'}")
+            c.execute("UPDATE issues SET heartbeat_at=?, updated_at=? WHERE id=?",
+                      (dbmod.now(), dbmod.now(), issue_id))
+            c.commit()
+            row = get_issue(c, issue_id)
+        return dbmod.to_dict(row)
+
     @app.post("/pull")
     def pull(p: ClaimIn):
         ts = dbmod.now()

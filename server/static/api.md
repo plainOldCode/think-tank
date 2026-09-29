@@ -162,7 +162,7 @@ backlog ──→ todo ──(pull/claim)──→ in_progress ──→ done
 
 ```
 매 실행:   tt pull --label auto        # 없으면 즉시 종료
-작업 중:   30분 간격 tt heartbeat ID
+작업 중:   3분 간격 tt ping ID(초록 깜빡임 유지) · 30분 간격 tt heartbeat ID(TTL 연장)
 귀환:      성공 tt done ID "요약" / 실패 tt note ID "원인" + tt state ID todo(release)
 절대 금지: lease 없는 카드 수정 · require_label 없는 자동 pull · lease 한도 우회 반복
 ```
@@ -170,7 +170,7 @@ backlog ──→ todo ──(pull/claim)──→ in_progress ──→ done
 ## CLI가 있을 때 (`tt`가 PATH면 이게 더 빠름)
 
 ```
-tt pull [--label auto]       tt heartbeat ID          tt note ID "로그"    tt done ID "요약"
+tt pull [--label auto]       tt heartbeat ID · tt ping ID   tt note ID "로그"    tt done ID "요약"
 tt new "제목" -P p1 -l infra [-p PARENT]        tt list [state]
 tt show ID                 tt tree ID           tt state ID blocked
 tt search "쿼리"           # 제목+본문 검색 (중복 이슈 확인에 먼저)

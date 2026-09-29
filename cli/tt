@@ -12,6 +12,7 @@ tt — think-tank issue tracker ($URL)
   tt new "title" [-p PARENT] [-b BODY] [-P p1..p4] [-l label,label] [-s backlog|todo]
   tt pull [--label auto] [--hours N]  # todo+만료lease 중 atomic 수령 (cron은 --label 권장, hours 1~6)
   tt heartbeat ID [--hours N]   # 작업 중 lease 연장 (30분 간격 권장)
+  tt ping ID                    # alive만 갱신 (2~3분 간격 → 보드 초록 깜빡임. TTL·version 불변)
   tt list [state] [--all] [--archived] [--label L]  # 목록 (--label: 라벨 필터, armour+2.0 같은 값 포함)
   tt search "쿼리"            # 제목+본문 검색 (한글 URL-인코딩 자동)
   tt show ID                 # 상세 + 하위 + 코멘트
@@ -131,6 +132,11 @@ case "$cmd" in
     hb_payload="$(jq -cn --arg a "$AGENT" --arg h "$hours" '{agent:$a} + (if $h=="" then {} else {hours:($h|tonumber)} end)')"
     out="$(req -X POST "$URL/issues/$id/lease" -d "$hb_payload")" || { echo "실패: lease 보유자가 아니거나 만료됨(회수될 수 있음)" >&2; exit 1; }
     <<<"$out" $JQ '"♥ \(.id) lease \(.lease_by) → \(.lease_expires)"' ;;
+
+  ping)
+    id="$1"
+    out="$(req -X POST "$URL/issues/$id/ping" -d "$(jq -cn --arg a "$AGENT" '{agent:$a}')")" || { echo "실패: lease 보유자가 아니거나 만료됨" >&2; exit 1; }
+    <<<"$out" $JQ '"● \(.id) alive \(.heartbeat_at)"' ;;
 
   claim)
     id="$1"; shift; hours=""
