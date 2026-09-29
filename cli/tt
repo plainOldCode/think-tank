@@ -254,8 +254,12 @@ case "$cmd" in
 
   push)
     repo="${TT_REPO:-$HOME/think-tank}"
-    (cd "$repo" && scripts/secret-scan.sh .) || { echo "비밀 스캔 실패 — push 중단 (위 패턴 확인)" >&2; exit 1; }
     branch="$(git -C "$repo" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")"
+    # 이미 공개된 과거 내용은 새 push를 막지 않는다: push 대상 구간만 스캔.
+    base="$(git -C "$repo" rev-parse '@{push}' 2>/dev/null \
+      || git -C "$repo" rev-parse "origin/$branch" 2>/dev/null \
+      || echo HEAD)"
+    (cd "$repo" && TT_SCAN_DIFF="$base" scripts/secret-scan.sh .) || { echo "비밀 스캔 실패 — push 중단 (위 패턴 확인)" >&2; exit 1; }
     unpushed="$(git -C "$repo" log --oneline @{push}.. 2>/dev/null || git -C "$repo" log --oneline origin/"$branch".."$branch" 2>/dev/null || git -C "$repo" log --oneline -1)"
     [[ -n "$(git -C "$repo" status --porcelain)" ]] && echo "경고: 커밋되지 않은 변경 있음 (push 대상 아님)" >&2
     git -C "$repo" push -q mini:tt-repo "$branch" >/dev/null || { echo "실패: mini 중계 push" >&2; exit 1; }

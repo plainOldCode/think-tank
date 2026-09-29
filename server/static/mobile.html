@@ -51,15 +51,16 @@ main { padding:10px 10px 0; display:flex; flex-direction:column; gap:9px; }
 <script>
 const TABS = [["review","리뷰","rev"],["in_progress","내 작업","prog"],["todo","시작 대기","todo"],["blocked","막힘","block"],["done","완료","done"]];
 let LAST = [], tab = localStorage.getItem("tt-m-tab") || "review";
-let ME = localStorage.getItem("tt-m-me") || "skshim@tp-13";
+let ME = localStorage.getItem("tt-m-me") || "";
 const $ = s => document.querySelector(s);
 const esc = s => String(s??"").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 function toast(m){ const t=$("#toast"); t.textContent=m; t.classList.add("show"); setTimeout(()=>t.classList.remove("show"),2600); }
-function setMe(){ const v=prompt("작업자 이름(claim/verify署名)", ME); if(v){ ME=v; localStorage.setItem("tt-m-me",v); $("#me").textContent=ME; } }
+function setMe(){ const v=prompt("작업자 이름(claim/verify 서명)", ME); if(v){ ME=v.trim(); localStorage.setItem("tt-m-me",ME); $("#me").textContent=ME; } return ME; }
+function who(){ return ME || setMe(); }
 async function j(path, opts){ const r = await fetch(path, opts); const d = await r.json().catch(()=>({}));
   if(!r.ok) throw new Error(d.detail || r.status); return d; }
 async function api(path, method, body){ try{ return await j(path,{method, headers:{"content-type":"application/json"}, body:JSON.stringify(body)}); }
-  catch(e){ toast("⚠ "+e.message); } }
+  catch(e){ toast("⚠ " + (e.message||e)); } }
 function act(fn){ return e => { e.stopPropagation(); fn(); }; }
 
 async function load(){
@@ -122,24 +123,28 @@ async function toggle(id){
 }
 async function comment(id){
   const el = $("#ci-"+CSS.escape(id)); const b = el.value.trim(); if(!b) return;
-  if (await api("/issues/"+id+"/comments","POST",{author:ME, body:b}) !== undefined){ el.value=""; toggleKeep(id); toast("댓글 등록"); }
+  const me = who(); if(!me) return;
+  if (await api("/issues/"+id+"/comments","POST",{author:me, body:b}) !== undefined){ el.value=""; toggleKeep(id); toast("댓글 등록"); }
 }
 async function toggleKeep(id){ const d=$("#d-"+CSS.escape(id)); d.classList.remove("open"); toggle(id); }
 async function start(id){
-  await api("/issues/"+id,"PATCH",{assignee:ME});
-  if (await api("/issues/"+id+"/claim","POST",{agent:ME})) toast("▶ 시작 — lease 3h");
+  const me = who(); if(!me) return;
+  await api("/issues/"+id,"PATCH",{assignee:me});
+  if (await api("/issues/"+id+"/claim","POST",{agent:me})) toast("▶ 시작 — lease 3h");
   load();
 }
 async function send(id, state){
   if (await api("/issues/"+id,"PATCH",{state})) load();
 }
 async function beat(id){
-  if (await api("/issues/"+id+"/lease","POST",{agent:ME})) toast("♥ lease 연장");
+  const me = who(); if(!me) return;
+  if (await api("/issues/"+id+"/lease","POST",{agent:me})) toast("♥ lease 연장");
 }
 async function pass(id, version){
+  const me = who(); if(!me) return;
   const ev = prompt("완료 통과 근거 한 줄 (서버 저장·감사용)");
   if (ev === null) return;
-  if (await api("/issues/"+id+"/verify","POST",{verifier:ME, evidence:ev||"mobile pass", expected_version:version}) !== undefined) toast("✓ done");
+  if (await api("/issues/"+id+"/verify","POST",{verifier:me, evidence:ev||"mobile pass", expected_version:version}) !== undefined) toast("✓ done");
   load();
 }
 load(); setInterval(load, 6000);

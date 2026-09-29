@@ -2,6 +2,8 @@
 # secret-scan.sh — push 전 tracked 파일에서 민감 패턴을 찾는다. 히트 시 exit 1.
 # 사용: scripts/secret-scan.sh [repo-root]   (tt push가 자동 호출)
 # 개인·환경 고유 패턴은 gitignored scripts/secret-patterns.local 에 한 줄씩.
+# TT_SCAN_DIFF=<ref>: 전체 대신 <ref> 이후 추가된 줄만 스캔. 이미 공개된 과거
+# 히스토리는 새 push를 막지 않지만, 신규 내용은 여전히 차단한다. 미설정 시 전체.
 set -uo pipefail
 cd "${1:-.}"
 PATTERNS=(
@@ -17,13 +19,31 @@ if [[ -f scripts/secret-patterns.local ]]; then
   while IFS= read -r line; do [[ -n "$line" && ! "$line" == \#* ]] && PATTERNS+=("$line"); done < scripts/secret-patterns.local
 fi
 hits=0
-for pat in "${PATTERNS[@]}"; do
-  out="$(git grep -I -P -n -e "$pat" -- ':!.venv' ':!scripts/secret-scan.sh' ':!scripts/secret-patterns.local' 2>/dev/null)"
-  if [[ -n "$out" ]]; then
-    echo "✗ 패턴 [$pat]:"
-    echo "$out" | head -10
-    hits=1
-  fi
-done
+if [[ -n "${TT_SCAN_DIFF:-}" ]]; then
+  # 추가된 줄만(+ 접두, +++ 헤더 제외). 파일명 보존. 기준이 HEAD면 uncommitted까지 포함.
+  for pat in "${PATTERNS[@]}"; do
+    out=""
+    for f in $(git diff --name-only "$TT_SCAN_DIFF" 2>/dev/null); do
+      case "$f" in .venv/*|scripts/secret-scan.sh|scripts/secret-patterns.local) continue ;; esac
+      add="$(git diff "$TT_SCAN_DIFF" -- "$f" | grep '^+' | grep -v '^+++' | sed "s|^+|$f:+|" || true)"
+      hit="$(printf '%s\n' "$add" | grep -P -e "$pat" 2>/dev/null | head -10 || true)"
+      [[ -n "$hit" ]] && out+="$hit"$'\n'
+    done
+    if [[ -n "$out" ]]; then
+      echo "✗ 패턴 [$pat] — ${TT_SCAN_DIFF} 이후 추가된 줄:"
+      printf '%s' "$out"
+      hits=1
+    fi
+  done
+else
+  for pat in "${PATTERNS[@]}"; do
+    out="$(git grep -I -P -n -e "$pat" -- ':!.venv' ':!scripts/secret-scan.sh' ':!scripts/secret-patterns.local' 2>/dev/null)"
+    if [[ -n "$out" ]]; then
+      echo "✗ 패턴 [$pat]:"
+      echo "$out" | head -10
+      hits=1
+    fi
+  done
+fi
 [[ $hits -eq 1 ]] && { echo "secret-scan 실패 — 위 항목 스럽 후 재시도"; exit 1; }
 echo "secret-scan 통과"
