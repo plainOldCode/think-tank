@@ -69,9 +69,9 @@ async function load(){
   try { rows = await j("/issues?archived=no"); } catch(e){ toast("⚠ "+e.message); return; }
   $("#me").textContent = ME;
   $("#upd").textContent = new Date().toTimeString().slice(0,5);
-  renderTabs();
+  renderTabs(rows);
   const sig = JSON.stringify(rows);
-  if (sig !== LAST) { LAST = sig; render(); }
+  if (sig !== LAST) { LAST = sig; render(rows); }
 }
 function collectDrafts(){ for (const id of OPEN){ const el = $("#ci-"+CSS.escape(id)); if (el && el.value) DRAFT[id] = el.value; } }
 async function refreshDetail(id){
@@ -84,16 +84,16 @@ async function refreshDetail(id){
     const ci = $("#ci-"+CSS.escape(id)); if (ci && !ci.value && DRAFT[id]) ci.value = DRAFT[id];
   } catch(e){ toast("⚠ "+e.message); }
 }
-function renderTabs(){
+function renderTabs(rows){
   $("#tabs").innerHTML = TABS.map(([st,label]) => {
-    const n = LAST.filter(i => i.state === st).length;
+    const n = rows.filter(i => i.state === st).length;
     return `<button class="${tab===st?"on":""}" onclick="pick('${st}')"><span class="n">${n}</span>${label}</button>`;
   }).join("");
 }
-function pick(t){ tab=t; localStorage.setItem("tt-m-tab",t); renderTabs(); OPEN.clear(); render(); }
-function render(){
+function pick(t){ tab=t; localStorage.setItem("tt-m-tab",t); renderTabs(JSON.parse(LAST||"[]")); render(JSON.parse(LAST||"[]")); }
+function render(all){
   collectDrafts();
-  const rows = JSON.parse(LAST).filter(i => i.state === tab)
+  const rows = (all||JSON.parse(LAST||"[]")).filter(i => i.state === tab)
     .sort((a,b) => (b.updated_at||"").localeCompare(a.updated_at||""));
   $("#list").innerHTML = rows.length ? rows.map(card).join("") : `<div class="empty">${TABS.find(t=>t[0]===tab)[1]} 없음</div>`;
   for (const id of OPEN) {
