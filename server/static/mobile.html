@@ -39,6 +39,10 @@ main { padding:10px 10px 0; display:flex; flex-direction:column; gap:9px; }
 .empty { text-align:center; color:var(--dim); padding:34px 0; }
 .card.mine { border-left:3px solid var(--prog); }
 .card.other { opacity:.62; }
+.subtabs { display:flex; gap:7px; padding:2px 0 4px; }
+.subtabs button { background:var(--card); border:1px solid var(--line); color:var(--dim); border-radius:20px;
+  padding:7px 14px; font-size:13px; cursor:pointer; }
+.subtabs button.on { color:#0b0e13; background:var(--prog); border-color:var(--prog); font-weight:600; }
 .toast { position:fixed; bottom:76px; left:50%; transform:translateX(-50%); background:#0b0e13cc;
          border:1px solid var(--line); color:var(--tx); padding:9px 14px; border-radius:9px; font-size:13px;
          opacity:0; transition:opacity .25s; pointer-events:none; max-width:88vw; }
@@ -54,6 +58,15 @@ main { padding:10px 10px 0; display:flex; flex-direction:column; gap:9px; }
 const TABS = [["review","리뷰","rev"],["in_progress","진행중","prog"],["todo","시작 대기","todo"],["blocked","막힘","block"],["done","완료","done"]];
 let LAST = "", tab = localStorage.getItem("tt-m-tab") || "review";
 let OPEN = new Set(), DRAFT = {};
+let sub = localStorage.getItem("tt-m-sub") || "lease";
+function tsDate(s){ const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})([+-]\d{2})(\d{2})$/.exec(s||""); if(!m) return null;
+  const off = (+m[7])*60 + (m[7].startsWith("-") ? -(+m[8]) : +m[8]);
+  return new Date(Date.UTC(+m[1], +m[2]-1, +m[3], +m[4], +m[5], +m[6]) - off*60000); }
+function leaseLeft(i){ const t = tsDate(i.lease_expires); return t ? Math.round((t - Date.now())/60000) : null; }
+function leaseTag(i){ const m = leaseLeft(i); if (m === null) return "";
+  const txt = m <= 0 ? "lease 만료" : m < 60 ? "잔여 "+m+"m" : "잔여 "+(m/60).toFixed(1)+"h";
+  return `<span class="tag" style="color:${m <= 0 ? "var(--warn)" : "var(--prog)"}">${txt}</span>`; }
+function setSub(v){ sub = v; localStorage.setItem("tt-m-sub",v); render(JSON.parse(LAST||"[]")); }
 let ME = localStorage.getItem("tt-m-me") || "";
 const $ = s => document.querySelector(s);
 const esc = s => String(s??"").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
@@ -97,6 +110,17 @@ function render(all){
   collectDrafts();
   const rows = (all||JSON.parse(LAST||"[]")).filter(i => i.state === tab)
     .sort((a,b) => (b.updated_at||"").localeCompare(a.updated_at||""));
+  let html = "";
+  if (tab === "in_progress") {
+    const leased = rows.filter(r => (leaseLeft(r) ?? -1) > 0);
+    const bar = `<div class="subtabs">
+      <button class="${sub==="lease"?"on":""}" onclick="event.stopPropagation();setSub('lease')">청구중 ${leased.length}</button>
+      <button class="${sub==="all"?"on":""}" onclick="event.stopPropagation();setSub('all')">전체 ${rows.length}</button></div>`;
+    const show = sub === "lease" ? leased : rows;
+    $("#list").innerHTML = bar + (show.length ? show.map(card).join("") : `<div class="empty">청구(lease) 중인 카드 없음</div>`);
+    for (const id of OPEN) { const d = $("#d-"+CSS.escape(id)); if (d) { d.classList.add("open"); refreshDetail(id); } }
+    return;
+  }
   $("#list").innerHTML = rows.length ? rows.map(card).join("") : `<div class="empty">${TABS.find(t=>t[0]===tab)[1]} 없음</div>`;
   for (const id of OPEN) {
     const d = $("#d-"+CSS.escape(id));
@@ -123,7 +147,7 @@ function card(i){
   return `<div class="card${mine?" mine":""}${other?" other":""}" id="c-${esc(i.id)}">
     <span class="id">${esc(i.id)}</span> ${i.priority?`<span class="tag">p${i.priority}</span>`:""}${i.labels.map(l=>`<span class="tag">#${esc(l)}</span>`).join("")}
     <h3>${esc(i.title)}</h3>
-    ${i.assignee?`<span class="tag">@${esc(i.assignee)}</span>`:""}${i.lease_expires?`<span class="tag">lease ${esc(i.lease_expires.slice(5,16))}</span>`:""}
+    ${i.assignee?`<span class="tag">@${esc(i.assignee)}</span>`:""}${i.state==="in_progress" ? leaseTag(i) : (i.lease_expires?`<span class="tag">lease ${esc(i.lease_expires.slice(5,16))}</span>`:"")}
     <div class="acts">${acts}<button class="back" onclick="toggle('${esc(i.id)}')">자세히</button></div>
     <div class="det" id="d-${esc(i.id)}"><div class="body">불러오는 중…</div>
       <div id="cs-${esc(i.id)}"></div>

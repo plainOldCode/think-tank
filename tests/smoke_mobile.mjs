@@ -12,7 +12,7 @@ globalThis.CSS = { escape: s => s };
 const two = [{ id: "A1", state: "todo", title: "t", labels: [] }, { id: "B2", state: "review", title: "r", labels: [], version: 1 },
   { id: "M3", state: "in_progress", title: "mine", labels: [], assignee: "me@x" }, { id: "O4", state: "in_progress", title: "other", labels: [], assignee: "someone" }];
 let n = 0;
-globalThis.fetch = async () => ({ ok: true, json: async () => structuredClone(n++ < 2 ? two : [{ id: "M3", state: "in_progress", title: "mine", labels: [], assignee: "me@x" }, { id: "O4", state: "in_progress", title: "other", labels: [], assignee: "someone" }]) });
+globalThis.fetch = async () => ({ ok: true, json: async () => structuredClone(n++ < 2 ? two : [{ id: "M3", state: "in_progress", title: "mine", labels: [], assignee: "me@x", lease_expires: new Date(Date.now()+36e5).toISOString().slice(0,19)+"+0000" }, { id: "O4", state: "in_progress", title: "other", labels: [], assignee: "someone" }]) });
 (0, eval)(js);
 const { load, pick } = globalThis;
 await load();
@@ -25,8 +25,11 @@ if (!els["#list"].innerHTML.includes("empty")) throw new Error("3rd render not a
 await load();
 pick("in_progress");
 const list = els["#list"].innerHTML;
-if (!list.includes("class=\"card mine\"") || !list.includes("class=\"card other\"")) throw new Error("mine/other class missing: "+list.slice(0,120));
+if (!list.includes("class=\"card mine\"")) throw new Error("mine class missing: "+list.slice(0,150));
+if (list.includes("O4")) throw new Error("no-lease card shown in 청구중 default");
+if (!list.includes("잔여")) throw new Error("lease left tag missing");
+setSub("all");
+if (!els["#list"].innerHTML.includes("O4") || !els["#list"].innerHTML.includes("class=\"card other\"")) throw new Error("all-sub missing other card");
 if (!list.includes("리뷰 요청")) throw new Error("mine card lacks actions");
-if (!/O4/.test(list) || !list.includes("someone 진행중")) throw new Error("other card missing");
-if (list.split("class=\"card").length !== 3) throw new Error("진행중 2건이어야 함");
+if (list.split("class=\"card").length !== 2) throw new Error("청구중에는 M3만");
 console.log("smoke ok");
