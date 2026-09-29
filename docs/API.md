@@ -76,3 +76,5 @@ CLI: `tt contract`, `tt done ID --report FILE`, `tt verify ID --report FILE`. �
 - 2026-09-26: **버전 고정 작업 계약과 완료 보고** — `/work-contract`, claim/pull/dispatch 계약 전달, runner 신규·재개 프롬프트 주입, `TT_REQUIRE_REPORT=1` opt-in 보고 필수 모드. `completion_report`의 TDD/대체 검증·성공 여부·회차·버전 검사, `verification_status`로 보고/승인/과거 기록 구분. 오류 보정: 실패/키워드만 있는 증거의 완료 판정, 재오픈/범위 변경/새 수령의 오래된 증거 재사용, 생성 시 상태 우회. CLI done 중복 PATCH 제거, 코멘트 실패 시 중단, review도 `--json` 준수. 라우트와 기존 승인 예외는 유지.
 
 - 2026-09-26: **업그레이드 중 기존 작업 호환성** — 운영 SQLite 복제 검증에서 빈 work_contract에 현재 서버의 보고 필수 정책이 소급 적용되는 문제를 재현·수정. 기존 진행/검토 회차는 호환 마감 가능하며 새 claim/pull/범위 변경부터 고정 계약 적용. 회귀 116건과 복제본 HTTP 시나리오 30개 통과; 상세는 [배포 전 검증 기록](predeployment-sqlite-validation-20260926.md).
+
+- 2026-09-29: **CLI `pull` 인자 검사 (M3PFY8SF-W1DP)** — `tt pull ID` 등 허용되지 않은 인자와 누락된 옵션 값은 서버에 `/pull` 요청을 보내기 전에 사용법 오류로 종료한다. 특정 이슈는 `tt claim ID`로 수령한다.

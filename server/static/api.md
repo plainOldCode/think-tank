@@ -168,7 +168,8 @@ backlog ──→ todo ──(pull/claim)──→ in_progress ──→ done
 ## CLI가 있을 때 (`tt`가 PATH면 이게 더 빠름)
 
 ```
-tt pull [--label auto]       tt heartbeat ID          tt note ID "로그"    tt done ID "요약"
+tt pull [--label auto]       tt claim ID              tt heartbeat ID
+tt note ID "로그"           tt done ID "요약"          # pull은 ID 인자를 받지 않음
 tt new "제목" -P p1 -l infra [-p PARENT]        tt list [state]
 tt show ID                 tt tree ID           tt state ID blocked
 tt search "쿼리"           # 제목+본문 검색 (중복 이슈 확인에 먼저)

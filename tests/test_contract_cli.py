@@ -22,7 +22,7 @@ def cli(tmp_path):
 
     @app.middleware("http")
     async def track(request, call_next):
-        if request.method == "PATCH":
+        if request.method == "PATCH" or (request.method == "POST" and request.url.path == "/pull"):
             writes.append(request.url.path)
         return await call_next(request)
 
@@ -87,6 +87,35 @@ def test_contract_reaches_human_and_json_cli(cli):
     run("state", iid, "todo")
     pulled = json.loads(run("pull", "--json").stdout)
     assert pulled["work_contract"] == contract
+
+
+@pytest.mark.parametrize("args", [
+    ("M3PFY8SF-W1DP",),
+    ("--unknown",),
+    ("--label",),
+    ("--hours",),
+    ("--label", "auto", "M3PFY8SF-W1DP"),
+    ("--label", "--hours", "1"),
+    ("--hours", "--label", "auto"),
+])
+def test_pull_rejects_unexpected_arguments_without_request(cli, args):
+    run, writes = cli
+    response = run("pull", *args)
+    assert response.returncode != 0
+    assert "tt pull" in response.stderr
+    assert "tt claim ID" in response.stderr
+    assert writes == []
+
+
+def test_pull_accepts_documented_options(cli):
+    run, writes = cli
+    iid = json.loads(run("new", "auto task", "-l", "auto", "--json").stdout)["id"]
+    response = run("pull", "--label", "auto", "--hours", "2", "--json")
+    assert response.returncode == 0, response.stderr
+    pulled = json.loads(response.stdout)
+    assert pulled["id"] == iid
+    assert pulled["lease_by"] == "cli-test"
+    assert writes == ["/pull"]
 
 
 @pytest.mark.parametrize("via_verify", [False, True])

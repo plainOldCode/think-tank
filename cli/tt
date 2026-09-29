@@ -10,7 +10,7 @@ usage() {
   cat <<EOF
 tt — think-tank issue tracker ($URL)
   tt new "title" [-p PARENT] [-b BODY] [-P p1..p4] [-l label,label] [-s backlog|todo]
-  tt pull [--label auto] [--hours N]  # todo+만료lease 중 atomic 수령 (cron은 --label 권장, hours 1~6)
+  tt pull [--label auto] [--hours N]  # ID 지정 불가: 풀에서 하나 수령 (cron은 --label 권장, hours 1~6)
   tt heartbeat ID [--hours N]   # 작업 중 lease 연장 (30분 간격 권장)
   tt list [state] [--all] [--archived] [--label L]  # 목록 (--label: 라벨 필터, armour+2.0 같은 값 포함)
   tt search "쿼리"            # 제목+본문 검색 (한글 URL-인코딩 자동)
@@ -115,9 +115,17 @@ case "$cmd" in
   pull)
     label="" ; hours=""
     while [[ $# -gt 0 ]]; do case $1 in
-      --label) label="$2"; shift 2 ;;
-      --hours) hours="$2"; shift 2 ;;
-      *) shift ;;
+      --label)
+        [[ $# -ge 2 && -n "${2:-}" && "${2:-}" != -* ]] || {
+          echo "사용법: tt pull [--label LABEL] [--hours N] (ID 지정은 tt claim ID)" >&2; exit 2;
+        }
+        label="$2"; shift 2 ;;
+      --hours)
+        [[ $# -ge 2 && "${2:-}" =~ ^[1-6]$ ]] || {
+          echo "사용법: tt pull [--label LABEL] [--hours N] (N=1~6; ID 지정은 tt claim ID)" >&2; exit 2;
+        }
+        hours="$2"; shift 2 ;;
+      *) echo "사용법: tt pull [--label LABEL] [--hours N] (ID 지정은 tt claim ID)" >&2; exit 2 ;;
     esac; done
     payload="$(jq -cn --arg a "$AGENT" --arg l "$label" --arg h "$hours" '{agent:$a} + (if $l=="" then {} else {require_label:$l} end) + (if $h=="" then {} else {hours:($h|tonumber)} end)')"
     out="$(req -X POST "$URL/pull" -d "$payload")" || { echo "실패: lease 한도(활성 2) 초과 — heartbeat/done 후 재시도" >&2; exit 1; }

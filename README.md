@@ -45,7 +45,7 @@ export TT_URL=http://<TT_HOST>:7800   # 설치 기본값으로 구워짐
 | | |
 |---|---|
 | `tt new "제목" -P p1 -l auto [-p PARENT]` | 등록 (`auto` 라벨 = 자동화 허용 표시) |
-| `tt pull --label auto` / `tt claim ID` | 원자적 수령 (lease 1h 부여) |
+| `tt pull --label auto` / `tt claim ID` | 원자적 수령 (lease 1h 부여). `pull`은 ID를 받지 않으며 특정 카드는 `claim ID`로 수령 |
 | `tt heartbeat ID` | 작업 중 lease 연장 (30분 간격 권장) |
 | `tt note ID "로그"` / `tt done ID "요약"` | 진행·완료 |
 | `tt list [state]` / `tt show ID` / `tt tree ID` / `tt search "쿼리"` | 조회·검색 |
