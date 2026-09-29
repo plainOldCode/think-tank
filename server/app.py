@@ -129,6 +129,30 @@ class DispatchIn(BaseModel):
     author: str = "board"
 
 
+class DispatchProgress(BaseModel):
+    """러너→서버 진행 투영 (TT M3EREF97-FXWQ). 전부 선택, unknown 필드 무시."""
+    state: str | None = None
+    tail: str | None = None
+    ts: str | None = None
+    machine: str | None = None
+    session: str | None = None
+
+
+RUN_STATES = {"queued", "running", "stalled", "finished", "failed"}
+ACTIVE_RUN_STATES = ("queued", "running", "stalled")  # 활성 = 미종료·실행정보 있음
+
+
+def _parse_iso(s):
+    from datetime import datetime
+    try:
+        return datetime.strptime(s, "%Y-%m-%dT%H:%M:%S%z")
+    except (ValueError, TypeError):
+        try:
+            return datetime.fromisoformat(s)
+        except (ValueError, TypeError):
+            return None
+
+
 def create_app(db_path: str) -> FastAPI:
     app = FastAPI(title="think-tank")
     app.state.db_path = db_path
@@ -914,6 +938,82 @@ def create_app(db_path: str) -> FastAPI:
             get_issue(c, issue_id)
             rows = c.execute("SELECT * FROM dispatches WHERE issue_id=? ORDER BY id", (issue_id,)).fetchall()
         return [dict(r) for r in rows]
+
+    @app.post("/issues/{issue_id}/dispatches/{dispatch_id}/progress",
+              summary="Runner progress projection (dispatch-record-only, no comments)",
+              description="러너→서버 진행 투영: dispatch 레코드만 갱신한다(코멘트 무생성, last-write-wins). "
+                          "인증은 deliver() 규약 상속 — Bearer agent secret(secret 빈 agent는 생략 허용). "
+                          "stalled 판정은 러너 stall_check 소유(서버 재계산 금지).")
+    def dispatch_progress(issue_id: str, dispatch_id: int, p: DispatchProgress, request: Request):
+        if p.state is not None and p.state not in RUN_STATES:
+            raise HTTPException(422, f"state enum: {'|'.join(sorted(RUN_STATES))}")
+        with con() as c:
+            row = c.execute("SELECT d.*, a.secret AS agent_secret FROM dispatches d "
+                            "LEFT JOIN agents a ON a.name=d.agent WHERE d.id=?",
+                            (dispatch_id,)).fetchone()
+            if not row or row["issue_id"] != issue_id:
+                raise HTTPException(404, f"dispatch {dispatch_id} not found for issue {issue_id}")
+            secret = row["agent_secret"] or ""
+            if secret:  # deliver()의 secret 옵션 규약 동일: 빈 secret은 생략 허용
+                auth = (request.headers.get("authorization") or "").replace("Bearer ", "")
+                if auth != secret:
+                    raise HTTPException(403, "secret 불일치")
+            fields: dict = {}
+            ts = p.ts if p.ts else dbmod.now()
+            if p.state is not None:
+                fields["run_state"] = p.state
+                if p.state in ("running", "stalled"):
+                    # 진행 병기 허용 상태: ts/tail 유무와 무관하게 liveness 시각 갱신
+                    # (동일 상태 재전송도 진행으로 봄 — 러너는 변경/주기 모두 허용)
+                    fields["last_progress_at"] = ts
+                    if p.tail is not None:
+                        fields["last_tail"] = p.tail[:500]  # 서버 클램프 (422 아님)
+                    if not row["started_at"]:
+                        fields["started_at"] = ts
+                elif p.state in ("finished", "failed"):
+                    fields["ended_at"] = ts  # tail 병기 없음 — 종료 상세는 done/failed 코멘트 소관
+                else:
+                    # queued: run_state(+machine/session)만 — ts/tail 진행 미반영 (§2.2)
+                    if not row["started_at"]:
+                        fields["started_at"] = ts
+            elif p.tail is not None or p.ts or p.machine or p.session:
+                raise HTTPException(422, "state 없이 진행/식별 갱신 불가")
+            # machine/session: 전송 시에만 반영(공백 문자열은 전송으로 보지 않음 — 기존 값 유지)
+            for k in ("machine", "session"):
+                v = getattr(p, k)
+                if v:
+                    fields[k] = v
+            if fields:
+                sets = ", ".join(f"{k}=?" for k in fields)
+                c.execute(f"UPDATE dispatches SET {sets} WHERE id=?", (*fields.values(), dispatch_id))
+                c.commit()
+            row = c.execute("SELECT * FROM dispatches WHERE id=?", (dispatch_id,)).fetchone()
+        return dict(row)
+
+    @app.get("/agents/active",
+             summary="Active tmux dispatches (queued/running/stalled)",
+             description="실행 종료(finished/failed)·미실행('') 제외. stalled는 러너가 보낸 값 그대로 노출 "
+                         "(서버 시간 계산으로 새로 판정하지 않는다). 빈 결과 = 200 + [].")
+    def agents_active():
+        from datetime import datetime, timezone
+        ph = ",".join("?" * len(ACTIVE_RUN_STATES))
+        with con() as c:
+            rows = c.execute(
+                f"SELECT d.id, d.issue_id, i.title AS issue_title, d.agent, d.machine, d.session, "
+                f"d.run_state, d.started_at, d.last_progress_at, d.last_tail, d.ts "
+                f"FROM dispatches d LEFT JOIN issues i ON i.id=d.issue_id "
+                f"WHERE d.run_state IN ({ph}) ORDER BY d.id", ACTIVE_RUN_STATES).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["dispatch_id"] = d.pop("id")
+            base = _parse_iso(d.get("started_at")) or _parse_iso(d["ts"])
+            d.pop("ts")
+            if base:
+                now_dt = datetime.now(base.tzinfo) if base.tzinfo else datetime.now()
+                d["elapsed_s"] = max(0, int((now_dt - base).total_seconds()))
+            out.append(d)
+        return out
 
     static_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 

@@ -321,5 +321,111 @@ class TestReconcileRelease(unittest.TestCase):
         self.assertEqual(R.get_run(self.key)["status"], "cancelled")
 
 
+class TestProgressProjection(unittest.TestCase):
+    """TT M3EREF97-FXWQ: 진행 투영은 tt_progress 한 지점만 통과하고 코멘트를 건드리지 않는다."""
+
+    def setUp(self):
+        self.calls = []
+        self.comments = []
+        self._orig_progress = R.tt_progress
+        self._orig_comment = R.tt_comment
+        R.tt_progress = lambda iid, did, payload: self.calls.append((str(iid), did, payload))
+        R.tt_comment = lambda iid, body: self.comments.append((str(iid), body))
+        R.save_runs({"P-1#501": {"status": "running", "issue_id": "P-1",
+                                 "dispatch_id": 501, "session": "tt-p-501",
+                                 "started": time.time() - 100}})
+
+    def tearDown(self):
+        R.tt_progress = self._orig_progress
+        R.tt_comment = self._orig_comment
+
+    def _states(self):
+        return [c[2]["state"] for c in self.calls]
+
+    def test_finalize_projects_terminal_states(self):
+        ent = {"issue_id": "P-1", "dispatch_id": 501, "session": "tt-p-501"}
+        R.finalize(None, "P-1#501", ent, 0)
+        self.assertEqual(self._states(), ["finished"])
+        self.calls.clear()
+        # 입력 요구 시그니처 BLOCKED: 세션 종료 → failed 투영 (코멘트는 현행 그대로)
+        with open(os.path.join(R.RUNTIME_DIR, "P-1_501.log"), "w") as f:
+            f.write("ERROR: approval required before proceeding\n")
+        R.finalize(None, "P-1#501", dict(ent), 1)
+        self.assertEqual(self._states(), ["failed"])
+        self.assertEqual(self.comments[-1][0], "P-1")
+
+    def test_stall_check_projects_stalled_once_and_kill_failed(self):
+        ent = R.get_run("P-1#301") if R.get_run("P-1#301") else None
+        R.save_runs({"P-2#502": {"status": "running", "issue_id": "P-2",
+                                 "dispatch_id": 502, "session": "tt-p-502"}})
+        now = time.time()
+        R.tmux_run = lambda *a, **k: subprocess.CompletedProcess(a, 0)
+        orig_cap = R.pane_fingerprint
+        R.pane_fingerprint = lambda name, key=None: "fp-fixed"
+        try:
+            e2 = R.get_run("P-2#502")
+            R.stall_check("P-2#502", e2, now)  # baseline
+            R.stall_check("P-2#502", R.get_run("P-2#502"), now + R.STALL_SILENCE_S + 5)
+            self.assertEqual(self._states(), ["stalled"])  # STALL 코멘트와 1:1, 중복 갱신 없음
+            self.calls.clear()
+            R.stall_check("P-2#502", R.get_run("P-2#502"), now + R.STALL_SILENCE_S + 10)
+            self.assertEqual(self._states(), [])
+            e2 = dict(R.get_run("P-2#502"), pane_ts=now)
+            R.stall_check("P-2#502", e2, now + R.STALL_SILENCE_S + R.STALL_KILL_AFTER_S + 5)
+            self.assertEqual(self._states(), ["failed"])  # STALL-kill → failed
+            # 투영은 별도 경로: STALL 코멘트는 존재하지만 진행 코멘트는 없다
+            self.assertTrue(any("STALL" in b for _, b in self.comments))
+        finally:
+            R.pane_fingerprint = orig_cap
+
+    def test_release_projects_finished_without_progress_comments(self):
+        R.save_runs({"P-3#503": {"status": "running", "issue_id": "P-3",
+                                 "dispatch_id": 503, "session": ""}})
+        R.release_issue("P-3", "카드 terminalize")
+        self.assertEqual(self._states(), ["finished"])
+        self.assertEqual(len(self.comments), 1)  # 기존 cancelled 코멘트 1건뿐
+
+    def test_watch_tick_running_then_stalled_no_flipback(self):
+        ent = {"status": "running", "issue_id": "P-4", "dispatch_id": 504,
+               "session": "tt-p-504", "started": time.time() - 60}
+        R.save_runs({"P-4#504": ent})
+        fp = ["a", "a"]  # 첫 tick은 진행, 이후 무음 고정
+        state = {"i": 0}
+        orig_cap, orig_tail = R.pane_fingerprint, R.session_tail
+        orig_alive = R.session_alive
+        R.session_alive = lambda name: True
+        R.tmux_run = lambda *a, **k: subprocess.CompletedProcess(a, 0)
+        def cap(name, key=None):
+            i = state["i"]; state["i"] += 1
+            return fp[min(i, 1)]
+        R.pane_fingerprint = cap
+        R.session_tail = lambda name, limit=200: "step 1\nstep 2"
+        try:
+            R.watch_once()  # tick 1: 지문 변경 → running + tail 마지막 줄
+            first = self.calls[0]
+            self.assertEqual(first[2]["state"], "running")
+            self.assertEqual(first[2]["tail"], "step 2")
+            self.assertTrue(self.comments == [])  # 진행은 코멘트 0
+            # stall 임계 초과 무음: 진행 tick은 스킵 — running 재투영이 없어야 한다
+            # (stalled 투영 자체는 stall_check의 STALL 코멘트 지점이 소유: 1st 순회에 1건)
+            self.calls.clear()
+            past = time.time()
+            R.update_run("P-4#504", pane_ts=past)  # baseline 지문 시각 리셋(킬 임계 방지)
+            R.update_run("P-4#504", pane_fp="a")
+            orig_stall = R.STALL_SILENCE_S
+            try:
+                R.STALL_SILENCE_S = 0  # 이번 tick부터 stall 판정 유효하게
+                R.watch_once()
+                self.assertNotIn("running", self._states())
+                R.update_run("P-4#504", pane_ts=time.time())
+                R.watch_once()
+                self.assertNotIn("running", self._states())
+            finally:
+                R.STALL_SILENCE_S = orig_stall
+        finally:
+            R.pane_fingerprint = orig_cap
+            R.session_tail = orig_tail
+
+
 if __name__ == "__main__":
     unittest.main()
