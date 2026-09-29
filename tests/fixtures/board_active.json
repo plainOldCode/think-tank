@@ -1,0 +1,67 @@
+[
+  {
+    "dispatch_id": 57,
+    "issue_id": "M3EREF97-FXWQ",
+    "issue_title": "runner 진행 관찰",
+    "agent": "runner@macstudio",
+    "machine": "macstudio",
+    "session": "tt-runner@macstudio-57",
+    "run_state": "queued",
+    "started_at": "2026-09-29T14:10:00+0900",
+    "last_progress_at": null,
+    "elapsed_s": 8,
+    "last_tail": ""
+  },
+  {
+    "dispatch_id": 58,
+    "issue_id": "QW1111-AA22",
+    "issue_title": "진행중 배치 작업",
+    "agent": "runner@macstudio",
+    "machine": "macstudio",
+    "session": "tt-runner@macstudio-58",
+    "run_state": "running",
+    "started_at": "2026-09-29T13:58:00+0900",
+    "last_progress_at": "__FRESH__",
+    "elapsed_s": 642,
+    "last_tail": "pytest 3 passed"
+  },
+  {
+    "dispatch_id": 59,
+    "issue_id": "ZT3333-BB44",
+    "issue_title": "무음 카드",
+    "agent": "runner@linux",
+    "machine": "linux-box",
+    "session": "tt-runner@linux-59",
+    "run_state": "stalled",
+    "started_at": "2026-09-29T13:05:00+0900",
+    "last_progress_at": "2026-09-29T12:31:00+0900",
+    "elapsed_s": 4210,
+    "last_tail": ""
+  },
+  {
+    "dispatch_id": 60,
+    "issue_id": "OL5555-CC66",
+    "issue_title": "오래된 진행 카드",
+    "agent": "runner@old",
+    "machine": "m2",
+    "session": "tt-runner@old-60",
+    "run_state": "running",
+    "started_at": "2026-09-29T11:00:00+0900",
+    "last_progress_at": "__STALE__",
+    "elapsed_s": null,
+    "last_tail": "…"
+  },
+  {
+    "dispatch_id": 61,
+    "issue_id": "ES7777-DD88",
+    "issue_title": "<b>주입</b> 시도 제목",
+    "agent": "runner@x",
+    "machine": "",
+    "session": "",
+    "run_state": "queued",
+    "started_at": "2026-09-29T14:12:00+0900",
+    "last_progress_at": null,
+    "elapsed_s": 2,
+    "last_tail": ""
+  }
+]
