@@ -37,6 +37,8 @@ main { padding:10px 10px 0; display:flex; flex-direction:column; gap:9px; }
 .addc input { flex:1; background:var(--bg); border:1px solid var(--line); border-radius:8px; color:var(--tx); padding:9px 10px; font-size:13px; }
 .addc button { background:var(--todo); border:0; border-radius:8px; padding:0 13px; font-weight:600; }
 .empty { text-align:center; color:var(--dim); padding:34px 0; }
+.card.mine { border-left:3px solid var(--prog); }
+.card.other { opacity:.62; }
 .toast { position:fixed; bottom:76px; left:50%; transform:translateX(-50%); background:#0b0e13cc;
          border:1px solid var(--line); color:var(--tx); padding:9px 14px; border-radius:9px; font-size:13px;
          opacity:0; transition:opacity .25s; pointer-events:none; max-width:88vw; }
@@ -49,7 +51,7 @@ main { padding:10px 10px 0; display:flex; flex-direction:column; gap:9px; }
 <nav id="tabs"></nav>
 <div class="toast" id="toast"></div>
 <script>
-const TABS = [["review","리뷰","rev"],["in_progress","내 작업","prog"],["todo","시작 대기","todo"],["blocked","막힘","block"],["done","완료","done"]];
+const TABS = [["review","리뷰","rev"],["in_progress","진행중","prog"],["todo","시작 대기","todo"],["blocked","막힘","block"],["done","완료","done"]];
 let LAST = "", tab = localStorage.getItem("tt-m-tab") || "review";
 let OPEN = new Set(), DRAFT = {};
 let ME = localStorage.getItem("tt-m-me") || "";
@@ -102,8 +104,7 @@ function render(all){
   }
 }
 function card(i){
-  const short = i.id.slice(-4);
-  let acts = "";
+  let acts = "", mine = false, other = false;
   if (i.state === "review") acts =
     `<button class="ok" onclick="pass('${esc(i.id)}',${i.version})">완료 처리</button>
      <button class="back" onclick="send('${esc(i.id)}','todo')">↩ 되돌림</button>`;
@@ -111,15 +112,15 @@ function card(i){
     (i.assignee && i.assignee !== ME ? `<span class="tag">@${esc(i.assignee)}</span>`
      : `<button class="go" onclick="start('${esc(i.id)}')">▶ 시작(claim)</button>`);
   if (i.state === "in_progress") {
-    if (i.lease_by === ME || i.assignee === ME) acts =
+    if (ME && (i.lease_by === ME || i.assignee === ME)) { mine = true; acts =
       `<button class="rev" onclick="send('${esc(i.id)}','review')">→ 리뷰 요청</button>
-       <button class="hb" onclick="beat('${esc(i.id)}')">♥ 연장</button>`;
-    else acts = `<span class="tag">@${esc(i.assignee||"?")} 진행중</span>`;
+       <button class="hb" onclick="beat('${esc(i.id)}')">♥ 연장</button>`; }
+    else { other = true; acts = `<span class="tag" style="color:var(--prog)">@${esc(i.assignee||i.lease_by||"?")} 진행중</span>`; }
   }
   if (i.state === "blocked") acts = `<span class="tag" style="color:var(--block)">wait: ${esc(i.waiting_actor||"?" )}</span>
     <button class="back" onclick="send('${esc(i.id)}','todo')">↩ 되돌림</button>`;
   if (i.state === "done") acts = i.verification_status ? `<span class="tag">${esc(i.verification_status)}</span>` : "";
-  return `<div class="card" id="c-${esc(i.id)}">
+  return `<div class="card${mine?" mine":""}${other?" other":""}" id="c-${esc(i.id)}">
     <span class="id">${esc(i.id)}</span> ${i.priority?`<span class="tag">p${i.priority}</span>`:""}${i.labels.map(l=>`<span class="tag">#${esc(l)}</span>`).join("")}
     <h3>${esc(i.title)}</h3>
     ${i.assignee?`<span class="tag">@${esc(i.assignee)}</span>`:""}${i.lease_expires?`<span class="tag">lease ${esc(i.lease_expires.slice(5,16))}</span>`:""}
