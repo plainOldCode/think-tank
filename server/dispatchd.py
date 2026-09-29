@@ -7,6 +7,7 @@ launchd com.tt.dispatchd (mini), TT_AUTO_DISPATCH=1 이어야 동작.
 import json
 import os
 import re
+import shutil
 import subprocess
 import time
 import urllib.request
@@ -144,8 +145,12 @@ def get_version(url, iid):
 REPO = os.environ.get("TT_REPO_SLUG", "plainOldCode/think-tank")
 
 
+GH = (shutil.which("gh")
+      or next((p for p in ("/opt/homebrew/bin/gh", "/usr/local/bin/gh") if os.path.exists(p)), "gh"))
+
+
 def _gh(args):
-    r = subprocess.run(["gh", *[str(a) for a in args]], capture_output=True, text=True, timeout=120)
+    r = subprocess.run([GH, *[str(a) for a in args]], capture_output=True, text=True, timeout=120)
     if r.returncode != 0:
         raise RuntimeError(f"gh {' '.join(map(str, args))}: {r.stderr[:300]}")
     return r.stdout
