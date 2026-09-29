@@ -125,7 +125,8 @@ def execute(url, act):
         r = api(url, f"/issues/{act['issue']}/claim", "POST", {"agent": act["agent"]})
         msg = (f"[auto dispatchd] 작업 {act['issue']}: {act['reason']}. 수령(claim)·lease heartbeat·"
                f"3단계 완료 보고(계약 v2)를 준수할 것. tt pull(풀) 금지. "
-               f"tt issue {act['issue']} 로 상세 확인 후 시작.")
+               f"코드 작업은 브랜치 tt/{act['issue']}-<slug>에서 커밋 후 GitHub PR로만 main에 올려라"
+               f"(메인 직push 금지 — 예외는 message 명시 시만). tt issue {act['issue']} 로 상세 확인 후 시작.")
         api(url, f"/issues/{act['issue']}/dispatch", "POST",
             {"agent": act["agent"], "message": msg})
         api(url, f"/issues/{act['issue']}/comments", "POST",
