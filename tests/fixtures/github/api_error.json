@@ -1,0 +1,4 @@
+{
+  "gh_error": {"command": "gh pr list", "exit_code": 1, "stderr": "HTTP 403: API rate limit exceeded"},
+  "expected": {"round_aborted": true, "merged": 0}
+}

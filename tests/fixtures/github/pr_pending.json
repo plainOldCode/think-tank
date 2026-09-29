@@ -1,0 +1,30 @@
+{
+  "pr": {
+    "number": 5,
+    "state": "OPEN",
+    "headRefName": "tt/M3PPRJ7V-Y6YF-ci",
+    "headRefOid": "2222222222222222222222222222222222222222",
+    "isDraft": false,
+    "mergeable": "MERGEABLE",
+    "mergeStateStatus": "CLEAN",
+    "statusCheckRollup": [
+      {"name": "pytest", "status": "IN_PROGRESS", "conclusion": null},
+      {"name": "smoke-node", "status": "COMPLETED", "conclusion": "SUCCESS"},
+      {"name": "secret-scan", "status": "COMPLETED", "conclusion": "SUCCESS"}
+    ]
+  },
+  "check_runs": {
+    "total_count": 3,
+    "check_runs": [
+      {"name": "pytest", "head_sha": "2222222222222222222222222222222222222222", "status": "IN_PROGRESS", "conclusion": null},
+      {"name": "smoke-node", "head_sha": "2222222222222222222222222222222222222222", "status": "COMPLETED", "conclusion": "SUCCESS"},
+      {"name": "secret-scan", "head_sha": "2222222222222222222222222222222222222222", "status": "COMPLETED", "conclusion": "SUCCESS"}
+    ]
+  },
+  "head_recheck": "2222222222222222222222222222222222222222",
+  "tt_issue": {
+    "id": "M3PPRJ7V-Y6YF",
+    "state": "done",
+    "completion_report": {"result": "passed"}
+  }
+}

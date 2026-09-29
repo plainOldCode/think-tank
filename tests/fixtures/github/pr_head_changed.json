@@ -1,0 +1,30 @@
+{
+  "pr": {
+    "number": 7,
+    "state": "OPEN",
+    "headRefName": "tt/M3PPRJFY-V6EA-probe-merge",
+    "headRefOid": "4444444444444444444444444444444444444444",
+    "isDraft": false,
+    "mergeable": "MERGEABLE",
+    "mergeStateStatus": "CLEAN",
+    "statusCheckRollup": [
+      {"name": "pytest", "status": "COMPLETED", "conclusion": "SUCCESS"},
+      {"name": "smoke-node", "status": "COMPLETED", "conclusion": "SUCCESS"},
+      {"name": "secret-scan", "status": "COMPLETED", "conclusion": "SUCCESS"}
+    ]
+  },
+  "check_runs": {
+    "total_count": 3,
+    "check_runs": [
+      {"name": "pytest", "head_sha": "4444444444444444444444444444444444444444", "status": "COMPLETED", "conclusion": "SUCCESS"},
+      {"name": "smoke-node", "head_sha": "4444444444444444444444444444444444444444", "status": "COMPLETED", "conclusion": "SUCCESS"},
+      {"name": "secret-scan", "head_sha": "4444444444444444444444444444444444444444", "status": "COMPLETED", "conclusion": "SUCCESS"}
+    ]
+  },
+  "head_recheck": "5555555555555555555555555555555555555555",
+  "tt_issue": {
+    "id": "M3PPRJFY-V6EA",
+    "state": "done",
+    "completion_report": {"result": "passed"}
+  }
+}
