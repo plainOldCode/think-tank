@@ -148,7 +148,7 @@ function card(i){
      <button class="back" onclick="send('${esc(i.id)}','todo')">↩ 되돌림</button>`;
   if (i.state === "todo") acts =
     (i.assignee && i.assignee !== ME ? `<span class="tag">@${esc(i.assignee)}</span>`
-     : `<button class="go" onclick="start('${esc(i.id)}')">▶ 시작(claim)</button>`);
+     : `<button class="go" onclick="startMenu('${esc(i.id)}')">▶ 시작</button>`);
   if (i.state === "in_progress") {
     if (ME && (i.lease_by === ME || i.assignee === ME)) { mine = true; acts =
       `<button class="rev" onclick="send('${esc(i.id)}','review')">→ 리뷰 요청</button>
