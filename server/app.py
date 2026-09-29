@@ -919,7 +919,7 @@ def create_app(db_path: str) -> FastAPI:
 
     @app.get("/m", include_in_schema=False)
     def mobile():
-        return FileResponse(os.path.join(static_dir, "mobile.html"))
+        return FileResponse(os.path.join(static_dir, "mobile.html"), headers={"Cache-Control": "no-store"})
 
     app.mount("/", StaticFiles(directory=static_dir, html=True), name="static")
     return app

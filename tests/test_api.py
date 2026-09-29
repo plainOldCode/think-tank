@@ -621,3 +621,9 @@ def test_mobile_route(client):
     assert r.status_code == 200
     assert "text/html" in r.headers["content-type"]
     assert "tt-mobile" in r.text
+
+
+def test_mobile_no_store(client):
+    r = client.get("/m")
+    assert r.status_code == 200
+    assert "no-store" in r.headers.get("cache-control", "")
