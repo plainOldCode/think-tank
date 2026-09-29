@@ -41,6 +41,9 @@ const { load, pick, pickAgent, startMenu, pickFromSheet, setSub } = globalThis;
 await load();
 if (!noMe) {
   if (!els["#list"].innerHTML.includes("B2")) throw new Error("1st render broken");
+  pick("todo");
+  if (!els["#list"].innerHTML.includes("onclick=\"startMenu('A1')\"")) throw new Error("start 버튼 배선 누락(구버전 잔존)");
+  pick("review");
   const before = els["#list"].innerHTML;
   await load();
   if (els["#list"].innerHTML !== before) throw new Error("identical data re-rendered");
