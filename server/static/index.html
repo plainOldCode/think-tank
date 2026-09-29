@@ -241,11 +241,7 @@ function renderBoard(issues) {
     const li = leaseInfo(k);
     const sty = li ? `cursor:pointer;border-left:3px solid ${li.stale ? "var(--warn)" : li.color};` : k.state === "done" ? "cursor:pointer;border-left:3px solid var(--done);" : "";
     return `<div class="sub${k.state === "done" ? " done" : ""}" style="${sty}" onclick="event.stopPropagation();show('${esc(k.id)}')">
-<<<<<<< HEAD
-       ${esc(k.id.slice(-4))} <span class="st">[${esc(k.state)}]</span>${li ? ` <span style="color:${li.color}">${li.stale ? "⌛" : "🔒"}</span>` : ""} ${chipFor(k.id)} ${esc(k.title)}${k.assignee?` @${esc(k.assignee)}`:""}
-=======
-       ${esc(k.id.slice(-4))} <span class="st">[${esc(k.state)}]</span>${li ? ` <span style="color:${li.alive ? "var(--done)" : li.color};${li.alive ? "animation:hbpulse 1.1s infinite" : ""}">${li.stale ? "⌛" : li.alive ? "●" : "🔒"}</span>` : ""} ${esc(k.title)}${k.assignee?` @${esc(k.assignee)}`:""}
->>>>>>> 83f00eb (TT ping: agent 자기 살아있음 보고 + 보드 초록 깜빡임 — 사용자 요구(FXWQ tmux 관찰과 별개로 claim 생존 자체의 표시))
+       ${esc(k.id.slice(-4))} <span class="st">[${esc(k.state)}]</span>${li ? ` <span style="color:${li.alive ? "var(--done)" : li.color};${li.alive ? "animation:hbpulse 1.1s infinite" : ""}">${li.stale ? "⌛" : li.alive ? "●" : "🔒"}</span>` : ""} ${chipFor(k.id)} ${esc(k.title)}${k.assignee?` @${esc(k.assignee)}`:""}
        ${(kidsOf[k.id]||[]).length ? subRows(k) : ""}
      </div>`; });
   document.getElementById("cxbtn").style.opacity = SHOW_CX ? "1" : ".45";
