@@ -816,3 +816,37 @@ def test_lease_default_hours_is_six(client):
     exp = dt.datetime.strptime(a["lease_expires"], "%Y-%m-%dT%H:%M:%S%z")
     now = dt.datetime.now(exp.tzinfo)
     assert 5.5 < (exp - now).total_seconds() / 3600 <= 6.1, a["lease_expires"]
+
+
+def test_review_transition_releases_lease(client):
+    i = mk(client)
+    a = client.post(f"/issues/{i['id']}/claim", json={"agent": "done@x"}).json()
+    assert a["lease_by"] == "done@x"
+    d = client.patch(f"/issues/{i['id']}", json={"version": a["version"], "state": "done"}).json()
+    assert d["state"] == "review"  # 무보고 done 강등
+    assert d["lease_by"] == "" and d["lease_expires"] is None, "review 강등 시 lease 잔존(슬롯 점유)"
+
+
+def test_direct_review_transition_releases_lease(client):
+    i = mk(client)
+    a = client.post(f"/issues/{i['id']}/claim", json={"agent": "busy@x"}).json()
+    d = client.patch(f"/issues/{i['id']}", json={"version": a["version"], "state": "review"}).json()
+    assert d["state"] == "review"
+    assert d["lease_by"] == "" and d["lease_expires"] is None, "직접 review도 lease 해제 대상"
+
+
+def test_lease_released_on_all_exits(client):
+    import datetime as dt
+    import db as dbmod
+    for target in ("review", "todo", "blocked", "done", "cancelled"):
+        i = mk(client)
+        c1 = client.post(f"/issues/{i['id']}/claim", json={"agent": f"e-{target}@x"}).json()
+        v = c1["version"]
+        if target == "cancelled":  # state machine: in_progress→todo→cancelled
+            v = client.patch(f"/issues/{i['id']}", json={"version": v, "state": "todo"}).json()["version"]
+        d = client.patch(f"/issues/{i['id']}", json={"version": v, "state": target})
+        assert d.status_code == 200, f"{target}: {d.text[:120]}"
+        g = d.json()
+        now = dt.datetime.strptime(dbmod.now(), "%Y-%m-%dT%H:%M:%S%z")
+        live = bool(g.get("lease_expires")) and dt.datetime.strptime(g["lease_expires"], "%Y-%m-%dT%H:%M:%S%z") > now
+        assert not live, f"{target} 탈출 후 live lease 잔존: {g['lease_expires']}"

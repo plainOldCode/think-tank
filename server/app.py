@@ -440,7 +440,7 @@ def create_app(db_path: str) -> FastAPI:
                         gate_warn = DONE_GATE == "warn"
                     if fields["state"] == "done":
                         fields["completed_at"] = dbmod.now()
-                if p.state in ("todo", "backlog", "done", "cancelled"):
+                if p.state in ("todo", "backlog", "done", "cancelled", "blocked"):
                     fields["assignee"] = "" if p.state in ("todo", "backlog") else row["assignee"]
                     fields.update({"lease_by": "", "lease_expires": None})
                     # blocked 사족은 blocked 이탈 시 자동 소거 (재-blocked 시 재입력)
