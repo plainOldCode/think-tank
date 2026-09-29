@@ -60,7 +60,7 @@ main { padding:10px 10px 0; display:flex; flex-direction:column; gap:9px; }
 </style>
 </head>
 <body class="tt-mobile">
-<header><b>tt</b> <span class="tag">v7</span><span class="tag" id="upd"></span><span class="me" id="me" onclick="setMe()"></span></header>
+<header><b>tt</b> <span class="tag">v8</span><span class="tag" id="upd"></span><span class="me" id="me" onclick="setMe()"></span></header>
 <main id="list"></main>
 <nav id="tabs"></nav>
 <div class="toast" id="toast"></div>
@@ -85,7 +85,8 @@ const $ = s => document.querySelector(s);
 const esc = s => String(s??"").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 function toast(m){ const t=$("#toast"); t.textContent=m; t.classList.add("show"); setTimeout(()=>t.classList.remove("show"),2600); }
 function setMe(){ const v=prompt("작업자 이름(claim/verify 서명)", ME); if(v){ ME=v.trim(); localStorage.setItem("tt-m-me",ME); $("#me").textContent=ME; } return ME; }
-function who(){ return ME || setMe(); }
+function who(){ return ME; }
+function saveMe(v){ ME=(v||"").trim(); if (ME){ localStorage.setItem("tt-m-me",ME); $("#me").textContent=ME; } return ME; }
 async function j(path, opts){ const r = await fetch(path, opts); const d = await r.json().catch(()=>({}));
   if(!r.ok) throw new Error(d.detail || r.status); return d; }
 async function api(path, method, body){ try{ return await j(path,{method, headers:{"content-type":"application/json"}, body:JSON.stringify(body)}); }
@@ -189,21 +190,27 @@ async function start(id){
   load();
 }
 function startMenu(id){
-  if (!who()) return;
   SID = id;
-  let html = `<h4>이 카드를 누가 진행할까요?</h4><button onclick="pickAgent('__me__')">내가 진행 (claim + lease 3h)</button>`;
+  let html = `<h4>이 카드를 누가 진행할까요?</h4>`;
+  if (!ME) html += `<input id="mein" placeholder="작업자 이름 (예: name@laptop) — claim/서명용" style="width:100%;margin-top:8px;background:var(--bg);border:1px solid var(--line);border-radius:9px;color:var(--tx);padding:12px;font-size:14.5px">`;
   const list = AGENTS.filter(a => a.enabled);
+  html += `<button onclick="pickFromSheet('__me__')">내가 진행 (claim + lease 3h)</button>`;
   if (!list.length) html += `<button disabled>등록 agent 목록 로드 실패 — 새로고침 후 재시도</button>`;
   for (const a of list)
-    html += `<button onclick="pickAgent('${esc(a.name)}')">${esc(a.name)}<small>${a.last_ok ? "✓ 마지막 수신 " + String(a.last_ok).slice(5,16) : "⚠ 수신 실패 기록"}</small></button>`;
+    html += `<button onclick="pickFromSheet('${esc(a.name)}')">${esc(a.name)}<small>${a.last_ok ? "✓ 마지막 수신 " + String(a.last_ok).slice(5,16) : "⚠ 수신 실패 기록"}</small></button>`;
   $("#sheet").innerHTML = html;
   $("#sheet").classList.add("open"); $("#scrim").classList.add("open");
+  if (!ME) $("#mein").focus();
+}
+async function pickFromSheet(aid){
+  if (!ME && !saveMe($("#mein").value)) { toast("작업자 이름을 먼저 입력해주세요"); return; }
+  await pickAgent(aid);
 }
 function closeSheet(){ $("#sheet").classList.remove("open"); $("#scrim").classList.remove("open"); }
 async function pickAgent(aid){
   const id = SID; closeSheet();
   if (aid === "__me__") return start(id);
-  const me = who(); if(!me) return;
+  const me = who(); if(!me) return startMenu(id);
   const msg = prompt(aid+" \u2192 내릴 지시 한 줄 (dispatch · 상태는 상대가 claim 시에만 이동)", "이 카드를 진행해주세요");
   if (msg === null) return;
   if (await api("/issues/"+id+"/dispatch","POST",{agent:aid, message:msg, author:me})) toast("➤ "+aid+" dispatch — 회신은 댓글");
