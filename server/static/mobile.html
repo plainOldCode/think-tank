@@ -47,8 +47,11 @@ main { padding:10px 10px 0; display:flex; flex-direction:column; gap:9px; }
 #scrim.open { display:block; }
 .sheet { position:fixed; left:0; right:0; bottom:0; z-index:9; background:var(--card);
   border-top:1px solid var(--line); border-radius:14px 14px 0 0; padding:14px 14px calc(14px + env(safe-area-inset-bottom));
-  transform:translateY(110%); transition:transform .22s; }
+  transform:translateY(110%); transition:transform .22s;
+  max-height:68dvh; overflow-y:auto; overscroll-behavior:contain; -webkit-overflow-scrolling:touch; }
 .sheet.open { transform:none; }
+body.sheet-open { overflow:hidden; }
+.sheet button:active { border-color:var(--prog); }
 .sheet h4 { font-size:13px; color:var(--dim); font-weight:500; }
 .sheet button { display:block; width:100%; text-align:left; background:var(--bg); border:1px solid var(--line);
   color:var(--tx); border-radius:9px; padding:13px 14px; margin-top:8px; font-size:14.5px; cursor:pointer; }
@@ -200,13 +203,14 @@ function startMenu(id){
     html += `<button onclick="pickFromSheet('${esc(a.name)}')">${esc(a.name)}<small>${a.last_ok ? "✓ 마지막 수신 " + String(a.last_ok).slice(5,16) : "⚠ 수신 실패 기록"}</small></button>`;
   $("#sheet").innerHTML = html;
   $("#sheet").classList.add("open"); $("#scrim").classList.add("open");
+  document.body.classList.add("sheet-open");
   if (!ME) $("#mein").focus();
 }
 async function pickFromSheet(aid){
   if (!ME && !saveMe($("#mein").value)) { toast("작업자 이름을 먼저 입력해주세요"); return; }
   await pickAgent(aid);
 }
-function closeSheet(){ $("#sheet").classList.remove("open"); $("#scrim").classList.remove("open"); }
+function closeSheet(){ $("#sheet").classList.remove("open"); $("#scrim").classList.remove("open"); document.body.classList.remove("sheet-open"); }
 async function pickAgent(aid){
   const id = SID; closeSheet();
   if (aid === "__me__") return start(id);

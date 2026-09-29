@@ -13,7 +13,9 @@ const noMe = !!process.env.SMOKE_NO_ME;
 const store = noMe ? {} : { "tt-m-me": "me@x" };
 globalThis.localStorage = { getItem: k => store[k] ?? null, setItem: (k, v) => store[k] = v };
 const els = {};
+const bodyClasses = new Set();
 globalThis.document = {
+  body: { classList: { add: c => bodyClasses.add(c), remove: c => bodyClasses.delete(c), contains: c => bodyClasses.has(c) } },
   querySelector: s => els[s] ?? (els[s] = { innerHTML: "", textContent: "", value: "", focus() {}, classList: { add(){}, remove(){}, toggle(){}, contains: () => false } }),
 };
 globalThis.CSS = { escape: s => s };
@@ -60,9 +62,12 @@ if (!noMe) {
   startMenu("A1");
   const sheet = els["#sheet"].innerHTML;
   if (!sheet.includes("agent-1@host1") || !sheet.includes("내가 진행")) throw new Error("start menu missing agents");
+  if (!sheet.includes("onclick=\"pickFromSheet('agent-1@host1')\"")) throw new Error("agent 버튼 배선 누락");
+  if (!bodyClasses.has("sheet-open")) throw new Error("배경 스크롤 잠금 누락");
   if (!sheet.includes("id=\"mein\"") && !store["tt-m-me"]) throw new Error("mein 필드 있어야 함(ME 저장돼 있으면 생략 정상)");
   globalThis.prompt = () => "이 카드를 진행해주세요";
   await pickAgent("agent-1@host1");
+  if (bodyClasses.has("sheet-open")) throw new Error("closeSheet 잠금 해제 누락");
   const d = calls.find(([u]) => u.includes("/dispatch"));
   if (!d) throw new Error("dispatch not called");
   if (!d[1].includes('"agent":"agent-1@host1"') || !d[1].includes("me@x")) throw new Error("dispatch payload wrong: " + d[1]);
