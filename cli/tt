@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # tt — think-tank issue tracker CLI (server: REST API, see docs/API.md)
 set -uo pipefail
-URL="${TT_URL:-http://127.0.0.1:7800}"
+URL="${TT_URL:-http://100.122.96.16:7800}"
 AGENT="${TT_AGENT:-$USER@$(hostname -s)}"
 JQ="jq -r"
 jfilter() { if [[ "${JSON:-0}" == 1 ]]; then jq .; else jq -r "$@"; fi; }
@@ -304,3 +304,4 @@ case "$cmd" in
 
   help|*) usage ;;
 esac
+
