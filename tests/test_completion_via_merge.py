@@ -142,11 +142,12 @@ def test_in_progress_merge는_무조건_review_정지(gh_ok, monkeypatch):
     assert not rec.verified
 
 
-def _issue(state, iid="M3R7M0ZR-YF99", attempt=1, comments=()):
+def _issue(state, iid="M3R7M0ZR-YF99", attempt=1, comments=(), updated="2026-10-01T09:00:00+0900"):
     return {"id": iid, "state": state, "assignee": "a@t", "lease_expires": None,
             "labels": [], "priority": None, "execution_attempt": attempt,
             "dispatches": 1, "release_ready": False, "waiting_for": None,
-            "work_contract": {"version": "v2"}, "comments": list(comments), "title": iid}
+            "work_contract": {"version": "v2"}, "comments": list(comments),
+            "updated_at": updated, "title": iid}
 
 
 def _snap(issues, prs=()):
@@ -154,11 +155,36 @@ def _snap(issues, prs=()):
             "issues": list(issues), "prs": list(prs)}
 
 
+def _pr(checks):
+    return [{"number": 9, "repo": "plainOldCode/think-tank", "checks": checks,
+             "branch": "tt/M3R7M0ZR-YF99-x", "head_sha": "b" * 40}]
+
+
 def test_review카드_PR없으면_needs_merge_판정():
     acts = dispatchd.decide(_snap([_issue("review")]))
     notes = [a for a in acts if a["action"] == "review-note"]
     assert len(notes) == 1 and "PR 없음" in notes[0]["reason"]
     assert notes[0]["issue"] == "M3R7M0ZR-YF99"
+
+
+def test_review직후_PR없으면_유예_코멘트안한다():
+    # review 전이(updated) 5분 전 — PR 미생성 여유 구간 (M3RXY7KZ 관측: 성급 판정)
+    i = _issue("review", updated="2026-10-01T09:55:00+0900")
+    acts = dispatchd.decide(_snap([i]))
+    assert not [a for a in acts if a["action"] == "review-note"]
+
+
+def test_CI_진행중이면_코멘트안한다_재확인만():
+    i = _issue("review", updated="2026-10-01T08:00:00+0900")
+    acts = dispatchd.decide(_snap([i], _pr([{"state": "PENDING"}, {"state": "SUCCESS"}])))
+    assert not [a for a in acts if a["action"] in ("review-note", "merge")]
+
+
+def test_CI_명시실패는_즉시_needs_merge():
+    i = _issue("review", updated="2026-10-01T09:58:00+0900")
+    acts = dispatchd.decide(_snap([i], _pr([{"state": "FAILURE"}])))
+    notes = [a for a in acts if a["action"] == "review-note"]
+    assert len(notes) == 1 and "CI 실패" in notes[0]["reason"]
 
 
 def test_needs_merge_회차_dedup():
