@@ -155,9 +155,30 @@ def _snap(issues, prs=()):
             "issues": list(issues), "prs": list(prs)}
 
 
-def _pr(checks):
+def _pr(checks, branch="tt/M3R7M0ZR-YF99-x", title=""):
     return [{"number": 9, "repo": "plainOldCode/think-tank", "checks": checks,
-             "branch": "tt/M3R7M0ZR-YF99-x", "head_sha": "b" * 40}]
+             "branch": branch, "title": title, "head_sha": "b" * 40}]
+
+
+def test_PR_제목_ID만_있어도_카드_조인_merge_판정():
+    # 재작업으로 브랜치명이 규약 밖(fix/...)이어도 제목의 카드 ID로 조인
+    i = _issue("review", updated="2026-10-01T08:00:00+0900")
+    prs = _pr([{"state": "SUCCESS"}], branch="fix/retry-work",
+              title="재작업: review-note 유예 수정 (M3R7M0ZR-YF99)")
+    acts = dispatchd.decide(_snap([i], prs))
+    merges = [a for a in acts if a["action"] == "merge"]
+    assert len(merges) == 1 and merges[0]["issue"] == "M3R7M0ZR-YF99"
+    assert not [a for a in acts if a["action"] == "review-note"]
+
+
+def test_PR_그냥_ID는_무관카드_pr_card_id_무시():
+    # 다른 카드 ID 브랜치 + 본 카드 제목 없음 → 본 카드엔 PR 없음 판정(유예 경과 후)
+    i = _issue("review", updated="2026-10-01T08:00:00+0900")
+    prs = _pr([{"state": "SUCCESS"}], branch="tt/M9ZZZZZZ-AAAA-x",
+              title="무관 작업")
+    acts = dispatchd.decide(_snap([i], prs))
+    notes = [a for a in acts if a["action"] == "review-note"]
+    assert len(notes) == 1 and "PR 없음" in notes[0]["reason"]
 
 
 def test_review카드_PR없으면_needs_merge_판정():

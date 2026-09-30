@@ -61,7 +61,7 @@ class FakeGh:
             if "--head" in args:  # 실측: exact prefix 필터
                 raise AssertionError(
                     "pr list에 --head 접두어 사용 금지(정확히 일치만 매칭 → 0건)")
-            if args[args.index("--json") + 1] == "number,headRefName,headRefOid":
+            if args[args.index("--json") + 1].startswith("number,headRefName,headRefOid"):
                 return json.dumps([{
                     "number": 6,
                     "headRefName": "tt/M3PPRJ49-FYW2-ci",

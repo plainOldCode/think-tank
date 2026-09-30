@@ -44,9 +44,22 @@ def ci_passed(pr):
 CARD_IN_BRANCH = re.compile(r"tt/(M[A-Z0-9]{6,9}-[A-Z0-9]{4})")
 
 
+CARD_IN_ANY = re.compile(r"\bM[A-Z0-9]{6,9}-[A-Z0-9]{4}\b")
+
+
 def card_from_branch(branch):
     m = CARD_IN_BRANCH.search(branch or "")
     return m.group(1) if m else None
+
+
+def pr_card_id(pr):
+    """PR→카드 조인 키. 브랜치(tt/<ID>-) 우선, 없으면 제목의 카드 ID(재작업으로
+    브랜치명이 규약 밖이 되는 경우 흡수 — 사용자 지시 2026-09-30)."""
+    iid = card_from_branch(pr.get("branch", ""))
+    if iid:
+        return iid
+    m = CARD_IN_ANY.search(pr.get("title", "") or "")
+    return m.group(0) if m else None
 
 
 def _review_grace_min():
@@ -127,7 +140,7 @@ def decide(snap):
     # ⓪(사실상 우선) probe: CI green PR + 카드 연결/수령/계약 검증 → gh pr merge
     by_id = {i["id"]: i for i in issues}
     for p in snap.get("prs") or []:
-        iid = card_from_branch(p.get("branch", ""))
+        iid = pr_card_id(p)
         i = by_id.get(iid) if iid else None
         if not iid or i is None or i["state"] in ("done", "cancelled"):
             continue
@@ -156,8 +169,7 @@ def decide(snap):
         if any(marker in (c.get("body") or "") for c in (i.get("comments") or [])
                if c.get("author") == "probe"):
             continue
-        prs_for = [p for p in snap.get("prs") or []
-                   if card_from_branch(p.get("branch", "")) == i["id"]]
+        prs_for = [p for p in snap.get("prs") or [] if pr_card_id(p) == i["id"]]
         if prs_for:
             states = [c.get("state") for p in prs_for for c in p.get("checks") or []]
             if states and all(x == "SUCCESS" for x in states):
@@ -255,7 +267,7 @@ def collect_prs(repos=None):
     for repo in dict.fromkeys(pool):
         try:
             prs = gh_json("pr", "list", "--repo", repo, "--state", "open",
-                          "--json", "number,headRefName,headRefOid") or []
+                          "--json", "number,headRefName,headRefOid,title") or []
         except Exception:
             continue
         for p in prs:
@@ -264,7 +276,8 @@ def collect_prs(repos=None):
             except Exception:
                 checks = []
             out.append({"number": p["number"], "repo": repo, "branch": p.get("headRefName", ""),
-                        "head_sha": p.get("headRefOid", ""), "checks": checks})
+                        "title": p.get("title", ""), "head_sha": p.get("headRefOid", ""),
+                        "checks": checks})
     return out
 
 
