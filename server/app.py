@@ -426,8 +426,9 @@ def create_app(db_path: str) -> FastAPI:
                         fields["completion_report"] = proof.model_dump_json()
                         if proof.result == "passed":
                             fields.update(reported_fields(proof.evidence))
-                        else:
-                            fields["state"] = "review"
+                        # 제출의 종착지는 review (M3R7M0ZR-YF99): done은 probe 병합 확인(verify)
+                        # 또는 사람 verify/force_done/close만 가능 — agent 직행 경로 없음.
+                        fields["state"] = "review"
                     elif "close" in labels_now or p.force_done:
                         fields.update({"verified": 1, "verified_at": dbmod.now(),
                                        "verification_status": "approved",
@@ -502,9 +503,19 @@ def create_app(db_path: str) -> FastAPI:
             bump(c, issue_id, fields, p.expected_version)
             new_state = fields.get("state")
             if p.state == "done" and new_state == "review":
-                # done 강등 사유를 관찰 가능하게: 무엇이 증거로 인정되는지 안내
-                c.execute("INSERT INTO comments (issue_id, author, body, ts) VALUES (?,?,?,?)",
-                          (issue_id, "tt-server", DONE_GATE_MSG.format(iid=issue_id), dbmod.now()))
+                accepted = (fields.get("completion_report")
+                            and fields.get("verification_status") == "reported")
+                if accepted:
+                    # 유효보고 접수 = 정상 정지. 병합 확인(probe) 또는 사람 verify가 done 확정.
+                    c.execute("INSERT INTO comments (issue_id, author, body, ts) VALUES (?,?,?,?)",
+                              (issue_id, "tt-server",
+                               f"보고 접수 — review에 정지(병합 대기). PR 병합 확인 후 probe verify 또는 "
+                               f"tt verify {issue_id} --report/증거로 done 확정. 재작업은 review → todo → claim.",
+                               dbmod.now()))
+                else:
+                    # done 강등 사유를 관찰 가능하게: 무엇이 증거로 인정되는지 안내
+                    c.execute("INSERT INTO comments (issue_id, author, body, ts) VALUES (?,?,?,?)",
+                              (issue_id, "tt-server", DONE_GATE_MSG.format(iid=issue_id), dbmod.now()))
                 c.commit()
             elif p.state == "done" and new_state == "done" and gate_warn:
                 c.execute("INSERT INTO comments (issue_id, author, body, ts) VALUES (?,?,?,?)",

@@ -87,7 +87,9 @@ CLI가 이 옵션을 지원하지 않으면 API PATCH `/issues/ID`에 `{state:"d
 3-1. **카드별 브랜치 → PR.** 코드를 바꾸는 작업은 수령한 카드 ID로 브랜치를 나눠
    (`tt/<카드ID>-<slug>`) 그 위에서 커밋·검증하고, GitHub PR로 main에 반영한다.
    메인 브랜치 직접 커밋·직push는 금지. PR이 CI(pytest+smoke)를 통과하면 probe가
-   병합한다(merge 전 보고 제출을 권장 — 보고 없는 카드는 review로 남는다).
+   병합한다. 완료 제출은 review에 정지하고(PATCH state=done + 유효 보고 = tt done),
+   probe가 green PR 병합 후 verify로만 done을 확정한다. 병합 불가(No PR/CI 실패)는
+   needs-merge 코멘트로 사람 판단을 요청한다 — agent의 done 직행은 없다.
    대상 저장소는 카드에 명시된 것(예: `repo: owner/name`)을 따르며 생략 시 think-tank다.
    다른 저장소의 카드는 그 저장소에 CI 워크플로(pytest/npm test 등 그 프로젝트 커맨드)가
    갖춰져 있어야 probe 병합 대상이 된다 — CI 없으면 green이 성립하지 않는다.

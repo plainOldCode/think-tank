@@ -111,12 +111,11 @@ def test_execute_merge_reported_card_done(live_v2, monkeypatch):
     r = live_v2.patch(f"/issues/{iid}", json={"version": i["version"], "state": "done",
                                               "completion_report": rep})
     assert r.status_code == 200, r.text
-    assert r.json()["state"] == "done"
+    # M3R7M0ZR-YF99: 보고 제출은 review에 정지 — done은 merge 후 verify로만
+    assert r.json()["state"] == "review"
     a = live_v2.get(f"/issues/{iid}").json()
-    print("AFTER-DONE-PATCH:", a["state"], a["version"], a["verification_status"])
+    print("AFTER-SUBMIT:", a["state"], a["version"], a["verification_status"])
     dispatchd.execute("/t", {"action": "merge", "issue": iid, "pr": 3})
-    b = live_v2.get(f"/issues/{iid}").json()
-    print("AFTER-EXEC:", b["state"], b["version"])
     assert calls and calls[0][:2] == ["pr", "merge"]
     got = live_v2.get(f"/issues/{iid}").json()
     assert got["state"] == "done" and got["verification_status"] == "reported"

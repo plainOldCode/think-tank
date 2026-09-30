@@ -132,7 +132,7 @@ def test_tdd_report_is_recorded_as_reported_evidence(client):
     response = client.patch(f"/issues/{issue['id']}", json={"state": "done", "completion_report": proof})
     assert response.status_code == 200
     data = response.json()
-    assert data["state"] == "done" and data["verification_status"] == "reported"
+    assert data["state"] == "review" and data["verification_status"] == "reported"
     assert data["completion_report"]["red_evidence"] == proof["red_evidence"]
     assert data["completion_report"]["evidence"] == proof["evidence"]
 
@@ -194,7 +194,8 @@ def test_alternative_report_requires_reason_but_not_red(client):
     issue = start(client)
     proof = report(issue, method="alternative", reason="documentation-only", red_command="", red_evidence="")
     response = client.patch(f"/issues/{issue['id']}", json={"state": "done", "completion_report": proof})
-    assert response.status_code == 200 and response.json()["state"] == "done"
+    # M3R7M0ZR-YF99: 유효 보고(v1 alternative 포함)도 review에 정지 — done은 확인 경로만
+    assert response.status_code == 200 and response.json()["state"] == "review"
 
 
 def test_contract_mismatch_and_scope_change_reject_stale_report(client):
@@ -362,7 +363,8 @@ def test_env_switch_serves_v2_contract(tmp_path, monkeypatch):
     done = c.patch(f"/issues/{issue['id']}", json={
         "state": "done", "version": issue["version"] + 1, "completion_report": report})
     assert done.status_code == 200, done.text
-    assert done.json()["state"] == "done" and done.json()["verification_status"] == "reported"
+    # M3R7M0ZR-YF99: v2 제출의 종착지는 review(done 아님) — done은 merge 확인/probe verify
+    assert done.json()["state"] == "review" and done.json()["verification_status"] == "reported"
     # 보고 없이 done 시도(재개 후)는 review 강등 — 3단계 없이는 자기완결 인정 없음
     c.patch(f"/issues/{issue['id']}", json={"state": "todo", "version": done.json()["version"]})
     again = c.post(f"/issues/{issue['id']}/claim", json={"agent": "worker"}).json()
