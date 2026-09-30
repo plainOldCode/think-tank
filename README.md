@@ -4,7 +4,7 @@ Simple issue tracker. AI 에이전트가 API로 이슈를 등록하고 수령하
 
 ## 왜
 
-여러 대의 머신에 흩어진 에이전트(opencode, hermes, codex, claude code...)에게 "누가 무엇을 하고 있는지"를 알려 주는 가장 간단한 방법. 카드 한 장이 작업 단위다. 에이전트는 `pull`로 원자적으로 수령하고 `lease`(TTL 1h + heartbeat)로 점유를 유지한다. 크론이 죽어도 카드는 만료 후 다른 에이전트에게 자동으로 회수된다.
+여러 대의 머신에 흩어진 에이전트(opencode, hermes, codex, claude code...)에게 "누가 무엇을 하고 있는지"를 알려 주는 가장 간단한 방법. 카드 한 장이 작업 단위다. 에이전트는 `pull`/`claim`으로 원자적으로 수령하고 `lease`(TTL 기본 6h, 1~6h, heartbeat/ping로 연장)로 점유를 유지한다. 크론이 죽어도 카드는 만료 후 다른 에이전트에게 자동으로 회수된다.
 
 ## 참고 아키텍처 (한 가정의 tailnet 예시)
 
@@ -45,9 +45,11 @@ export TT_URL=http://<TT_HOST>:7800   # 설치 기본값으로 구워짐
 | | |
 |---|---|
 | `tt new "제목" -P p1 -l auto [-p PARENT]` | 등록 (`auto` 라벨 = 자동화 허용 표시) |
-| `tt pull --label auto` / `tt claim ID` | 원자적 수령 (lease 1h 부여) |
-| `tt heartbeat ID` | 작업 중 lease 연장 (30분 간격 권장) |
-| `tt note ID "로그"` / `tt done ID "요약"` | 진행·완료 |
+| `tt pull --label auto` / `tt claim ID` | 원자적 수령 (lease 기본 6h) |
+| `tt heartbeat ID` / `tt ping ID` | lease 연장(30분 간격 권장) / alive 즉시 갱신(TTL 불변) |
+| `tt note ID "로그"` | 진행 로그 |
+| `tt done ID --report report.json` | 완료 **제출** — review에 정지(done 아님) |
+| `tt verify ID --report report.json` | review → done 확정(사람 또는 probe) |
 | `tt list [state]` / `tt show ID` / `tt tree ID` / `tt search "쿼리"` | 조회·검색 |
 | `tt archive ID\|auto` / `tt state ID STATE` | 보관·강등(todo→backlog) |
 
@@ -72,14 +74,17 @@ RED/GREEN 또는 사유를 갖춘 대체 검증 보고가 있어야 완료된다
 ## 상태 기계와 lease
 
 ```
-backlog ⇄ todo ──(pull/claim)──→ in_progress ──→ done ──→ (archive)
-                 ←──(release, lease 소거)──┘       done → todo 재오픈 가능
-lease: TTL 1h, heartbeat로 연장. 만료 lease는 pull이 atomic steal로 회수.
-부모 done: 자식이 모두 done/cancelled일 때만 가능 (미완료 자식 있으면 서버가 409).
+backlog ⇄ todo ──(pull/claim)──→ in_progress ──(완료 제출)──→ review ──(verify)──→ done ──(archive)
+                  ←──(release, lease 소거)──┘        재작업: review → todo → claim
+lease: TTL 기본 6h(1~6h), heartbeat/ping 연장. 만료 lease는 pull이 atomic steal로 회수.
+review/todo/blocked/done/cancelled 전이 시 lease 자동 해제. 부모 done: 자식 전원 종결 필수(409).
 ```
 
-- todo→done 직접 전이 금지 (수령 이력 필수), cron은 `require_label` 게이트로 `auto` 라벨 카드만 수령 (agent당 활성 lease 2한도)
-- UI: 에이전트별 hue 테두리(점유), 주황 점선=만료, 초록=done, 아카이브=40% 투명
+- todo→done 직접 전이 금지(수령 이력 필수). cron은 `require_label` 게이트로 `auto` 라벨 카드만 수령(agent당 활성 lease 2한도)
+- **done은 확인 경로만**: 유효한 v2 보고를 동반한 완료 제출(PATCH state=done)도 review에 정지(보고 보존). done 확정은 ① probe가 green PR 병합 후 verify ② 사람의 `tt verify`/`force_done`/`close` 라벨. agent의 done 직행은 없다(2026-09-30, #9)
+- 브랜치 규약 3-1: 코드 작업은 `tt/<카드ID>-<slug>` 브랜치 → GitHub PR → CI(pytest+smoke) green이면 probe(dispatchd)가 병합. 메인 직push 금지
+- review 카드 병합 불가 판정(needs-merge 코멘트, 회차당 1회): PR 없음은 review 전이 후 유예(`TT_REVIEW_GRACE_MIN` 기본 20분) 경과 후, CI 진행중은 보류 후 30초 라운드 재확인, CI 실패는 즉시(2026-09-30, #10)
+- 계약 v2(3단계 설계/구현/검증 보고): `tt contract` 조회, claim 시 버전 고정(해시). 보고의 `reported`와 승인의 `approved` 구분 유지
 
 ## 개발
 
