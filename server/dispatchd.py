@@ -49,6 +49,24 @@ def card_from_branch(branch):
     return m.group(1) if m else None
 
 
+def _review_grace_min():
+    """review 전이 후 'PR 없음' 판정 유예(분). TT_REVIEW_GRACE_MIN(기본 20)."""
+    try:
+        return max(0, int(os.getenv("TT_REVIEW_GRACE_MIN", "20")))
+    except ValueError:
+        return 20
+
+
+def _age_min(now, updated):
+    """iso(±TZ) 두 시각 차(분). 해석 불가 시 None(코멘트 보류)."""
+    from datetime import datetime
+    fmt = "%Y-%m-%dT%H:%M:%S%z"
+    try:
+        return (datetime.strptime(now, fmt) - datetime.strptime(updated, fmt)).total_seconds() / 60
+    except ValueError:
+        return None
+
+
 def decide(snap):
     if not snap.get("auto"):
         return []
@@ -138,9 +156,23 @@ def decide(snap):
         if any(marker in (c.get("body") or "") for c in (i.get("comments") or [])
                if c.get("author") == "probe"):
             continue
-        has_pr = any(card_from_branch(p.get("branch", "")) == i["id"]
-                     for p in snap.get("prs") or [])
-        reason = "PR 확인됨 — CI 비green 또는 병합 불가" if has_pr else "PR 없음"
+        prs_for = [p for p in snap.get("prs") or []
+                   if card_from_branch(p.get("branch", "")) == i["id"]]
+        if prs_for:
+            states = [c.get("state") for p in prs_for for c in p.get("checks") or []]
+            if states and all(x == "SUCCESS" for x in states):
+                reason = "PR green — 병합 판정 제외됨(repo 불일치 등) — 확인 필요"
+            elif any(x == "FAILURE" for x in states):
+                reason = "CI 실패"
+            elif not states:
+                reason = "PR 있음 — checks 없음(CI 워크플로 부재?)"
+            else:
+                continue  # PENDING/진행 중 — 판정 보류, 다음 라운드 재확인
+        else:
+            age = _age_min(snap.get("now") or "", i.get("updated_at") or "")
+            if age is None or age < _review_grace_min():
+                continue  # PR 생성 유예 — 성급한 'PR 없음' 코멘트 금지
+            reason = "PR 없음"
         actions.append({"agent": "probe", "issue": i["id"], "action": "review-note",
                         "reason": f"{reason} — 사람 판단 대기"})
 
