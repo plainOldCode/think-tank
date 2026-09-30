@@ -217,6 +217,23 @@ def collect_prs(repos=None):
     return out
 
 
+def _probe_flag(url, act, msg):
+    """probe 판단 불가(경합·실패) 관측 기록. 같은 사유 2회 지속 시 review로 반납(사람 신호)."""
+    iid = act["issue"]
+    print(time.strftime("%F %T"), msg, flush=True)
+    try:
+        cur = api(url, f"/issues/{iid}")
+        prior = [c for c in (cur.get("comments") or []) if "probe merge skip" in (c.get("body") or "")]
+        api(url, f"/issues/{iid}/comments", "POST", {"author": "probe", "body": msg})
+        if len(prior) >= 1:
+            cur2 = api(url, f"/issues/{iid}")
+            api(url, f"/issues/{iid}", "PATCH", {"version": cur2["version"], "state": "review"})
+            api(url, f"/issues/{iid}/comments", "POST",
+                {"author": "probe", "body": f"PR#{act['pr']}: 장애 2회 지속 — review로 반납(사람 판단)"})
+    except Exception:
+        pass
+
+
 def execute(url, act):
     kind = act["action"]
     if kind == "merge":
@@ -234,15 +251,17 @@ def execute(url, act):
                               "--json", "headRefOid") or {}
                 current = cur.get("headRefOid") or ""
             except Exception as e:
-                print(time.strftime("%F %T"),
-                      f"merge skip PR#{act['pr']}: head 재확인 실패({e}) — 안전 스킵", flush=True)
+                _probe_flag(url, act, f"probe merge skip: head 재확인 실패({e}) — 관측")
                 return
             if current != expected:
-                print(time.strftime("%F %T"),
-                      f"merge skip PR#{act['pr']}: head 변경됨 "
-                      f"({expected[:8]}→{current[:8]})", flush=True)
+                _probe_flag(url, act, f"probe merge skip: head 변경됨 "
+                               f"({expected[:8]}→{current[:8]}) — 관측")
                 return
-        gh_exec("pr", "merge", act["pr"], "--repo", repo, "--squash", "--delete-branch")
+        try:
+            gh_exec("pr", "merge", act["pr"], "--repo", repo, "--squash", "--delete-branch")
+        except Exception as e:
+            _probe_flag(url, act, f"probe merge skip: gh 오류 {str(e)[:120]} — 관측")
+            return
         i = api(url, f"/issues/{act['issue']}")
         target = i["state"]
         if i["state"] == "in_progress":

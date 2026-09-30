@@ -127,3 +127,23 @@ def test_execute_merge_reportless_demotes_review(live_v2, monkeypatch):
     monkeypatch.setattr(dispatchd, "gh_exec", lambda *a: "")
     dispatchd.execute("/t", {"action": "merge", "issue": i["id"], "pr": 4})
     assert live_v2.get(f"/issues/{i['id']}").json()["state"] == "review"
+
+
+def test_merge_persistent_contention_goes_review(live_v2, monkeypatch):
+    i = _claim_contract_issue(live_v2)
+    iid = i["id"]
+    calls = []
+    monkeypatch.setattr(dispatchd, "gh_exec", lambda *a: calls.append(list(map(str, a))) or "")
+    # head 재확인: 현재 headRefOid가 act의 expected와 불일치(변경) — 첫 시도
+    monkeypatch.setattr(dispatchd, "gh_json",
+                        lambda *a: {"headRefOid": "changed-sha"} if "view" in a else [])
+    # 이력 없음 → 1st: 스킵(코멘트 기록) + review 아님
+    act = {"action": "merge", "issue": iid, "pr": 9, "head_sha": "old-sha",
+           "repo": "plainOldCode/think-tank"}
+    dispatchd.execute("/t", act)
+    assert live_v2.get(f"/issues/{iid}").json()["state"] == "in_progress"
+    cs = live_v2.get(f"/issues/{iid}").json()["comments"]
+    assert any("probe" in c["body"] and "skip" in c["body"] for c in cs), "1st 관측 코멘트 누락"
+    # 2nd(이력 1건) → review + 코멘트
+    dispatchd.execute("/t", act)
+    assert live_v2.get(f"/issues/{iid}").json()["state"] == "review"
