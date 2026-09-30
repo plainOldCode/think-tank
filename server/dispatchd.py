@@ -193,9 +193,27 @@ def decide(snap):
         prs_for = [p for p in snap.get("prs") or [] if pr_card_id(p) == i["id"]]
         if prs_for:
             states = [c.get("state") for p in prs_for for c in p.get("checks") or []]
+            fails = [x for x in states if x == "FAILURE"]
             if states and all(x == "SUCCESS" for x in states):
                 reason = "PR green — 병합 판정 제외됨(repo 불일치 등) — 확인 필요"
-            elif any(x == "FAILURE" for x in states):
+            elif fails and os.environ.get("TT_CI_FIX_AGENT", "kanban-adapter"):
+                # CI 실패 = 수정 목적 위임(사람 needs-merge 대신 agy 경유). 사용자 지시 0930.
+                p0 = next(p2 for p2 in prs_for
+                          if any(c.get("state") == "FAILURE" for c in p2.get("checks") or []))
+                att = i.get("execution_attempt") or 0
+                sha8 = (p0.get("head_sha") or "")[:8]
+                marker = f"[ci-fix a{att} #{p0['number']}/{sha8}]"
+                if any(marker in (c.get("body") or "") for c in (i.get("comments") or [])
+                       if c.get("author") == "probe"):
+                    continue  # same head 재위임 금지 — 새 커밋(head 변경) 시에만 재판정
+                actions.append({"agent": "dispatchd", "issue": i["id"], "action": "ci-fix",
+                                "pr": p0["number"], "repo": p0.get("repo", ""),
+                                "branch": p0.get("branch", ""), "head_sha": p0.get("head_sha", ""),
+                                "checks_failed": [c.get("name") or "?" for p3 in prs_for
+                                                  for c in p3.get("checks") or []
+                                                  if c.get("state") == "FAILURE"]})
+                continue
+            elif fails:
                 reason = "CI 실패"
             elif not states:
                 reason = "PR 있음 — checks 없음(CI 워크플로 부재?)"
@@ -384,6 +402,32 @@ def execute(url, act):
             api(url, f"/issues/{act['issue']}/comments", "POST",
                 {"author": "probe", "body": f"probe: PR#{act['pr']} merged — agent 완료 보고 "
                                             "대기(PATCH state=done + 보고 제출로 review 정지)"})
+        return
+    if kind == "ci-fix":
+        cur = api(url, f"/issues/{act['issue']}")
+        att = cur.get("execution_attempt") or 0
+        sha8 = (act.get("head_sha") or "")[:8]
+        marker = f"[ci-fix a{att} #{act['pr']}/{sha8}]"
+        if any(marker in (c.get("body") or "") for c in (cur.get("comments") or [])
+               if c.get("author") == "probe"):
+            return  # 경합 방어 — decide 판정 후 재확인
+        agent = os.environ.get("TT_CI_FIX_AGENT", "kanban-adapter")
+        target = os.environ.get("TT_CI_FIX_TARGET", "agy")
+        msg = (f"[auto probe] PR #{act['pr']} ({act.get('repo','')}) CI 실패"
+               f"(failing: {','.join(act.get('checks_failed') or [])}). 임무: PR을 읽고 **수정**할 것"
+               f" — 단순 review 금지, 목적은 CI red 해소. 브랜치 {act.get('branch','')} 위에서 커밋 계속, "
+               f"범위는 CI 실패 수정만(리팩·스킵·assertion 약화 금지). 카드 {act['issue']} review 대기 — "
+               f"CI green이면 probe가 자동 병합·done. 인수: {target} 담당.")
+        try:
+            api(url, f"/issues/{act['issue']}/dispatch", "POST", {"agent": agent, "message": msg})
+        except Exception as e:
+            api(url, f"/issues/{act['issue']}/comments", "POST",
+                {"author": "probe", "body": f"{marker} dispatch 실패({str(e)[:80]}) — "
+                                            "사람 판단 대기(needs-merge 회귀)"})
+            return
+        api(url, f"/issues/{act['issue']}/comments", "POST",
+            {"author": "probe", "body": f"{marker} PR#{act['pr']} CI 실패 — {agent}({target}) "
+                                        "review+수정 위임"})
         return
     v = get_version(url, act["issue"])
     if kind == "review-note":
