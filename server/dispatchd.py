@@ -125,6 +125,25 @@ def decide(snap):
                             "repo": pr_repo,
                             "reason": f"CI green + 카드 계약/수령 검증 — gh pr merge ({pr_repo})"})
 
+    # ⓪b review 카드 중 병합 불가 후보 — 사람 판단 요청 코멘트 (M3R7M0ZR-YF99).
+    # merge 후보(⓪)에 없는 review 카드만. 회차 마커 '[needs-merge a<n>'로 회차당 1회.
+    merged_targets = {a["issue"] for a in actions if a["action"] == "merge"}
+    for i in issues:
+        if i["state"] != "review" or i["id"] in merged_targets:
+            continue
+        if not i.get("work_contract") or (i.get("execution_attempt") or 0) < 1:
+            continue
+        att = i.get("execution_attempt") or 0
+        marker = f"[needs-merge a{att}]"
+        if any(marker in (c.get("body") or "") for c in (i.get("comments") or [])
+               if c.get("author") == "probe"):
+            continue
+        has_pr = any(card_from_branch(p.get("branch", "")) == i["id"]
+                     for p in snap.get("prs") or [])
+        reason = "PR 확인됨 — CI 비green 또는 병합 불가" if has_pr else "PR 없음"
+        actions.append({"agent": "probe", "issue": i["id"], "action": "review-note",
+                        "reason": f"{reason} — 사람 판단 대기"})
+
     # ③ 예산 소진 카드 — dispatch 대신 needs-human (auto 풀 전수)
     for i in _auto_todo(issues, claimed):
         why = _budget_blocked(i)
@@ -263,22 +282,54 @@ def execute(url, act):
             _probe_flag(url, act, f"probe merge skip: gh 오류 {str(e)[:120]} — 관측")
             return
         i = api(url, f"/issues/{act['issue']}")
-        target = i["state"]
-        if i["state"] == "in_progress":
-            target = "done" if i.get("completion_report") else "review"
-        if target != i["state"]:
+        st = i["state"]
+        cr = i.get("completion_report") or ""
+        if isinstance(cr, str) and cr:
+            try:
+                cr = json.loads(cr)
+            except Exception:
+                cr = None
+        if st == "review" and cr:
+            # 병합 성사 + 유효 보고 → verify 경로로만 done (M3R7M0ZR-YF99: done은 확인 직후)
+            try:
+                api(url, f"/issues/{act['issue']}/verify", "POST",
+                    {"verifier": "probe", "completion_report": cr})
+                api(url, f"/issues/{act['issue']}/comments", "POST",
+                    {"author": "probe", "body": f"probe: PR#{act['pr']} merged (CI green) — "
+                                                "verify 통과 → done"})
+            except Exception as e:
+                api(url, f"/issues/{act['issue']}/comments", "POST",
+                    {"author": "probe", "body": f"probe: PR#{act['pr']} merged — verify 실패"
+                                                f"({str(e)[:100]}). review 유지, 사람 판단 필요"})
+            return
+        if st == "review":
+            api(url, f"/issues/{act['issue']}/comments", "POST",
+                {"author": "probe", "body": f"probe: PR#{act['pr']} merged — 완료 보고 없음. "
+                                            "review 유지 (tt verify 또는 재작업 review→todo)"})
+            return
+        if st == "in_progress":
+            # 보고 제출(→review) 전에는 done 없음 — 브랜치만 반영되고 카드는 제출 대기
             try:
                 api(url, f"/issues/{act['issue']}", "PATCH",
-                    {"version": i["version"], "state": target})
+                    {"version": i["version"], "state": "review"})
             except Exception:
-                i2 = api(url, f"/issues/{act['issue']}")
-                api(url, f"/issues/{act['issue']}", "PATCH",
-                    {"version": i2["version"], "state": "review"})
-        api(url, f"/issues/{act['issue']}/comments", "POST",
-            {"author": "probe", "body": f"probe: PR#{act['pr']} merged (CI green) — 상태 {target}"})
+                pass
+            api(url, f"/issues/{act['issue']}/comments", "POST",
+                {"author": "probe", "body": f"probe: PR#{act['pr']} merged — agent 완료 보고 "
+                                            "대기(PATCH state=done + 보고 제출로 review 정지)"})
         return
     v = get_version(url, act["issue"])
-    if kind == "resume":
+    if kind == "review-note":
+        cur = api(url, f"/issues/{act['issue']}")
+        att = cur.get("execution_attempt") or 0
+        marker = f"[needs-merge a{att}]"
+        if any(marker in (c.get("body") or "") for c in (cur.get("comments") or [])
+               if c.get("author") == "probe"):
+            return
+        api(url, f"/issues/{act['issue']}/comments", "POST",
+            {"author": "probe", "body": f"{marker} {act['reason']} — "
+                                        "tt verify로 done 확정 또는 review→todo 재작업"})
+    elif kind == "resume":
         api(url, f"/issues/{act['issue']}", "PATCH", {"state": "todo", "version": v})
     elif kind == "needs-human":
         api(url, f"/issues/{act['issue']}/comments", "POST",
@@ -314,6 +365,12 @@ def snapshot(url):
         if auto or i.get("assignee"):
             d = api(url, f"/issues/{i['id']}/dispatches")
             i["dispatches"] = len(d) if isinstance(d, list) else 0
+        if i["state"] == "review":
+            # review-note dedup 판정용 — review 카드는 상세(코멘트 포함)를 별도 취득
+            try:
+                i["comments"] = api(url, f"/issues/{i['id']}").get("comments") or []
+            except Exception:
+                i["comments"] = []
     return {"auto": os.getenv("TT_AUTO_DISPATCH") == "1",
             "now": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "agents": agents, "issues": issues}
 

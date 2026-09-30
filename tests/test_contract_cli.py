@@ -107,5 +107,11 @@ def test_report_file_roundtrip(cli, tmp_path, via_verify):
     result = run("verify" if via_verify else "done", iid, "--report", str(path), "--json")
     assert result.returncode == 0, result.stderr
     data = json.loads(result.stdout)
+    if not via_verify:
+        # M3R7M0ZR-YF99: done 제출은 review 정지 — CLI 왕복은 verify로 done까지
+        assert data["state"] == "review" and data["verification_status"] == "reported"
+        result = run("verify", iid, "--report", str(path), "--json")
+        assert result.returncode == 0, result.stderr
+        data = json.loads(result.stdout)
     assert data["state"] == "done" and data["verification_status"] == "reported"
     assert data["completion_report"]["evidence"] == "exit=0"
