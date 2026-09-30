@@ -240,11 +240,61 @@ def test_CI_진행중이면_코멘트안한다_재확인만():
     assert not [a for a in acts if a["action"] in ("review-note", "merge")]
 
 
-def test_CI_명시실패는_즉시_needs_merge():
+def test_CI명시실패_위임off면_즉시_needs_merge(monkeypatch):
+    monkeypatch.setenv("TT_CI_FIX_AGENT", "")
     i = _issue("review", updated="2026-10-01T09:58:00+0900")
     acts = dispatchd.decide(_snap([i], _pr([{"state": "FAILURE"}])))
     notes = [a for a in acts if a["action"] == "review-note"]
     assert len(notes) == 1 and "CI 실패" in notes[0]["reason"]
+
+
+def test_CI실패면_ci_fix_위임판정_needsmerge아님():
+    i = _issue("review", updated="2026-10-01T09:58:00+0900")
+    acts = dispatchd.decide(_snap([i], _pr([{"state": "FAILURE"}])))
+    fixes = [a for a in acts if a["action"] == "ci-fix"]
+    assert len(fixes) == 1 and fixes[0]["pr"] == 9
+    assert not [a for a in acts if a["action"] == "review-note"]
+    assert "FAILURE" in str(fixes[0].get("checks_failed")) or fixes[0].get("checks_failed")
+
+
+def test_ci_fix_head당_1회_marker면_재위임안함():
+    i = _issue("review", updated="2026-10-01T09:58:00+0900",
+               comments=[{"author": "probe", "body": "[ci-fix a1 #9/bbbbbbbb] 위임"}])
+    acts = dispatchd.decide(_snap([i], _pr([{"state": "FAILURE"}])))
+    assert not [a for a in acts if a["action"] in ("ci-fix", "review-note")]
+
+
+def test_ci_fix_비활성화는_needsmerge_회귀(monkeypatch):
+    monkeypatch.setenv("TT_CI_FIX_AGENT", "")
+    i = _issue("review", updated="2026-10-01T09:58:00+0900")
+    acts = dispatchd.decide(_snap([i], _pr([{"state": "FAILURE"}])))
+    assert [a for a in acts if a["action"] == "review-note"]
+
+
+def test_ci_fix_집행은_dispatch와_marker():
+    rec = Recorder({"id": "X-9", "state": "review", "version": 1, "execution_attempt": 1,
+                    "comments": []})
+    calls = []
+
+    def api(url, path, method="GET", body=None):
+        calls.append((method, path))
+        if method == "GET":
+            return dict(rec.card)
+        return rec(url, path, method, body)
+
+    dispatchd.api_backup = dispatchd.api
+    dispatchd.api = api
+    try:
+        dispatchd.execute("u", {"agent": "dispatchd", "issue": "X-9", "action": "ci-fix",
+                                "pr": 9, "repo": "o/r", "branch": "tt/X-9-x",
+                                "head_sha": "b" * 40, "checks_failed": ["tests"]})
+    finally:
+        dispatchd.api = dispatchd.api_backup
+    assert ("POST", "/issues/X-9/dispatch") in calls
+    notes = [c["body"] for c in rec.commented if "body" in c]
+    assert notes and "[ci-fix a1 #9/bbbbbbbb]" in notes[0]
+    disp = [c for c in calls if c == ("POST", "/issues/X-9/dispatch")]
+    assert disp
 
 
 def test_needs_merge_회차_dedup():
