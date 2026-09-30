@@ -180,6 +180,36 @@ def test_armour라벨_repo_매핑과_review카드_repo_수집():
     assert "plainOldCode/armour-service-ops" in dispatchd.collect_repos([i])
 
 
+def test_알려진_repo는_항시_수집대상():
+    # 카드 repo 표기 없어도 known repo 전체는 매 라운드 스캔 대상 (사용자 지시)
+    repos = dispatchd.collect_repos([])
+    assert "plainOldCode/think-tank" in repos
+    assert "plainOldCode/armour-service-ops" in repos
+
+
+def _issue_repoless(**kw):
+    i = _issue("review", updated="2026-10-01T08:00:00+0900", **kw)
+    return i
+
+
+def test_tt접두어외_브랜치도_ID검출_merge():
+    # hermes/M...-... 등 재작업 접두어 — 브랜치 전체에서 카드 ID 스캔
+    i = _issue_repoless()
+    prs = _pr([{"state": "SUCCESS"}], branch="hermes/M3R7M0ZR-YF99-retry", title="retry")
+    acts = dispatchd.decide(_snap([i], prs))
+    assert [a for a in acts if a["action"] == "merge"]
+
+
+def test_repo미상카드는_발견_PR_repo_추론으로_merge():
+    i = _issue_repoless()
+    i["labels"] = []  # card_repo=None (기본 이슈엔 labels [])
+    prs = _pr([{"state": "SUCCESS"}], branch="fix/wal", title="M3R7M0ZR-YF99 수정")
+    prs[0]["repo"] = "plainOldCode/armour-service-ops"
+    acts = dispatchd.decide(_snap([i], prs))
+    merges = [a for a in acts if a["action"] == "merge"]
+    assert len(merges) == 1 and merges[0]["repo"] == "plainOldCode/armour-service-ops"
+
+
 def test_PR_그냥_ID는_무관카드_pr_card_id_무시():
     # 다른 카드 ID 브랜치 + 본 카드 제목 없음 → 본 카드엔 PR 없음 판정(유예 경과 후)
     i = _issue("review", updated="2026-10-01T08:00:00+0900")

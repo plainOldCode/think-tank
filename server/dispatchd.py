@@ -48,8 +48,10 @@ CARD_IN_ANY = re.compile(r"\bM[A-Z0-9]{6,9}-[A-Z0-9]{4}\b")
 
 
 def card_from_branch(branch):
-    m = CARD_IN_BRANCH.search(branch or "")
-    return m.group(1) if m else None
+    # tt/ 접두어에 한정하지 않고 브랜치 전체에서 카드 ID 스캔 — 재작업 브랜치
+    # (hermes/…, fix/…) 흡수. 매칭은 8-4 ULID 실루엣(무작위 오탐 사실상 없음).
+    m = CARD_IN_ANY.search(branch or "")
+    return m.group(0) if m else None
 
 
 def pr_card_id(pr):
@@ -63,9 +65,12 @@ def pr_card_id(pr):
 
 
 def collect_repos(issues):
-    """카드 동적 repo 수집 — review 카드 포함(GBE5: review 상태에서 PR 확인 실패 사고).
-    review 카드는 needs-merge/merge 판정 대상이므로 PR 수집 풀에 반드시 들어가야 한다."""
-    out = []
+    """PR 수집 repo 풀 — 알려진 repo(REPO_CARDS+TT_REPO_SCAN_EXTRA)는 항시, 카드 repo 표기는 동적.
+    review 카드 포함(GBE5 사고) + repo 미표기 카드도known repo에서 브랜치/제목 ID로 발견된다(사용자 지시)."""
+    out = sorted(set(REPO_CARDS.values()))
+    for extra in os.environ.get("TT_REPO_SCAN_EXTRA", "").split(","):
+        if extra.strip():
+            out.append(extra.strip())
     for i in issues or []:
         if i["state"] in ("auto", "todo", "blocked", "review") or (i.get("labels") and "auto" in i["labels"]):
             r = card_repo(i)
@@ -158,8 +163,12 @@ def decide(snap):
             continue
         if not i.get("work_contract") or (i.get("execution_attempt") or 0) < 1:
             continue
-        want = card_repo(i) or REPO_CARDS["think-tank"]
+        want = card_repo(i)
         pr_repo = p.get("repo") or REPO_CARDS["think-tank"]
+        if want is None:
+            # 카드 repo 표기/라벨 없음 — ID가 찍힌 PR의 repo를 추론 채택(발견 자체가 근거).
+            # repo 명시 카드는 불일치 계속 차단(오repo 사고 방지) — GBE5 교훈 유지.
+            want = pr_repo
         if want != pr_repo:
             continue
         if ci_passed(p):
