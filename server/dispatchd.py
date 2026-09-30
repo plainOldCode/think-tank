@@ -115,10 +115,15 @@ def decide(snap):
             continue
         if not i.get("work_contract") or (i.get("execution_attempt") or 0) < 1:
             continue
+        want = card_repo(i) or REPO_CARDS["think-tank"]
+        pr_repo = p.get("repo") or REPO_CARDS["think-tank"]
+        if want != pr_repo:
+            continue
         if ci_passed(p):
             actions.append({"agent": "probe", "issue": iid, "action": "merge", "pr": p["number"],
                             "head_sha": p.get("head_sha", ""),
-                            "reason": "CI green + 카드 계약/수령 검증 — gh pr merge"})
+                            "repo": pr_repo,
+                            "reason": f"CI green + 카드 계약/수령 검증 — gh pr merge ({pr_repo})"})
 
     # ③ 예산 소진 카드 — dispatch 대신 needs-human (auto 풀 전수)
     for i in _auto_todo(issues, claimed):
@@ -143,7 +148,27 @@ def get_version(url, iid):
     return api(url, f"/issues/{iid}").get("version")
 
 
+def _repos_default():
+    return [r.strip() for r in os.environ.get("TT_REPO_SLUG", "plainOldCode/think-tank").split(",") if r.strip()]
+
+
+REPO_CARDS = {
+    "think-tank": "plainOldCode/think-tank",
+    "armour-wiki": "plainOldCode/armour-service-ops",
+}
 REPO = os.environ.get("TT_REPO_SLUG", "plainOldCode/think-tank")
+
+CARD_REPO = re.compile(r"repo:\s*([\w.-]+/[\w.-]+)")
+
+
+def card_repo(issue):
+    m = CARD_REPO.search((issue.get("body") or "") + " " + (issue.get("title") or ""))
+    if m:
+        return m.group(1)
+    for lab in issue.get("labels") or []:
+        if lab in REPO_CARDS:
+            return REPO_CARDS[lab]
+    return None
 
 
 GH = (shutil.which("gh")
@@ -165,8 +190,9 @@ def gh_exec(*args):
     return _gh(list(args))
 
 
-def collect_prs():
-    """open PR + checks — PR 단위 실패는 체크 없음으로 취급(개 PR은 계속 본업).
+def collect_prs(repos=None):
+    """open PR + checks — repo 단위·PR 단위 실패는 그 PR만 체크 없음으로 취급.
+    repo 목록: TT_REPO_SLUG(쉼표) 기본 + auto/todo/blocked 카드의 card_repo 표기(동적).
 
     실측(t_501e6ec3, 2026-09-29): gh pr list --head 는 exact prefix 필터 —
     'tt/' 같은 접두어는 []를 돌려 후보 0건(probe 실명)이 된다. 전체 open 목록을
@@ -174,24 +200,27 @@ def collect_prs():
     reported' 예외)은 [] 격리 후 ci_passed(빈 checks)=False 가 자연 차단.
     """
     out = []
-    try:
-        prs = gh_json("pr", "list", "--repo", REPO, "--state", "open",
-                      "--json", "number,headRefName,headRefOid") or []
-    except Exception:
-        return []
-    for p in prs:
+    pool = list(repos) if repos else _repos_default()
+    for repo in dict.fromkeys(pool):
         try:
-            checks = gh_json("pr", "checks", p["number"], "--repo", REPO, "--json", "name,state") or []
+            prs = gh_json("pr", "list", "--repo", repo, "--state", "open",
+                          "--json", "number,headRefName,headRefOid") or []
         except Exception:
-            checks = []
-        out.append({"number": p["number"], "branch": p.get("headRefName", ""),
-                    "head_sha": p.get("headRefOid", ""), "checks": checks})
+            continue
+        for p in prs:
+            try:
+                checks = gh_json("pr", "checks", p["number"], "--repo", repo, "--json", "name,state") or []
+            except Exception:
+                checks = []
+            out.append({"number": p["number"], "repo": repo, "branch": p.get("headRefName", ""),
+                        "head_sha": p.get("headRefOid", ""), "checks": checks})
     return out
 
 
 def execute(url, act):
     kind = act["action"]
     if kind == "merge":
+        repo = act.get("repo") or REPO
         # 판정-집행 경합 흡수(t_501e6ec3 통합 회귀): collect 시점 head_sha와
         # 병합 직전 현재 headRefOid가 다르면 폐기(다음 라운드 자연 재시도).
         # 재시도 안전성: gh가 non-mergeable이면 merge 자체를 거부(405)하므로
@@ -201,7 +230,7 @@ def execute(url, act):
         expected = act.get("head_sha") or ""
         if expected:
             try:
-                cur = gh_json("pr", "view", act["pr"], "--repo", REPO,
+                cur = gh_json("pr", "view", act["pr"], "--repo", repo,
                               "--json", "headRefOid") or {}
                 current = cur.get("headRefOid") or ""
             except Exception as e:
@@ -213,7 +242,7 @@ def execute(url, act):
                       f"merge skip PR#{act['pr']}: head 변경됨 "
                       f"({expected[:8]}→{current[:8]})", flush=True)
                 return
-        gh_exec("pr", "merge", act["pr"], "--repo", REPO, "--squash", "--delete-branch")
+        gh_exec("pr", "merge", act["pr"], "--repo", repo, "--squash", "--delete-branch")
         i = api(url, f"/issues/{act['issue']}")
         target = i["state"]
         if i["state"] == "in_progress":
@@ -278,7 +307,13 @@ def main():
     while True:
         try:
             snap = snapshot(url)
-            snap["prs"] = collect_prs()
+            repos = list(_repos_default())
+            for i in snap.get("issues") or []:
+                if i["state"] in ("auto", "todo", "blocked") or (i.get("labels") and "auto" in i["labels"]):
+                    r = card_repo(i)
+                    if r:
+                        repos.append(r)
+            snap["prs"] = collect_prs(repos)
             acts = decide(snap)
             for a in acts:
                 print(time.strftime("%F %T"), a, flush=True)

@@ -142,7 +142,8 @@ def test_decide_merges_green_pr_with_card():
     # head_sha 동봉: execute가 병합 직전 재확인(expected)으로 쓴다(t_501e6ec3)
     assert acts == [{"agent": "probe", "issue": "M3PXXXXX-9ABC", "action": "merge", "pr": 3,
                      "head_sha": "abc",
-                     "reason": "CI green + 카드 계약/수령 검증 — gh pr merge"}]
+                     "repo": "plainOldCode/think-tank",
+                     "reason": "CI green + 카드 계약/수령 검증 — gh pr merge (plainOldCode/think-tank)"}]
 
 
 def test_decide_no_merge_without_ci():
@@ -163,3 +164,24 @@ def test_decide_no_merge_without_card_or_reportless_ok():
     iss["work_contract"] = {"version": "tt-tdd-v2:x"}
     acts = decide(snap([iss], prs=[GREEN_PR]))
     assert not [a for a in acts if a["action"] == "merge"]
+
+
+def test_card_repo_parsing():
+    assert dispatchd.card_repo({"body": "참조 repo: plainOldCode/armour-service-ops 링크"}) == "plainOldCode/armour-service-ops"
+    assert dispatchd.card_repo({"body": "repo: a/b", "title": "x"}) == "a/b"
+    assert dispatchd.card_repo({"body": "no marker", "title": "t"}) is None
+
+
+def test_decide_merge_repo_match_and_mismatch():
+    iss = issue("M3PXXXXX-9ABC", state="in_progress", execution_attempt=1,
+                body="repo: plainOldCode/armour-service-ops")
+    iss["work_contract"] = {"version": "tt-tdd-v2:x"}
+    green = {"checks": [{"name": "api-gate", "state": "SUCCESS"}]}
+    ok = dict(GREEN_PR, repo="plainOldCode/armour-service-ops", **green)
+    acts = decide(snap([iss], prs=[ok]))
+    m = [a for a in acts if a["action"] == "merge"]
+    assert m and m[0]["repo"] == "plainOldCode/armour-service-ops"
+    assert "armour" in m[0]["reason"]
+    bad = dict(GREEN_PR, repo="plainOldCode/think-tank", **green)
+    acts2 = decide(snap([iss], prs=[bad]))
+    assert not [a for a in acts2 if a["action"] == "merge"]
