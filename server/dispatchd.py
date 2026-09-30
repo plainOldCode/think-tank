@@ -62,6 +62,18 @@ def pr_card_id(pr):
     return m.group(0) if m else None
 
 
+def collect_repos(issues):
+    """카드 동적 repo 수집 — review 카드 포함(GBE5: review 상태에서 PR 확인 실패 사고).
+    review 카드는 needs-merge/merge 판정 대상이므로 PR 수집 풀에 반드시 들어가야 한다."""
+    out = []
+    for i in issues or []:
+        if i["state"] in ("auto", "todo", "blocked", "review") or (i.get("labels") and "auto" in i["labels"]):
+            r = card_repo(i)
+            if r:
+                out.append(r)
+    return out
+
+
 def _review_grace_min():
     """review 전이 후 'PR 없음' 판정 유예(분). TT_REVIEW_GRACE_MIN(기본 20)."""
     try:
@@ -218,6 +230,7 @@ def _repos_default():
 REPO_CARDS = {
     "think-tank": "plainOldCode/think-tank",
     "armour-wiki": "plainOldCode/armour-service-ops",
+    "armour": "plainOldCode/armour-service-ops",  # GBE5: hermes 표기 라벨 실측(2026-09-30)
 }
 REPO = os.environ.get("TT_REPO_SLUG", "plainOldCode/think-tank")
 
@@ -429,11 +442,8 @@ def main():
         try:
             snap = snapshot(url)
             repos = list(_repos_default())
-            for i in snap.get("issues") or []:
-                if i["state"] in ("auto", "todo", "blocked") or (i.get("labels") and "auto" in i["labels"]):
-                    r = card_repo(i)
-                    if r:
-                        repos.append(r)
+            for r in collect_repos(snap.get("issues") or []):
+                repos.append(r)
             snap["prs"] = collect_prs(repos)
             acts = decide(snap)
             for a in acts:

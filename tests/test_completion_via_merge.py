@@ -171,6 +171,15 @@ def test_PR_제목_ID만_있어도_카드_조인_merge_판정():
     assert not [a for a in acts if a["action"] == "review-note"]
 
 
+def test_armour라벨_repo_매핑과_review카드_repo_수집():
+    i = {"id": "M3S0PAK0-GBE5", "state": "review", "assignee": "a@t", "lease_expires": None,
+         "labels": ["armour"], "priority": None, "execution_attempt": 1, "dispatches": 1,
+         "release_ready": False, "waiting_for": None, "work_contract": {"version": "v2"},
+         "comments": [], "updated_at": "2026-10-01T09:00:00+0900", "title": "wal busy"}
+    assert dispatchd.card_repo(i) == "plainOldCode/armour-service-ops"
+    assert "plainOldCode/armour-service-ops" in dispatchd.collect_repos([i])
+
+
 def test_PR_그냥_ID는_무관카드_pr_card_id_무시():
     # 다른 카드 ID 브랜치 + 본 카드 제목 없음 → 본 카드엔 PR 없음 판정(유예 경과 후)
     i = _issue("review", updated="2026-10-01T08:00:00+0900")
