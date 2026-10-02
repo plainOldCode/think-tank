@@ -319,3 +319,45 @@ def test_review노트_집행은_코멘트만(monkeypatch):
                             "reason": "PR 없음"})
     assert rec.commented and "needs-merge" in rec.commented[0]["body"]
     assert not rec.patched and not rec.verified
+
+
+def test_draft_PR은_merge_판정_제외():
+    i = _issue("review", updated="2026-10-01T08:00:00+0900")
+    prs = _pr([{"state": "SUCCESS"}])
+    prs[0]["isDraft"] = True
+    acts = dispatchd.decide(_snap([i], prs))
+    assert not [a for a in acts if a["action"] == "merge"]
+
+
+def test_draft_PR은_ci_fix_제외_ready요청_1회():
+    i = _issue("review", updated="2026-10-01T09:58:00+0900")
+    prs = _pr([{"state": "FAILURE"}])
+    prs[0]["isDraft"] = True
+    acts = dispatchd.decide(_snap([i], prs))
+    assert not [a for a in acts if a["action"] == "ci-fix"]
+    notes = [a for a in acts if a["action"] == "review-note"]
+    assert len(notes) == 1 and "draft" in notes[0]["reason"]
+
+
+def test_draft_PR_두번째_라운드_재알림없음():
+    i = _issue("review", updated="2026-10-01T09:58:00+0900",
+               comments=[{"author": "probe", "body": "[draft-flagged #9] ready 요청"}])
+    prs = _pr([{"state": "FAILURE"}])
+    prs[0]["isDraft"] = True
+    acts = dispatchd.decide(_snap([i], prs))
+    assert not [a for a in acts if a["action"] == "review-note"]
+
+
+def test_nondraft_PR은_기존경로_merge():
+    i = _issue("review", updated="2026-10-01T08:00:00+0900")
+    prs = _pr([{"state": "SUCCESS"}])
+    prs[0]["isDraft"] = False
+    acts = dispatchd.decide(_snap([i], prs))
+    assert [a for a in acts if a["action"] == "merge"]
+
+
+def test_isDraft_필드_수집됨():
+    # collect_prs가 isDraft를 수집 — gh JSON 키와 동일 이름 유지
+    import inspect
+    src = inspect.getsource(dispatchd.collect_prs)
+    assert "isDraft" in src

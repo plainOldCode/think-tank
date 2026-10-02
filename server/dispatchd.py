@@ -163,6 +163,8 @@ def decide(snap):
             continue
         if not i.get("work_contract") or (i.get("execution_attempt") or 0) < 1:
             continue
+        if p.get("isDraft"):
+            continue  # draft 병합 시도 금지(HHP5) — ⓪b에서 ready 요청 1회
         want = card_repo(i)
         pr_repo = p.get("repo") or REPO_CARDS["think-tank"]
         if want is None:
@@ -191,6 +193,17 @@ def decide(snap):
                if c.get("author") == "probe"):
             continue
         prs_for = [p for p in snap.get("prs") or [] if pr_card_id(p) == i["id"]]
+        drafts = [p for p in prs_for if p.get("isDraft")]
+        if drafts and len(drafts) == len(prs_for):
+            # 전부 draft — 병합·ci-fix 판정 불가. ready 요청 1회(마커 dedup) 후 무음.
+            marker = f"[draft-flagged #{drafts[0]['number']}]"
+            if not any(marker in (c.get("body") or "") for c in (i.get("comments") or [])
+                       if c.get("author") == "probe"):
+                actions.append({"agent": "probe", "issue": i["id"], "action": "review-note",
+                                "marker": marker,
+                                "reason": f"draft PR#{drafts[0]['number']} — ready for review "
+                                          "요청(준비되면 draft 해제)"})
+            continue
         if prs_for:
             states = [c.get("state") for p in prs_for for c in p.get("checks") or []]
             fails = [x for x in states if x == "FAILURE"]
@@ -307,7 +320,7 @@ def collect_prs(repos=None):
     for repo in dict.fromkeys(pool):
         try:
             prs = gh_json("pr", "list", "--repo", repo, "--state", "open",
-                          "--json", "number,headRefName,headRefOid,title") or []
+                          "--json", "number,headRefName,headRefOid,title,isDraft") or []
         except Exception:
             continue
         for p in prs:
@@ -317,7 +330,7 @@ def collect_prs(repos=None):
                 checks = []
             out.append({"number": p["number"], "repo": repo, "branch": p.get("headRefName", ""),
                         "title": p.get("title", ""), "head_sha": p.get("headRefOid", ""),
-                        "checks": checks})
+                        "isDraft": bool(p.get("isDraft")), "checks": checks})
     return out
 
 
@@ -432,6 +445,15 @@ def execute(url, act):
     v = get_version(url, act["issue"])
     if kind == "review-note":
         cur = api(url, f"/issues/{act['issue']}")
+        if "draft" in act.get("reason", ""):
+            # draft ready 요청 — decide가 넘긴 마커로 PR 단위 dedup
+            marker = act.get("marker") or ""
+            if any(marker in (c.get("body") or "") for c in (cur.get("comments") or [])
+                   if c.get("author") == "probe"):
+                return
+            api(url, f"/issues/{act['issue']}/comments", "POST",
+                {"author": "probe", "body": f"{marker} {act['reason']}"})
+            return
         att = cur.get("execution_attempt") or 0
         marker = f"[needs-merge a{att}]"
         if any(marker in (c.get("body") or "") for c in (cur.get("comments") or [])
