@@ -1,6 +1,7 @@
 import sqlite3
 import time
 import os
+from datetime import datetime
 import secrets
 import json
 
@@ -135,11 +136,19 @@ def connect(path):
                 "execution_attempt INTEGER NOT NULL DEFAULT 0",
                 "evidence_after_comment_id INTEGER NOT NULL DEFAULT 0",
                 "verification_status TEXT NOT NULL DEFAULT 'unverified'",
-                "completion_report TEXT NOT NULL DEFAULT ''"):
+                "completion_report TEXT NOT NULL DEFAULT ''",
+                # SRM1: 지연 표기 — todo 진입 시각(기존 todo 행은 created_at 백필)
+                "todo_since TEXT"):
         try:
             con.execute(f"ALTER TABLE issues ADD COLUMN {col}")
         except sqlite3.OperationalError:
             pass
+    # todo_since 백필 — 진입 시각 미상 기존 todo는 생성각으로(보수적 지연 판정, 사람 판단용)
+    try:
+        con.execute("UPDATE issues SET todo_since=created_at WHERE state='todo' AND todo_since IS NULL")
+        con.commit()
+    except sqlite3.OperationalError:
+        pass
     for col in ("release_hook INTEGER NOT NULL DEFAULT 0",
                 "notify_hook INTEGER NOT NULL DEFAULT 0"):
         try:
@@ -162,8 +171,24 @@ def connect(path):
     return con
 
 
+DELAYED_AFTER_H = 24  # SRM1: todo 무수령 지연 기준
+
+
+def _delayed(d):
+    if d.get("state") != "todo" or not d.get("todo_since"):
+        return False
+    try:
+        fmt = "%Y-%m-%dT%H:%M:%S%z"
+        since = datetime.strptime(d["todo_since"], fmt)
+        now = datetime.strptime(time.strftime(fmt), fmt)
+        return (now - since).total_seconds() >= DELAYED_AFTER_H * 3600
+    except ValueError:
+        return False
+
+
 def to_dict(row):
     d = dict(row)
+    d["delayed"] = _delayed(d)
     d["labels"] = [s for s in d["labels"].split(",") if s]
     d["work_contract"] = json.loads(d["work_contract"]) if d.get("work_contract") else None
     d["completion_report"] = json.loads(d["completion_report"]) if d.get("completion_report") else None

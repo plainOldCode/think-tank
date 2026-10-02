@@ -98,7 +98,7 @@ case "$cmd" in
       req --get "$URL/issues" --data-urlencode "limit=500" --data-urlencode "archived=all" ${arch[@]+"${arch[@]}"} | jq -c '[.[] | select(.state!="cancelled")]'
     else
       req --get "$URL/issues" --data-urlencode "limit=500" ${arch[@]+"${arch[@]}"} | jq -c '[.[] | select(.state!="done" and .state!="cancelled")]'
-    fi | $JQ 'def badge: if .state=="done" and ((.verification_status // "unverified")=="unverified") then " ⚠unverified" elif .state=="done" and .verification_status=="legacy" then " ⚠legacy" else "" end; .[] | "\(.id)  [\(.state|.[0:4])]  \(.priority|if .==null then "-" else "p"+tostring end)  \(.title)  \(if .assignee!="" then "@"+.assignee else "" end)\(badge)"' ;;
+    fi | $JQ 'def badge: if .delayed then " 🟡지연" elif .state=="done" and ((.verification_status // "unverified")=="unverified") then " ⚠unverified" elif .state=="done" and .verification_status=="legacy" then " ⚠legacy" else "" end; .[] | "\(.id)  [\(.state|.[0:4])]  \(.priority|if .==null then "-" else "p"+tostring end)  \(.title)  \(if .assignee!="" then "@"+.assignee else "" end)\(badge)"' ;;
 
   search)
     q=""; ver=""
@@ -109,10 +109,10 @@ case "$cmd" in
     [[ -z "$q" ]] && { echo "usage: tt search \"쿼리\" [--verification unverified|reported|approved|legacy]" >&2; exit 1; }
     req --get --data-urlencode "q=$q" --data-urlencode "limit=100" "$URL/issues" \
       | { [[ -n "$ver" ]] && $JQ -c --arg v "$ver" '[.[] | select((.verification_status // "unverified") == $v)]' || cat; } \
-      | $JQ 'def badge: if .state=="done" and ((.verification_status // "unverified")=="unverified") then " ⚠unverified" elif .state=="done" and .verification_status=="legacy" then " ⚠legacy" else "" end; .[] | "\(.id)  [\(.state|.[0:4])]  \(.priority|if .==null then "-" else "p"+tostring end)  \(.title)  \(if .assignee!="" then "@"+.assignee else "" end)\(badge)"' ;;
+      | $JQ 'def badge: if .delayed then " 🟡지연" elif .state=="done" and ((.verification_status // "unverified")=="unverified") then " ⚠unverified" elif .state=="done" and .verification_status=="legacy" then " ⚠legacy" else "" end; .[] | "\(.id)  [\(.state|.[0:4])]  \(.priority|if .==null then "-" else "p"+tostring end)  \(.title)  \(if .assignee!="" then "@"+.assignee else "" end)\(badge)"' ;;
 
   show)
-    req "$URL/issues/$1" | $JQ '"■ \(.id) [\(.state)] \(.title)",  ("  parent: \(.parent_id // "-")  prio: \(.priority // "-")  labels: \(.labels|join(","))  assignee: \(.assignee // "-")  v\(.version)" + (if .state=="done" then "  검증: \(.verification_status // "unverified")" else "" end)),  "  \(.body|gsub("\n"; "\n  "))",
+    req "$URL/issues/$1" | $JQ '"■ \(.id) [\(.state)] \(.title)",  ("  parent: \(.parent_id // "-")  prio: \(.priority // "-")  labels: \(.labels|join(","))  assignee: \(.assignee // "-")  v\(.version)" + (if .state=="done" then "  검증: \(.verification_status // "unverified")" else "" end) + (if .delayed then "  🟡지연(backlog로 내리기: tt state ID backlog)" else "" end)),  "  \(.body|gsub("\n"; "\n  "))",
       (if (.children|length)>0 then "-- 하위 --" else empty end), (.children[] | "  ↳ \(.id) [\(.state)] \(.title)"),
       (if (.comments|length)>0 then "-- 코멘트 --" else empty end), (.comments[] | "  \(.ts) \(.author): \(.body)")' ;;
 

@@ -259,7 +259,7 @@ function renderBoard(issues) {
         ${li ? `<span class="lease" style="color:${li.alive ? "var(--done)" : li.color};${li.alive ? "animation:hbpulse 1.1s infinite" : ""}"> ${esc(li.text)}</span>` : ""}
         ${i.labels.length?`<span class="tag"> ${esc(i.labels.join(" "))}</span>`:""}
         ${i.state==="blocked"&&i.waiting_for?`<span class="tag" style="color:var(--warn)">⏸ ${esc(i.waiting_for)}${i.waiting_actor?" @"+esc(i.waiting_actor):""}${i.release_ready?" →해제가능":""}</span>`:""}
-        <p>${esc(i.title)}</p>${i.assignee?`<span class="tag">@${esc(i.assignee)}</span>`:""}
+        <p>${esc(i.title)}</p>${i.delayed?`<span class="tag" style="color:var(--warn)">🟡지연</span>`:""}${i.assignee?`<span class="tag">@${esc(i.assignee)}</span>`:""}
         ${(kidsOf[i.id]||[]).length ? `<div class="sub">${subRows(i)}</div>` : ""}`;
       c.onclick = () => show(i.id);
       col.appendChild(c);

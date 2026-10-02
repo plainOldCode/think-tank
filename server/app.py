@@ -231,9 +231,10 @@ def create_app(db_path: str) -> FastAPI:
             if p.parent_id:
                 get_issue(c, p.parent_id)
             c.execute(
-                "INSERT INTO issues (id,title,body,state,priority,labels,assignee,parent_id,created_at,updated_at) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?)",
-                (iid, p.title, p.body, p.state, p.priority, ",".join(p.labels), "", p.parent_id, ts, ts),
+                "INSERT INTO issues (id,title,body,state,priority,labels,assignee,parent_id,created_at,updated_at,todo_since) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                (iid, p.title, p.body, p.state, p.priority, ",".join(p.labels), "", p.parent_id, ts, ts,
+                 ts if p.state == "todo" else None),
             )
             c.commit()
             row = get_issue(c, iid)
@@ -310,7 +311,8 @@ def create_app(db_path: str) -> FastAPI:
             bump(c, issue_id, {**reset_evidence(c, issue_id), "state": "in_progress", "assignee": p.agent, "started_at": dbmod.now(),
                                "work_contract": json.dumps(contract, ensure_ascii=False),
                                "execution_attempt": row["execution_attempt"] + 1,
-                               "lease_by": p.agent, "lease_expires": dbmod.future(p.safe_hours()), "heartbeat_at": dbmod.now()}, row["version"])
+                               "lease_by": p.agent, "lease_expires": dbmod.future(p.safe_hours()), "heartbeat_at": dbmod.now(),
+                               "todo_since": None}, row["version"])
             row = get_issue(c, issue_id)
         return dbmod.to_dict(row)
 
@@ -409,6 +411,7 @@ def create_app(db_path: str) -> FastAPI:
                 if not dbmod.can_transition(row["state"], p.state):
                     raise HTTPException(409, f"illegal transition {row['state']} -> {p.state}")
                 fields["state"] = p.state
+                fields["todo_since"] = dbmod.now() if p.state == "todo" else None
                 if p.state == "in_progress" and not row["started_at"]:
                     fields["started_at"] = dbmod.now()
                 if p.state == "done":
