@@ -14,7 +14,7 @@ tt — think-tank issue tracker ($URL)
   tt heartbeat ID [--hours N]   # 작업 중 lease 연장 (30분 간격 권장)
   tt ping ID                    # alive만 즉시 갱신(선택. TTL·version 불변 — 유효 lease 자체가 보드 깜빡임)
   tt list [state] [--all] [--archived] [--label L]  # 목록 (--label: 라벨 필터, armour+2.0 같은 값 포함)
-  tt search "쿼리"            # 제목+본문 검색 (한글 URL-인코딩 자동)
+  tt search "쿼리" [--verification S]  # 제목+본문 검색(한글 URL-인코딩 자동) + 검증 상태 필터
   tt show ID                 # 상세 + 하위 + 코멘트
   tt tree ID                 # 부모-자식 트리
   tt claim ID [--hours N]      # 특정 이슈 명시적 수령
@@ -98,15 +98,21 @@ case "$cmd" in
       req --get "$URL/issues" --data-urlencode "limit=500" --data-urlencode "archived=all" ${arch[@]+"${arch[@]}"} | jq -c '[.[] | select(.state!="cancelled")]'
     else
       req --get "$URL/issues" --data-urlencode "limit=500" ${arch[@]+"${arch[@]}"} | jq -c '[.[] | select(.state!="done" and .state!="cancelled")]'
-    fi | $JQ '.[] | "\(.id)  [\(.state|.[0:4])]  \(.priority|if .==null then "-" else "p"+tostring end)  \(.title)  \(if .assignee!="" then "@"+.assignee else "" end)"' ;;
+    fi | $JQ 'def badge: if .state=="done" and ((.verification_status // "unverified")=="unverified") then " ⚠unverified" elif .state=="done" and .verification_status=="legacy" then " ⚠legacy" else "" end; .[] | "\(.id)  [\(.state|.[0:4])]  \(.priority|if .==null then "-" else "p"+tostring end)  \(.title)  \(if .assignee!="" then "@"+.assignee else "" end)\(badge)"' ;;
 
   search)
-    [[ -z "${1:-}" ]] && { echo "usage: tt search \"쿼리\"  (제목+본문 LIKE)" >&2; exit 1; }
-    req --get --data-urlencode "q=$1" --data-urlencode "limit=100" "$URL/issues" \
-      | $JQ '.[] | "\(.id)  [\(.state|.[0:4])]  \(.priority|if .==null then "-" else "p"+tostring end)  \(.title)  \(if .assignee!="" then "@"+.assignee else "" end)"' ;;
+    q=""; ver=""
+    while [[ $# -gt 0 ]]; do case "$1" in
+      --verification) ver="$2"; shift 2 ;;
+      *) q="$1"; shift ;;
+    esac; done
+    [[ -z "$q" ]] && { echo "usage: tt search \"쿼리\" [--verification unverified|reported|approved|legacy]" >&2; exit 1; }
+    req --get --data-urlencode "q=$q" --data-urlencode "limit=100" "$URL/issues" \
+      | { [[ -n "$ver" ]] && $JQ -c --arg v "$ver" '[.[] | select((.verification_status // "unverified") == $v)]' || cat; } \
+      | $JQ 'def badge: if .state=="done" and ((.verification_status // "unverified")=="unverified") then " ⚠unverified" elif .state=="done" and .verification_status=="legacy" then " ⚠legacy" else "" end; .[] | "\(.id)  [\(.state|.[0:4])]  \(.priority|if .==null then "-" else "p"+tostring end)  \(.title)  \(if .assignee!="" then "@"+.assignee else "" end)\(badge)"' ;;
 
   show)
-    req "$URL/issues/$1" | $JQ '"■ \(.id) [\(.state)] \(.title)",  "  parent: \(.parent_id // "-")  prio: \(.priority // "-")  labels: \(.labels|join(","))  assignee: \(.assignee // "-")  v\(.version)",  "  \(.body|gsub("\n"; "\n  "))",
+    req "$URL/issues/$1" | $JQ '"■ \(.id) [\(.state)] \(.title)",  ("  parent: \(.parent_id // "-")  prio: \(.priority // "-")  labels: \(.labels|join(","))  assignee: \(.assignee // "-")  v\(.version)" + (if .state=="done" then "  검증: \(.verification_status // "unverified")" else "" end)),  "  \(.body|gsub("\n"; "\n  "))",
       (if (.children|length)>0 then "-- 하위 --" else empty end), (.children[] | "  ↳ \(.id) [\(.state)] \(.title)"),
       (if (.comments|length)>0 then "-- 코멘트 --" else empty end), (.comments[] | "  \(.ts) \(.author): \(.body)")' ;;
 
