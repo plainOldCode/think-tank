@@ -187,7 +187,7 @@ function card(i){
   return `<div class="card${mine?" mine":""}${other?" other":""}" id="c-${esc(i.id)}">
     <span class="id">${esc(i.id)}</span> ${i.priority?`<span class="tag">p${i.priority}</span>`:""}${i.labels.map(l=>`<span class="tag">#${esc(l)}</span>`).join("")}
     <h3>${esc(i.title)}</h3>
-    ${i.assignee?`<span class="tag">@${esc(i.assignee)}</span>`:""}${i.state==="in_progress" ? leaseTag(i) : (i.lease_expires?`<span class="tag">lease ${esc(i.lease_expires.slice(5,16))}</span>`:"")}
+    ${i.delayed?`<span class="tag" style="color:var(--warn)">🟡지연</span>`:""}${i.assignee?`<span class="tag">@${esc(i.assignee)}</span>`:""}${i.state==="in_progress" ? leaseTag(i) : (i.lease_expires?`<span class="tag">lease ${esc(i.lease_expires.slice(5,16))}</span>`:"")}
     <div class="acts">${acts}<button class="back" onclick="toggle('${esc(i.id)}')">자세히</button></div>
     <div class="det" id="d-${esc(i.id)}"><div class="body">불러오는 중…</div>
       <div id="cs-${esc(i.id)}"></div>
