@@ -79,3 +79,62 @@ def test_v1_report_shape_unchanged():
                      reason="문서 작업", command="grep", result="passed", evidence="통과")
     with pytest.raises(ValidationError):
         CompletionReport(**v2_body(contract_version=V1))
+
+
+# --- WMBA: evidence 구조화 (계약 v2.1) ---
+
+def _v21_body(**over):
+    body = v2_body()
+    body["verification"] = {"commands": "pytest tests/ -q",
+                            "evidence": [{"command": "pytest tests/ -q", "exit_code": 0,
+                                          "output_snippet": "5 passed"}]}
+    body.update(over)
+    return body
+
+
+def test_v21_구조화_evidence_수용():
+    from verification import CompletionReport
+    rep = CompletionReport(**_v21_body(contract_version="tt-tdd-v2.1:abc"))
+    blocks = rep.verification.evidence
+    assert isinstance(blocks, list) and blocks[0].command == "pytest tests/ -q"
+
+
+def test_v21_evidence_누락_또는_빈command_거부():
+    from verification import CompletionReport
+    with pytest.raises(ValidationError):
+        CompletionReport(**_v21_body(contract_version="tt-tdd-v2.1:abc", verification={"commands": "x", "evidence": []}))
+    with pytest.raises(ValidationError):
+        CompletionReport(**_v21_body(contract_version="tt-tdd-v2.1:abc",
+                                     verification={"commands": "x",
+                                                   "evidence": [{"command": "", "exit_code": 0, "output_snippet": "y"}]}))
+
+
+def test_v21_passed인데_실패_exit_code는_모순_거부():
+    from verification import CompletionReport
+    with pytest.raises(ValidationError):
+        CompletionReport(**_v21_body(contract_version="tt-tdd-v2.1:abc",
+                                     verification={"commands": "x",
+                                                   "evidence": [{"command": "pytest", "exit_code": 1,
+                                                                 "output_snippet": "3 failed"}]}))
+
+
+def test_v21_기존_문자열_evidence도_정상_형식이면_수용():
+    # v2.1 핀 카드에서도 문자열 evidence(사람 quick path·probe 구형) 허용
+    from verification import CompletionReport
+    rep = CompletionReport(**v2_body(contract_version="tt-tdd-v2.1:abc"))
+    assert isinstance(rep.verification.evidence, str) and rep.verification.evidence
+
+
+def test_v2_핀에서_구조화_evidence는_거부_유지():
+    from verification import CompletionReport
+    with pytest.raises(ValidationError):
+        CompletionReport(**_v21_body(contract_version=V2))
+
+
+def test_v21_배열_2천자_절단():
+    from verification import CompletionReport
+    rep = CompletionReport(**_v21_body(contract_version="tt-tdd-v2.1:abc",
+                                     verification={"commands": "x",
+                                                   "evidence": [{"command": "c", "exit_code": 0,
+                                                                 "output_snippet": "가" * 3000}]}))
+    assert len(rep.verification.evidence[0].output_snippet) == 2000

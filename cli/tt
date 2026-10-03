@@ -114,7 +114,9 @@ case "$cmd" in
   show)
     req "$URL/issues/$1" | $JQ '"■ \(.id) [\(.state)] \(.title)",  ("  parent: \(.parent_id // "-")  prio: \(.priority // "-")  labels: \(.labels|join(","))  assignee: \(.assignee // "-")  v\(.version)" + (if .state=="done" then "  검증: \(.verification_status // "unverified")" else "" end) + (if .delayed then "  🟡지연(backlog로 내리기: tt state ID backlog)" else "" end)),  "  \(.body|gsub("\n"; "\n  "))",
       (if (.children|length)>0 then "-- 하위 --" else empty end), (.children[] | "  ↳ \(.id) [\(.state)] \(.title)"),
-      (if (.comments|length)>0 then "-- 코멘트 --" else empty end), (.comments[] | "  \(.ts) \(.author): \(.body)")' ;;
+      (if (.comments|length)>0 then "-- 코멘트 --" else empty end), (.comments[] | "  \(.ts) \(.author): \(.body)"),
+      (if (.completion_report.verification.evidence|type)=="array" then
+        "-- 구조화 증거 --", (.completion_report.verification.evidence[] | "  ✓ \(.command) (exit \(.exit_code)) \(.output_snippet | .[0:80])") else empty end)' ;;
 
   tree)
     req "$URL/issues/$1/tree" | $JQ 'def walk(d): ("  "*d) + "■ " + .id + " [\(.state)] " + .title + (if .assignee!="" then " @"+.assignee else "" end) + (if (.tree|length)>0 then "\n" + ([.tree[] | walk(d+1)] | join("\n")) else "" end); walk(0)' ;;

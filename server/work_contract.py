@@ -5,8 +5,11 @@ from pathlib import Path
 
 
 def current_contract():
-    version = "tt-tdd-v1" if os.getenv("TT_CONTRACT_VERSION", "1") == "1" else "tt-tdd-v2"
-    marker = "tt-work-contract" if version == "tt-tdd-v1" else "tt-work-contract-v2"
+    raw = os.getenv("TT_CONTRACT_VERSION", "2.1")
+    version = ("tt-tdd-v1" if raw == "1"
+               else "tt-tdd-v2.1" if raw == "2.1" else "tt-tdd-v2")
+    marker = ("tt-work-contract" if version == "tt-tdd-v1"
+              else "tt-work-contract-v2.1" if version == "tt-tdd-v2.1" else "tt-work-contract-v2")
     document = (Path(__file__).parent / "static" / "api.md").read_text()
     instructions = document.split(f"<!-- {marker}:start -->", 1)[1].split(
         f"<!-- {marker}:end -->", 1
