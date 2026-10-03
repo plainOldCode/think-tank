@@ -52,6 +52,15 @@ def max_leases() -> int:
     return n if n >= 1 else 2
 
 
+def probe_interval() -> int:
+    """probe 내장 루프 주기(초) — TT_PROBE_INTERVAL. 0/unset/파싱불가=비활성(기본 off).
+    서버 임베드 모드 전용(M3ZW8E8A-ZK3G); standalone dispatchd는 TT_DISPATCH_INTERVAL 사용."""
+    try:
+        return max(0, int(os.environ.get("TT_PROBE_INTERVAL", "0")))
+    except ValueError:
+        return 0
+
+
 def parse_iso(s):
     from datetime import datetime
     try:
