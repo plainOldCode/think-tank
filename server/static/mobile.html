@@ -282,7 +282,7 @@ async function passConfirm(version){
     return;
   }
   const ev = ($("#pev").value.trim()) || "mobile pass";
-  if (await api("/issues/"+SID+"/verify","POST",{verifier:who(), evidence:ev, expected_version:version}) !== undefined) { toast("\u2713 done"); closeSheet(); }
+  if (await api("/issues/"+SID+"/verify","POST",{verifier:who(), evidence:ev, expected_version:version, human:true}) !== undefined) { toast("\u2713 done(사람 승인)"); closeSheet(); }
   load();
 }
 load(); setInterval(load, 6000);

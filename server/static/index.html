@@ -291,7 +291,7 @@ async function show(id, keep) {
     ${i.state==="blocked" && i.waiting_for ? `<br>⏸ waiting_for <b>${esc(i.waiting_for)}</b>${i.waiting_actor?` · 책임 ${esc(i.waiting_actor)}`:""}${i.blocked_detail?` · ${esc(i.blocked_detail)}`:""}${i.release_ready?` · <b style="color:var(--warn)">해제 가능</b>`:""}` : ""}</div>
     <pre>${esc(i.body || "(내용 없음)")}</pre>
     <div style="margin:8px 0">이동: ${nextStates[i.state].map(s=>`<button onclick="move('${esc(id)}','${s}')">${s}</button>`).join(" ")}
-     ${i.state==="review" ? `· <button onclick="verifyCard('${esc(id)}')">✔ 결과 보고로 완료</button><input id="vfee" placeholder="성공 결과(예: pytest 5 passed)" style="width:220px">` : ""}
+     ${i.state==="review" ? `· <button onclick="verifyCard('${esc(id)}')">✅ 사람 승인으로 완료</button><input id="vfee" placeholder="성공 결과(예: pytest 5 passed)" style="width:220px">` : ""}
      ${i.verified ? `· <span style="color:var(--done)">✓ ${{reported:"결과 보고",approved:"승인 예외",legacy:"기존 완료 기록"}[i.verification_status] || "기존 완료 기록"}${i.verified_evidence?` — ${esc(i.verified_evidence.slice(0,80))}`:""}</span>` : ""}
      ${["done","cancelled"].includes(i.state) ? (i.archived ? `· <button onclick="arch('${esc(id)}',false)">복원</button>` : `· <button onclick="arch('${esc(id)}',true)">아카이브</button>`) : ""}</div>
     <form style="margin:8px 0;display:flex;gap:6px;align-items:center" onsubmit="return assign(event)">
@@ -323,9 +323,15 @@ async function show(id, keep) {
 }
 
 async function move(id, state) { await patch(id, {state}); load(); }
+function signerName() {
+  let v = localStorage.getItem("tt-signer");
+  if (!v) { v = prompt("검증자 이름(사람 승인 감사 기록)", "skshim") || "skshim"; localStorage.setItem("tt-signer", v); }
+  return v;
+}
 async function verifyCard(id) {
   const ev = (document.getElementById("vfee")?.value || "").trim();
-  await post(`/issues/${id}/verify`, {verifier: "board-ui", evidence: ev});
+  if (!ev) { alert("검증 노트 한 줄을 입력하세요"); return; }
+  await post(`/issues/${id}/verify`, {verifier: signerName(), evidence: ev, human: true});
   load();
 }
 async function assign(e) { e.preventDefault(); const v = e.target.agent.value.trim(); if (v) await patch(current, {assignee: v}); load(); return false; }
