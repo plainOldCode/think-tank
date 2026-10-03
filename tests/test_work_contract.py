@@ -7,7 +7,8 @@ from app import create_app
 
 
 @pytest.fixture
-def client(tmp_path):
+def client(tmp_path, monkeypatch):
+    monkeypatch.setenv("TT_CONTRACT_VERSION", "2.1")
     return TestClient(create_app(str(tmp_path / "contract.db")))
 
 
@@ -23,7 +24,7 @@ def test_claim_and_pull_deliver_the_published_contract(client):
     assert response.status_code == 200
     contract = response.json()
     assert contract["version"] and "TDD" in contract["instructions"]
-    assert "실패" in contract["instructions"] and "대체 검증" in contract["instructions"]
+    assert "실패" in contract["instructions"] and "검증" in contract["instructions"]
     assert contract["instructions"] in client.get("/api.md").text
     claimed = start(client)
     assert claimed["work_contract"] == contract
@@ -115,15 +116,44 @@ def test_scope_change_cannot_reuse_an_old_comment_even_in_same_patch(client):
 
 
 def report(issue, **fields):
-    return {
-        "contract_version": issue["work_contract"]["version"],
-        "attempt": issue["execution_attempt"],
-        "method": "tdd", "red_command": "pytest tests/test_retry.py",
-        "red_evidence": "1 failed: expected one notification, observed two",
-        "command": "pytest tests/test_retry.py", "result": "passed",
-        "evidence": "1 passed; duplicate notification no longer reproduced",
-        **fields,
-    }
+    ver = issue["work_contract"]["version"]
+    base = {"contract_version": ver, "attempt": issue["execution_attempt"]}
+    if ver.startswith("tt-tdd-v1"):
+        base.update({"method": "tdd", "red_command": "pytest tests/test_retry.py",
+                     "red_evidence": "1 failed: expected one notification, observed two",
+                     "command": "pytest tests/test_retry.py", "result": "passed",
+                     "evidence": "1 passed; duplicate notification no longer reproduced"})
+        base.update(fields)
+        return base
+    if ver.startswith("tt-tdd-v2.1"):
+        ev = [{"command": "pytest tests/test_retry.py", "exit_code": 0,
+               "output_snippet": "1 passed; duplicate notification no longer reproduced"}]
+        verif = {"commands": "pytest tests/test_retry.py", "evidence": ev}
+        if "verification" in base and isinstance(base["verification"], dict) and isinstance(
+                base["verification"].get("evidence"), str):
+            base["verification"]["evidence"] = base["verification"]["evidence"]
+            return {**{"method": "tdd",
+                       "design": {"criteria": "중복 알림 제거", "verification": "pytest 실행",
+                                  "evidence": "수정 전: 1 failed — 알림 2회 관측"},
+                       "implementation": {"summary": "알림 중복 제거", "commands": "edit"},
+                       "verification": {"commands": "pytest tests/test_retry.py",
+                                        "evidence": "1 passed"}, "result": "passed"}, **base}
+        base.update({"method": "tdd",
+                     "design": {"criteria": "중복 알림 제거", "verification": "pytest 실행",
+                                "evidence": "수정 전: 1 failed — 알림 2회 관측"},
+                     "implementation": {"summary": "알림 중복 제거", "commands": "edit"},
+                     "verification": verif, "result": "passed"})
+        base.update(fields)
+        return base
+    base.update({"method": "tdd",
+                 "design": {"criteria": "중복 알림 제거", "verification": "pytest 실행",
+                            "evidence": "수정 전: 1 failed — 알림 2회 관측"},
+                 "implementation": {"summary": "알림 중복 제거", "commands": "edit"},
+                 "verification": {"commands": "pytest tests/test_retry.py",
+                                  "evidence": "1 passed; duplicate notification no longer reproduced"},
+                 "result": "passed"})
+    base.update(fields)
+    return base
 
 
 def test_tdd_report_is_recorded_as_reported_evidence(client):
@@ -133,15 +163,21 @@ def test_tdd_report_is_recorded_as_reported_evidence(client):
     assert response.status_code == 200
     data = response.json()
     assert data["state"] == "review" and data["verification_status"] == "reported"
-    assert data["completion_report"]["red_evidence"] == proof["red_evidence"]
-    assert data["completion_report"]["evidence"] == proof["evidence"]
+    if data["completion_report"]["contract_version"].startswith("tt-tdd-v1"):
+        assert data["completion_report"]["red_evidence"] == proof["red_evidence"]
+        assert data["completion_report"]["evidence"] == proof["evidence"]
+    else:
+        assert data["completion_report"]["design"]["evidence"]
+        assert data["completion_report"]["verification"]["evidence"]
 
 
 @pytest.mark.parametrize("overrides", [
     {"red_command": ""}, {"red_evidence": ""}, {"command": " "},
     {"method": "alternative", "reason": ""},
 ])
-def test_incomplete_report_is_rejected(client, overrides):
+def test_incomplete_report_is_rejected(tmp_path, monkeypatch, overrides):
+    monkeypatch.setenv("TT_CONTRACT_VERSION", "1")
+    client = TestClient(create_app(str(tmp_path / "contract-v1.db")))
     issue = start(client)
     response = client.patch(f"/issues/{issue['id']}", json={"state": "done", "completion_report": report(issue, **overrides)})
     assert response.status_code == 422
@@ -190,7 +226,9 @@ def test_scope_edit_invalidates_a_completed_card(client):
     assert changed["completion_report"] is None and changed["completed_at"] is None
 
 
-def test_alternative_report_requires_reason_but_not_red(client):
+def test_alternative_report_requires_reason_but_not_red(tmp_path, monkeypatch):
+    monkeypatch.setenv("TT_CONTRACT_VERSION", "1")
+    client = TestClient(create_app(str(tmp_path / "contract-v1-alt.db")))
     issue = start(client)
     proof = report(issue, method="alternative", reason="documentation-only", red_command="", red_evidence="")
     response = client.patch(f"/issues/{issue['id']}", json={"state": "done", "completion_report": proof})
@@ -201,7 +239,10 @@ def test_alternative_report_requires_reason_but_not_red(client):
 def test_contract_mismatch_and_scope_change_reject_stale_report(client):
     issue = start(client)
     path = f"/issues/{issue['id']}"
-    assert client.patch(path, json={"state": "done", "completion_report": report(issue, contract_version="old")}).status_code == 409
+    stale_v2 = report(issue)
+    stale_v2["contract_version"] = "tt-tdd-v2:deadbeef"
+    stale_v2["verification"]["evidence"] = "1 passed"
+    assert client.patch(path, json={"state": "done", "completion_report": stale_v2}).status_code == 409
     assert client.patch(path, json={"state": "done", "body": "new scope", "completion_report": report(issue)}).status_code == 409
     assert client.get(path).json()["body"] == ""  # rejected mutation is atomic
 

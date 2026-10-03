@@ -124,6 +124,40 @@ CLI가 이 옵션을 지원하지 않으면 API PATCH `/issues/ID`에 `{state:"d
 구분하며, 실제 수행 여부나 증거 내용의 진위는 프로젝트 검증기·CI·검토자가 확인한다.
 <!-- tt-work-contract-v2:end -->
 
+<!-- tt-work-contract-v2.1:start -->
+## 기본 방법론 (계약 v2.1 — 3단계 필수 + 증거 구조화)
+
+계약 v2의 모든 규칙(TDD 또는 planned의 3단계 설계/구현/검증, 완료는 review 정지,
+대체 검증이 필요하면 design.verification에 재현 가능한 방법으로 대체)을 따른다.
+v2.1에서 추가되는 것은 완료 증거의 구조화다.
+
+verification.evidence는 아래 블록의 배열로 제출한다.
+
+```json
+"verification": {
+  "commands": "전체 검증 명령 요약",
+  "evidence": [
+    {"command": "pytest tests/ -q", "exit_code": 0, "output_snippet": "185 passed", "note": "선택"}
+  ]
+}
+```
+
+- `command`는 비어 있으면 안 된다. `output_snippet`은 2,000자에서 절단된다.
+- `result`가 `passed`인데 `exit_code`가 0이 아닌 블록이 있으면 모순으로 거부된다 —
+  통과 주장과 증거가 일치해야 한다. 테스트 미실행·실패는 통과로 보고하지 않는다.
+- 사람이 직접 확인한 경우에도 문자열 evidence(quick path)는 허용된다 — 단 agent 보고는
+  블록 배열이 권장되며, 증거가 없는 보고는 검토자가 구분할 수 있다.
+- 기존 v2 보고(문자열 evidence)는 그대로 유효하다. probe 병합·verify 경로에 영향 없음.
+
+JSON 키는 v2와 동일하다(`contract_version`, `attempt`, `method`, `design`,
+`implementation`, `verification`, `result`, `limitations`).
+`tt done ID --report report.json`으로 제출하며, review에서는 `tt verify ID --report report.json`을 쓴다.
+CLI가 이 옵션을 지원하지 않으면 API PATCH `/issues/ID`에 `{state:"done", completion_report:{...}}`를 보낸다.
+
+서버는 보고의 형식·작업 회차를 검사한다. 에이전트가 제출한 보고는 독립 검증 결과와
+구분하며, 실제 수행 여부나 증거 내용의 진위는 프로젝트 검증기·CI·검토자가 확인한다.
+<!-- tt-work-contract-v2.1:end -->
+
 ## 표준 워크플로
 
 ```bash

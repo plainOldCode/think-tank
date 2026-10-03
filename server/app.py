@@ -573,7 +573,11 @@ def create_app(db_path: str) -> FastAPI:
             if p.expected_version is not None and p.expected_version != row["version"]:
                 raise HTTPException(409, "version conflict")
             c.execute("INSERT INTO comments (issue_id, author, body, ts) VALUES (?,?,?,?)",
-                      (issue_id, p.verifier, f"verify → done (reported). evidence: {ev[:300]}", dbmod.now()))
+                      (issue_id, p.verifier,
+                       f"verify → done (reported). evidence: {ev[:300]}"
+                       + ("" if (proof is None or isinstance(proof.verification.evidence, str))
+                          else f" [구조화 증거 {len(proof.verification.evidence)}블록]"),
+                       dbmod.now()))
             fields = {**reported_fields(ev), "state": "done", "completed_at": dbmod.now(),
                       "completion_report": proof.model_dump_json() if proof else "",
                       "lease_by": "", "lease_expires": None, "waiting_for": "", "waiting_actor": "",

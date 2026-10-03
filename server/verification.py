@@ -20,9 +20,23 @@ class ImplementationStage(_V2Stage):
     commands: str = Field(min_length=1)
 
 
+class EvidenceBlock(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    command: str = Field(min_length=1)
+    exit_code: int
+    output_snippet: str = ""
+    note: str = ""
+
+
+def _truncate_blocks(blocks):
+    return [EvidenceBlock(command=b.command, exit_code=b.exit_code,
+                          output_snippet=b.output_snippet[:2000], note=b.note) for b in blocks]
+
+
 class VerificationStage(_V2Stage):
     commands: str = Field(min_length=1)
-    evidence: str = Field(min_length=1)
+    evidence: str | list[dict] = Field(min_length=1)
 
 
 class CompletionReport(BaseModel):
@@ -41,6 +55,26 @@ class CompletionReport(BaseModel):
     design: DesignStage | None = None
     implementation: ImplementationStage | None = None
     verification: VerificationStage | None = None
+
+    @model_validator(mode="after")
+    def normalize_evidence(self):
+        """계약 버전에 따라 verification.evidence를 정규화·검증.
+        - v2.1+: 배열은 EvidenceBlock로 변환(command 필수, snippet 절단), 문자열은 유지.
+        - v2 이하: 배열 거부(회귀 보호 — probe가 저장된 v2 보고를 verify하는 경로 보호).
+        result=passed인데 exit_code!=0 블록이면 모순으로 거부."""
+        stage = self.verification
+        if stage is None or isinstance(stage.evidence, str):
+            return self
+        cv = self.contract_version
+        if not cv.startswith("tt-tdd-v2.1"):
+            raise ValueError("structured evidence requires tt-tdd-v2.1+")
+        blocks = [EvidenceBlock(**b) for b in stage.evidence]
+        if not blocks:
+            raise ValueError("verification.evidence empty")
+        if self.result == "passed" and any(b.exit_code != 0 for b in blocks):
+            raise ValueError("result=passed contradicts a failed exit_code in evidence")
+        stage.evidence = _truncate_blocks(blocks)
+        return self
 
     @model_validator(mode="after")
     def method_evidence(self):

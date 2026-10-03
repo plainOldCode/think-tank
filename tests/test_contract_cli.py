@@ -16,7 +16,8 @@ CLI = pathlib.Path(__file__).resolve().parents[1] / "cli" / "tt"
 
 
 @pytest.fixture
-def cli(tmp_path):
+def cli(tmp_path, monkeypatch):
+    monkeypatch.setenv("TT_CONTRACT_VERSION", "2.1")
     app = create_app(str(tmp_path / "cli.db"))
     writes = []
 
@@ -98,8 +99,14 @@ def test_report_file_roundtrip(cli, tmp_path, via_verify):
     validation = subprocess.run(["bash", "-n", str(CLI)], capture_output=True, text=True)
     assert validation.returncode == 0
     proof = {"contract_version": issue["work_contract"]["version"], "attempt": issue["execution_attempt"],
-             "method": "alternative", "reason": "syntax-only validation fixture",
-             "command": "bash -n cli/tt", "result": "passed", "evidence": "exit=0"}
+             "method": "planned",
+             "design": {"criteria": "cli 문법 검증", "verification": "bash -n 실행, rc!=0이면 실패",
+                        "evidence": "수정 전: 존재하지 않는 파일로 bash -n 실패 확인"},
+             "implementation": {"summary": "cli/tt 문법 검사", "commands": "bash -n cli/tt"},
+             "verification": {"commands": "bash -n cli/tt",
+                              "evidence": [{"command": "bash -n cli/tt", "exit_code": validation.returncode,
+                                            "output_snippet": (validation.stdout + validation.stderr).strip()[:500]}]},
+             "result": "passed", "limitations": ""}
     path = tmp_path / "report with spaces.json"
     path.write_text(json.dumps(proof))
     if via_verify:
@@ -114,4 +121,5 @@ def test_report_file_roundtrip(cli, tmp_path, via_verify):
         assert result.returncode == 0, result.stderr
         data = json.loads(result.stdout)
     assert data["state"] == "done" and data["verification_status"] == "reported"
-    assert data["completion_report"]["evidence"] == "exit=0"
+    ev = data["completion_report"]["verification"]["evidence"]
+    assert isinstance(ev, list) and ev[0]["command"] == "bash -n cli/tt"
