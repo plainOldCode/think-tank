@@ -1,1 +1,2 @@
 - ZK3G 내장 probe e2e 실측 기록: 서버 데몬 스레드가 PR 병합→verify→done 자동화 (2026-10-03, M407NTZ3-ZAWE)
+- ZK3G 실측 3(b): 병합시 verify 동시 수행 확인 (M40C7QTB-B8G8, 2026-10-03)
