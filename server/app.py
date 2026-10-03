@@ -99,6 +99,7 @@ class VerifyIn(BaseModel):
     evidence: str = ""
     completion_report: CompletionReport | None = None
     expected_version: int | None = None
+    human: bool = False  # THNJ 약한 합의: 사람 자기선언 — 감사 표시 전용, 인증 아님
 
 
 class CommentIn(BaseModel):
@@ -547,13 +548,34 @@ def create_app(db_path: str) -> FastAPI:
         with con() as c:
             c.execute("BEGIN IMMEDIATE")
             row = get_issue(c, issue_id)
-            if row["state"] != "review":
+            if p.human and row["state"] not in ("in_progress", "review"):
+                raise HTTPException(409, f"state is {row['state']} — human verify는 in_progress/review에서만")
+            if not p.human and row["state"] != "review":
                 raise HTTPException(409, f"state is {row['state']} — review만 verify 가능")
             n_open = c.execute(
                 "SELECT COUNT(*) n FROM issues WHERE parent_id=? AND state NOT IN ('done','cancelled')",
                 (issue_id,)).fetchone()["n"]
             if n_open:
                 raise HTTPException(409, f"child 미완료 {n_open}건 — 자식을 done/cancelled로 먼저 종결하세요")
+            if p.human:
+                # 약한 합의(THNJ): 사람 자기선언 완료 — 토큰·보고 불요, 한 줄 노트 필수.
+                # in_progress/review 모두 허용(사람은 에이전트 제출 전에도 즉시 승인 가능).
+                # approved = 사람 승인(close/force_done과 동일 등급), agent verify(reported)와 구분.
+                ev = p.evidence.strip()
+                if not ev:
+                    raise HTTPException(422, "human verify requires a one-line attestation note")
+                if p.expected_version is not None and p.expected_version != row["version"]:
+                    raise HTTPException(409, "version conflict")
+                c.execute("INSERT INTO comments (issue_id, author, body, ts) VALUES (?,?,?,?)",
+                          (issue_id, p.verifier,
+                           f"verify → done (사람 승인 — 자기선언). 노트: {ev[:300]} "
+                           f"| 작업: @{row['assignee'] or '-'} 승인: {p.verifier}", dbmod.now()))
+                c.execute("UPDATE issues SET verified=1, verified_at=?, verified_evidence=?, "
+                          "verification_status='approved', state='done', completed_at=?, version=version+1 "
+                          "WHERE id=? AND version=?",
+                          (dbmod.now(), f"사람 승인: {ev[:300]}", dbmod.now(), issue_id, row["version"]))
+                row2 = get_issue(c, issue_id)
+                return dbmod.to_dict(row2)
             proof = p.completion_report
             if requires_report(row) and not proof:
                 raise HTTPException(422, "completion_report required by this attempt's work contract")

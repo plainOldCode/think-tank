@@ -26,7 +26,7 @@ tt — think-tank issue tracker ($URL)
   tt note ID "로그"          # 진행 로그 코멘트
   tt contract                # 현재 공통 방법론 조회
   tt done ID ["로그"] [--report FILE]  # 완료 보고 (증거 없으면 review)
-  tt verify ID ["테스트 결과"] [--report FILE]  # review → done, 보고 형식 검사
+  tt verify ID ["테스트 결과"] [--report FILE] [--human]  # review → done. --human=사람 자기선언 승인
   tt state ID STATE          # 상태 이동 (상태 가드 있음)
   tt block ID KIND [-a 액터] [-d 상세]  # blocked 전이+사족 (KIND: dependency|human|gate|external)
   tt why ID                  # why-blocked: 게이트·기준·누락·권장 명령

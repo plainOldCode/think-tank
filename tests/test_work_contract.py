@@ -450,3 +450,48 @@ def test_mixed_v1_and_v2_claims_one_db(tmp_path, monkeypatch):
     r2 = c2.patch(f"/issues/{new_issue['id']}", json={
         "state": "done", "version": new_issue["version"] + 1, "completion_report": report})
     assert r2.status_code == 200, r2.text
+
+
+# --- THNJ: 약한 합의 — 사람 자기선언 verify (human=true) ---
+
+def test_human_verify_자기선언_승인(client):
+    issue = start(client)
+    r = client.post(f"/issues/{issue['id']}/verify",
+                    json={"verifier": "skshim", "evidence": "브라우저에서 자료실 확인 — 빈 결과 없음",
+                          "human": True})
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["state"] == "done" and data["verification_status"] == "approved"
+    comments = client.get(f"/issues/{issue['id']}").json()["comments"]
+    assert any("사람 승인" in c["body"] and "skshim" in c["body"] for c in comments)
+
+
+def test_human_verify는_보고요구와_정규식_게이트_무시(client, monkeypatch):
+    monkeypatch.setenv("TT_REQUIRE_REPORT", "1")
+    issue = start(client)
+    # human=false면 두 게이트 중 하나는 반드시 걸림(정규식 불일치) — 회귀 확인
+    r_agent = client.post(f"/issues/{issue['id']}/verify",
+                          json={"verifier": "some-agent", "evidence": "화면에서 확인했음"})
+    assert r_agent.status_code in (409, 422)  # 게이트 순서 무관 — agent 경로는 반드시 거부
+    # human=true면 한 줄 노트로 통과
+    r_human = client.post(f"/issues/{issue['id']}/verify",
+                          json={"verifier": "skshim", "evidence": "화면에서 확인했음", "human": True})
+    assert r_human.status_code == 200
+    assert r_human.json()["verification_status"] == "approved"
+
+
+def test_human_verify_노트_없으면_거부(client):
+    issue = start(client)
+    r = client.post(f"/issues/{issue['id']}/verify",
+                    json={"verifier": "skshim", "evidence": "  ", "human": True})
+    assert r.status_code == 422
+
+
+def test_human_자가승인은_허용하되_이름_나란히_기록(client):
+    issue = start(client)  # assignee=worker
+    r = client.post(f"/issues/{issue['id']}/verify",
+                    json={"verifier": "worker", "evidence": "직접 확인", "human": True})
+    assert r.status_code == 200
+    comments = client.get(f"/issues/{issue['id']}").json()["comments"]
+    body = next(c["body"] for c in comments if "사람 승인" in c["body"])
+    assert "worker" in body and "assignee" in body.lower() or "작업" in body
