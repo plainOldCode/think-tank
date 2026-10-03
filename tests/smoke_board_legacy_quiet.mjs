@@ -5,8 +5,8 @@ import { readFileSync } from "fs";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
 const here = dirname(fileURLToPath(import.meta.url));
-const html = readFileSync(join(here, "..", "server", "static", "index.html"), "utf8");
-const js = html.match(/<script>([\s\S]*?)<\/script>/)[1]
+const JS_FILES = ["tt-util.js", "tt-run.js", "tt-agents.js", "tt-board.js", "tt-detail.js", "tt-verify.js", "tt-main.js"];
+const js = JS_FILES.map(f => readFileSync(join(here, "..", "server", "static", "js", f), "utf8")).join("\n")
   .replace("load().then(() => { if (location.hash) show(location.hash.slice(1)).catch(console.error); if (location.search.includes(\"agents\")) toggleAgents(); }).catch(console.error);", "/* boot */")
   .replace("setInterval(()=>load().catch(()=>{}), 5000);", "");
 

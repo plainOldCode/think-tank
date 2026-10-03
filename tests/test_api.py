@@ -806,7 +806,7 @@ def test_mobile_build_injected(client):
     assert r.status_code == 200
     assert r.headers["cache-control"] == "no-store"
     assert "__TT_BUILD__" not in r.text
-    assert re.search(r'const BUILD = "\d+"', r.text), "build id 미주입"
+    assert re.search(r'tt-build" content="\d+"', r.text), "build id 미주입"
 
 
 def test_lease_default_hours_is_six(client):
