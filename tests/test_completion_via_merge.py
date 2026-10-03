@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 
 import app as appmod
 import dispatchd
+import probe.core
 
 
 @pytest.fixture
@@ -105,8 +106,8 @@ class Recorder:
 
 @pytest.fixture
 def gh_ok(monkeypatch):
-    monkeypatch.setattr(dispatchd, "gh_exec", lambda *a: "Merged")
-    monkeypatch.setattr(dispatchd, "gh_json",
+    monkeypatch.setattr(probe.core, "gh_exec", lambda *a: "Merged")
+    monkeypatch.setattr(probe.core, "gh_json",
                         lambda *a: {"headRefOid": "a" * 40} if "view" in a else None)
 
 
@@ -114,7 +115,7 @@ def test_review카드_merge는_verify로_done(gh_ok, monkeypatch):
     card = {"id": "M3R7M0ZR-YF99", "state": "review", "version": 4,
             "completion_report": {"result": "passed"}}
     rec = Recorder(card)
-    monkeypatch.setattr(dispatchd, "api", rec)
+    monkeypatch.setattr(probe.core, "api", rec)
     dispatchd.execute("u", {"agent": "probe", "issue": card["id"], "action": "merge",
                             "pr": 7, "head_sha": "a" * 40})
     assert len(rec.verified) == 1 and rec.verified[0]["verifier"] == "probe"
@@ -125,7 +126,7 @@ def test_review카드_merge는_verify로_done(gh_ok, monkeypatch):
 def test_review카드_리포트없으면_merge후_review유지(gh_ok, monkeypatch):
     card = {"id": "M3R7M0ZR-YF99", "state": "review", "version": 4, "completion_report": ""}
     rec = Recorder(card)
-    monkeypatch.setattr(dispatchd, "api", rec)
+    monkeypatch.setattr(probe.core, "api", rec)
     dispatchd.execute("u", {"agent": "probe", "issue": card["id"], "action": "merge",
                             "pr": 7, "head_sha": "a" * 40})
     assert not rec.verified and not rec.patched
@@ -135,7 +136,7 @@ def test_in_progress_merge는_무조건_review_정지(gh_ok, monkeypatch):
     card = {"id": "X-1", "state": "in_progress", "version": 2,
             "completion_report": {"result": "passed"}}
     rec = Recorder(card)
-    monkeypatch.setattr(dispatchd, "api", rec)
+    monkeypatch.setattr(probe.core, "api", rec)
     dispatchd.execute("u", {"agent": "probe", "issue": "X-1", "action": "merge",
                             "pr": 8, "head_sha": "a" * 40})
     assert rec.patched == [{"version": 2, "state": "review"}]
@@ -271,7 +272,7 @@ def test_ci_fix_비활성화는_needsmerge_회귀(monkeypatch):
     assert [a for a in acts if a["action"] == "review-note"]
 
 
-def test_ci_fix_집행은_dispatch와_marker():
+def test_ci_fix_집행은_dispatch와_marker(monkeypatch):
     rec = Recorder({"id": "X-9", "state": "review", "version": 1, "execution_attempt": 1,
                     "comments": []})
     calls = []
@@ -282,14 +283,10 @@ def test_ci_fix_집행은_dispatch와_marker():
             return dict(rec.card)
         return rec(url, path, method, body)
 
-    dispatchd.api_backup = dispatchd.api
-    dispatchd.api = api
-    try:
-        dispatchd.execute("u", {"agent": "dispatchd", "issue": "X-9", "action": "ci-fix",
+    monkeypatch.setattr(probe.core, "api", api)  # ZK3G: 로직 probe.core 이관 — 네임스페이스 통일
+    dispatchd.execute("u", {"agent": "dispatchd", "issue": "X-9", "action": "ci-fix",
                                 "pr": 9, "repo": "o/r", "branch": "tt/X-9-x",
                                 "head_sha": "b" * 40, "checks_failed": ["tests"]})
-    finally:
-        dispatchd.api = dispatchd.api_backup
     assert ("POST", "/issues/X-9/dispatch") in calls
     notes = [c["body"] for c in rec.commented if "body" in c]
     assert notes and "[ci-fix a1 #9/bbbbbbbb]" in notes[0]
@@ -314,7 +311,7 @@ def test_green_PR_있으면_review노트_안내고_merge_판정():
 
 def test_review노트_집행은_코멘트만(monkeypatch):
     rec = Recorder({"id": "X-2", "state": "review", "version": 1})
-    monkeypatch.setattr(dispatchd, "api", rec)
+    monkeypatch.setattr(probe.core, "api", rec)
     dispatchd.execute("u", {"agent": "probe", "issue": "X-2", "action": "review-note",
                             "reason": "PR 없음"})
     assert rec.commented and "needs-merge" in rec.commented[0]["body"]

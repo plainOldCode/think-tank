@@ -9,6 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import dispatchd
+import probe.core
 import work_contract
 from app import create_app
 
@@ -16,7 +17,7 @@ from app import create_app
 @pytest.fixture
 def live(tmp_path, monkeypatch):
     c = TestClient(create_app(str(tmp_path / "d.db")))
-    monkeypatch.setattr(dispatchd, "api", _make_api(c))
+    monkeypatch.setattr(probe.core, "api", _make_api(c))
     return c
 
 
@@ -83,7 +84,7 @@ def test_needs_human_drops_auto_and_notes(live):
 def live_v2(tmp_path, monkeypatch):
     monkeypatch.setenv("TT_CONTRACT_VERSION", "2")
     c = TestClient(create_app(str(tmp_path / "v2.db")))
-    monkeypatch.setattr(dispatchd, "api", _make_api(c))
+    monkeypatch.setattr(probe.core, "api", _make_api(c))
     return c
 
 
@@ -99,7 +100,7 @@ def test_execute_merge_reported_card_done(live_v2, monkeypatch):
     iid = i["id"]
     assert i["work_contract"]["version"].startswith("tt-tdd-v2:")
     calls = []
-    monkeypatch.setattr(dispatchd, "gh_exec", lambda *a: calls.append(list(map(str, a))) or "")
+    monkeypatch.setattr(probe.core, "gh_exec", lambda *a: calls.append(list(map(str, a))) or "")
     import json as _j; print("CARD-REP:", str(live_v2.get(f"/issues/{iid}").json()["completion_report"])[:80], "WC:", live_v2.get(f"/issues/{iid}").json()["work_contract"]["version"][:14])
     rep = {"contract_version": i["work_contract"]["version"], "attempt": i["execution_attempt"],
            "method": "planned",
@@ -123,7 +124,7 @@ def test_execute_merge_reported_card_done(live_v2, monkeypatch):
 
 def test_execute_merge_reportless_demotes_review(live_v2, monkeypatch):
     i = _claim_contract_issue(live_v2)
-    monkeypatch.setattr(dispatchd, "gh_exec", lambda *a: "")
+    monkeypatch.setattr(probe.core, "gh_exec", lambda *a: "")
     dispatchd.execute("/t", {"action": "merge", "issue": i["id"], "pr": 4})
     assert live_v2.get(f"/issues/{i['id']}").json()["state"] == "review"
 
@@ -132,9 +133,9 @@ def test_merge_persistent_contention_goes_review(live_v2, monkeypatch):
     i = _claim_contract_issue(live_v2)
     iid = i["id"]
     calls = []
-    monkeypatch.setattr(dispatchd, "gh_exec", lambda *a: calls.append(list(map(str, a))) or "")
+    monkeypatch.setattr(probe.core, "gh_exec", lambda *a: calls.append(list(map(str, a))) or "")
     # head 재확인: 현재 headRefOid가 act의 expected와 불일치(변경) — 첫 시도
-    monkeypatch.setattr(dispatchd, "gh_json",
+    monkeypatch.setattr(probe.core, "gh_json",
                         lambda *a: {"headRefOid": "changed-sha"} if "view" in a else [])
     # 이력 없음 → 1st: 스킵(코멘트 기록) + review 아님
     act = {"action": "merge", "issue": iid, "pr": 9, "head_sha": "old-sha",
