@@ -56,7 +56,8 @@ def test_dispatch_delivers_contract_without_changing_original_message(client, mo
         payloads.append(json.loads(request.data))
         return Response()
 
-    monkeypatch.setattr(appmod.urllib.request, "urlopen", receive)
+    import urllib.request as _urlreq
+    monkeypatch.setattr(_urlreq, "urlopen", receive)  # M14N: 로직이 service.py로 이동 — 전역 모듈 싱글턴 직접 패치
     issue = start(client)
     client.post("/agents", json={"name": "runner", "base_url": "http://receiver/hook"})
     message = '#opts {"model":"chosen"}\nFix the retry bug'
@@ -319,9 +320,8 @@ def test_migration_keeps_historical_data_and_marks_legacy(tmp_path):
 
 @pytest.mark.parametrize("mode", ["warn", "off"])
 def test_required_report_overrides_permissive_done_gate(tmp_path, monkeypatch, mode):
-    import app as appmod
     monkeypatch.setenv("TT_REQUIRE_REPORT", "1")
-    monkeypatch.setattr(appmod, "DONE_GATE", mode)
+    monkeypatch.setenv("TT_DONE_GATE", mode)  # M14N: DONE_GATE lazy read(config.done_gate) — env 주입으로 동일 의미
     strict = TestClient(create_app(str(tmp_path / "required.db")))
     issue = start(strict)
     assert strict.patch(f"/issues/{issue['id']}", json={"state": "done"}).json()["state"] == "review"
