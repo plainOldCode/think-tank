@@ -7,8 +7,9 @@ import { spawnSync } from "child_process";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
 const here = dirname(fileURLToPath(import.meta.url));
-const html = readFileSync(join(here, "..", "server", "static", "mobile.html"), "utf8");
-const js = html.match(/<script>([\s\S]*?)<\/script>/)[1].replace("load(); setInterval(load, 6000);", "").replace("setInterval(checkBuild, 300000);", "");
+const JS_FILES = ["m-core.js", "m-view.js", "m-act.js", "m-main.js"];
+const js = JS_FILES.map(f => readFileSync(join(here, "..", "server", "static", "js", f), "utf8")).join("\n")
+  .replace("load(); setInterval(load, 6000);", "").replace("setInterval(checkBuild, 300000);", "");
 const noMe = !!process.env.SMOKE_NO_ME;
 const store = noMe ? {} : { "tt-m-me": "me@x" };
 globalThis.localStorage = { getItem: k => store[k] ?? null, setItem: (k, v) => store[k] = v };
@@ -42,7 +43,7 @@ let n = 0;
 const calls = [];
 globalThis.fetch = async (u, o) => {
   calls.push([u, o?.body]);
-  if (u === "/m") return { ok: true, text: async () => 'const BUILD = "9999999"' };
+  if (u === "/m") return { ok: true, text: async () => '<meta name="tt-build" content="9999999">' };
   if (u.includes("/agents")) return { ok: true, json: async () => [{ name: "agent-1@host1", enabled: 1, last_ok: "2026-09-29T10:00:00+0900" }] };
   if (!u.startsWith("/issues")) return { ok: true, json: async () => [] };
   return { ok: true, json: async () => structuredClone(n++ < 2 ? two : three) };
