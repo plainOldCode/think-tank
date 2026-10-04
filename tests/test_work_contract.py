@@ -495,3 +495,36 @@ def test_human_자가승인은_허용하되_이름_나란히_기록(client):
     comments = client.get(f"/issues/{issue['id']}").json()["comments"]
     body = next(c["body"] for c in comments if "사람 승인" in c["body"])
     assert "worker" in body and "assignee" in body.lower() or "작업" in body
+
+
+def test_claim_review는_review상태에서만_가능하고_상태를_바꾸지_않는다(client):
+    issue = client.post("/issues", json={"title": "리뷰 대상"}).json()
+    r = client.post(f"/issues/{issue['id']}/claim-review", json={"agent": "codex"})
+    assert r.status_code == 409  # todo 상태에는 리뷰어 claim 불가
+
+    claimed = start(client)
+    r = client.post(f"/issues/{claimed['id']}/claim-review", json={"agent": "codex"})
+    assert r.status_code == 409  # in_progress도 불가
+
+    client.patch(f"/issues/{claimed['id']}", json={"state": "done", "completion_report": {
+        "contract_version": claimed["work_contract"]["version"], "attempt": 1, "method": "planned",
+        "design": {"criteria": "c", "verification": "v"},
+        "implementation": {"summary": "s", "commands": "cc"},
+        "verification": {"commands": "ccc", "evidence": "e"},
+        "result": "passed", "limitations": ""}})
+    r = client.post(f"/issues/{claimed['id']}/claim-review", json={"agent": "codex"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["state"] == "review"          # 상태 불변
+    assert body["assignee"] == "worker"       # 작업자 assignee 보존(review-fix 대상)
+    assert body["reviewer"] == "codex"        # 리뷰어 점유 표기
+    assert body["execution_attempt"] == 1     # attempt 불변
+    assert body["lease_by"] == "codex"
+
+    r = client.post(f"/issues/{claimed['id']}/claim-review", json={"agent": "claude"})
+    assert r.status_code == 409  # 이중 점유 불가
+
+    # 판정 후 리뷰어 반납 — probe release-reviewer 경로
+    r = client.patch(f"/issues/{claimed['id']}", json={"version": body["version"], "reviewer": ""})
+    assert r.status_code == 200
+    assert r.json()["reviewer"] is None
