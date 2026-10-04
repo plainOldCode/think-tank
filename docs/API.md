@@ -52,7 +52,10 @@ CLI: `tt contract`, `tt done ID --report FILE`, `tt verify ID --report FILE`. �
 
 ## Agent registry + dispatch (hook/callback 대화)
 
-- `GET/POST /agents`, `PATCH/DELETE /agents/{name}` — `{name, base_url(http/s), secret?, enabled?}`
+- `GET/POST /agents`, `PATCH/DELETE /agents/{name}` — `{name, base_url(http/s), secret?, enabled?, model?, reasoning?, tier?}`
+  - `model`/`reasoning`: 자유 문자열(검증 없음). **선언(declaration)이지 실행 보장(enforcement)이 아님** — runner가 실제로 다른 모델을 쓰면 그건 runner의 문제다. 2026-09-26 모델 pinning 사건(M3ER6G3S-RZ20)에서의 교훈: 판정 계층 규약이 TT 어디에도 없으면 사고처럼 보인다
+  - `tier`: 계층 enum `sota|exec|impl|human` — 한글 별칭 `판정|실행|구형` 자동 정규화, 대소문자 무시, 무효값 422. sota=판정(설계/리뷰), exec=실행/판독, impl=구현, human=사람
+  - CLI: `tt agent add NAME URL [secret] [--model M] [--reasoning R] [--tier T]`, `tt agent set NAME model=M reasoning=R tier=T`, `tt agents` 출력에 `model=x/y [tier]` 접미(기존 접두 포맷 유지 — 후방호환)
 - `POST /issues/{id}/dispatch {agent, message, author?}`:
   1. `message`를 issue 댓글로 기록 (author=지시자)
   2. agent `base_url`로 webhook POST (timeout 10s, header `Authorization: Bearer <secret>`, `X-TT-Dispatch`)
@@ -62,11 +65,13 @@ CLI: `tt contract`, `tt done ID --report FILE`, `tt verify ID --report FILE`. �
 - **대화 루프**: agent 회신/추가질문은 기존 `POST /issues/{id}/comments {author:agent명}` → 보드 상세가 5s 폴링으로 실시간 표시. 사용자가 보드 입력창에 답하면 dispatch(전달+context 유지) 또는 note(로그만)로 재전달
 - CLI: `tt agents`, `tt agent add NAME URL [secret]`, `tt agent rm NAME`, `tt agent enable|disable NAME`, `tt dispatch ID -A AGENT "지시" [-a author]`
 - agent 수신기 구현 요령: webhook은 즉시 200만 받고 작업은 백그라운드(세션 resume은 context에 저장된 토큰 사용). 처리 결과·질문은 comments로.
-- `GET /issues/{id}/dispatches` — 발송 이력(status: queued|ok|error, detail, context) + 실행 투영 필드(run_state, machine, session, started_at, last_progress_at, last_tail, ended_at)
+- `GET /issues/{id}/dispatches` — 발송 이력(status: queued|ok|error, detail, context) + 실행 투영 필드(run_state, machine, session, started_at, last_progress_at, last_tail, ended_at) + `model`(발송 시점 대상 agent 모델 스냅샷 — 감사 추적 선언값, 미등록은 빈 문자열). webhook payload에도 동일 `model` 필드 병기
 - `POST /issues/{id}/dispatches/{did}/progress` — 러너→서버 진행 투영(dispatch 레코드만 갱신, 코멘트 무생성, last-write-wins): `{state:"queued|running|stalled|finished|failed", tail?, ts?, machine?, session?}`. 헤더 `x-tt-dispatch` + `Authorization: Bearer <agent secret>`(secret 빈 agent는 생략 허용 — dispatch deliver 규약 동일). running/stalled만 tail/ts 진행 반영(tail 서버 500자 클램프), finished/failed는 run_state·ended_at만. 미존재/issue 불일치 404, secret 불일치 403, state 누락/비enum 422. 상태 머신 가드 없음(과잉 차단 금지).
 - `GET /agents/active` — 활성 실행(dispatch) 목록: `run_state ∈ {queued, running, stalled}`만. `[{dispatch_id, issue_id, issue_title, agent, machine, session, run_state, started_at, last_progress_at, elapsed_s, last_tail}]`. stalled는 러너 stall_check가 보낸 값 그대로 노출(서버 재계산 없음). 빈 결과 200 + [].
 
 ## Changelog (append-only)
+- 2026-10-04: **agent 모델 메타데이터 (M3ER6G3S-RZ20)** — agents에 model/reasoning(자유 문자열, 선언=declaration 비-enforcement)·tier(sota|exec|impl|human, 한글 별칭 정규화) 추가, dispatches에 발송 시점 model 스냅샷(감사 추적, webhook payload에도 병기), CLI tt agent add --model/--reasoning/--tier + tt agent set key=val + tt agents 접미 표기(후방호환), UI agent 카드 모델 표기. 시드: codex·codex-read-only=gpt-6.1-sol/xhigh[sota], agy=gemini-3.8-flash/high[exec], opencode=gx10 qwen3.8-flash-next[impl]
+
 - 2026-09-29: **runner 진행 관찰 — 진행 투영·활성 조회 API (M3EREF97-FXWQ, dispatch#57)** — dispatches에 실행 상태 컬럼 7종(run_state/machine/session/started_at/last_progress_at/last_tail/ended_at, 기존 행 ''=비-tmux), POST dispatches/{did}/progress(코멘트 무생성 투영 쓰기, deliver 헤더 규약 상속, tail 500자 클램프), GET /agents/active(활성=queued/running/stalled, stalled 판정 소스는 러너 단독). 상태:''(미표시)|queued(회색)|running(blink=last_progress_at 임계 내, 보드 90s 권장)|stalled(적색·blink 정지)|finished(활성 소멸)|failed(적색; status=error와 다른 층위). 코멘트 왕복(시작/STALL/종료) 불변 — 진행 코멘트 0. 모델 병기·L1 진행률·L2 ETA·stalled 알림은 범위 외(후속). docs/API.md와 static/api.md 동시 갱신.
 - 2026-09-25: **done≠verified 게이트 + blocked→human Level4 알림 (M3BZV172-9F0S)** — review 상태 신설(증거 없는 done 강등지), POST verify(review→done 확정), 코멘트 증거(SHA/링크/테스트/마커) 자동 연결+verified 필드, close 라벨/force_done 승인 우회(bridge close 규약 정합), TT_DONE_GATE=gate|warn|off. agents.notify_hook capability: blocked(waiting_for=human) 1회 Level4(A/B+recommendation) X-TT-Command:notify 발송(기존 webhook 패턴→Hermes Telegram 주입, 자체 APNs 없음), blocked_notified_at dedup, legacy `waiting_for=human` 코멘트 마커 호환. CLI tt verify/tt agent notify, UI review 열+verify 버튼
 - 2026-09-25: **blocked 지능화 (M3BZS1FS-5722)** — waiting_for/waiting_actor/blocked_detail 필드(하위 호환 migration), GET why-blocked, reconcile release(terminalize→runner kill, agents.release_hook capability), 의존 종료 시 release-ready 표시+댓글(자동 재dispatch 없음), CLI tt block/tt why, UI ⏸ 배지

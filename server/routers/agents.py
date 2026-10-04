@@ -31,9 +31,9 @@ def add_agent(p: AgentIn, ctx: Ctx = Depends(get_ctx)):
     with ctx.con() as c:
         if c.execute("SELECT 1 FROM agents WHERE name=?", (name,)).fetchone():
             raise HTTPException(409, f"agent {name} 이미 등록됨")
-        c.execute("INSERT INTO agents (name, base_url, secret, enabled, release_hook, notify_hook, created_at) VALUES (?,?,?,?,?,?,?)",
+        c.execute("INSERT INTO agents (name, base_url, secret, enabled, release_hook, notify_hook, model, reasoning, tier, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
                   (name, p.base_url, p.secret, 1 if p.enabled else 0, 1 if p.release_hook else 0,
-                   1 if p.notify_hook else 0, dbmod.now()))
+                   1 if p.notify_hook else 0, p.model, p.reasoning, p.tier, dbmod.now()))
         c.commit()
         row = c.execute("SELECT * FROM agents WHERE name=?", (name,)).fetchone()
     return dict(row)
@@ -54,6 +54,11 @@ def patch_agent(name: str, p: AgentPatch, ctx: Ctx = Depends(get_ctx)):
         fields["release_hook"] = 1 if p.release_hook else 0
     if p.notify_hook is not None:
         fields["notify_hook"] = 1 if p.notify_hook else 0
+    # M3ER6G3S-RZ20: model/reasoning은 자유 문자열, tier는 모델에서 정규화 완료
+    for k in ("model", "reasoning", "tier"):
+        v = getattr(p, k)
+        if v is not None:
+            fields[k] = v or None
     with ctx.con() as c:
         if not c.execute("SELECT 1 FROM agents WHERE name=?", (name,)).fetchone():
             raise HTTPException(404, f"agent {name} not found")
@@ -93,15 +98,17 @@ def dispatch(issue_id: str, p: DispatchIn, request: Request, ctx: Ctx = Depends(
         prev = c.execute("SELECT context FROM dispatches WHERE issue_id=? AND agent=? "
                          "ORDER BY id DESC LIMIT 1", (issue_id, p.agent)).fetchone()
         tail = dbmod.comments_of(c, issue_id)[-20:]
-        did = c.execute("INSERT INTO dispatches (issue_id, agent, author, message, context, status, ts) "
-                        "VALUES (?,?,?,?,?,?,?)",
-                        (issue_id, p.agent, p.author, p.message, "", "queued", dbmod.now())).lastrowid
+        did = c.execute("INSERT INTO dispatches (issue_id, agent, author, message, context, status, ts, model) "
+                        "VALUES (?,?,?,?,?,?,?,?)",
+                        (issue_id, p.agent, p.author, p.message, "", "queued", dbmod.now(),
+                         ag["model"] or "")).lastrowid
         c.commit()
     payload = {
         "dispatch_id": did, "issue_id": issue_id, "issue_title": issue["title"],
         "agent": p.agent, "author": p.author, "message": p.message,
         "context": prev["context"] if prev else "", "comments": tail,
         "tt_url": str(request.base_url).rstrip("/"),
+        "model": ag["model"] or "",  # RZ20: 감사 추적 — 이 회차가 어떤 모델로 실행되는지 선언값
         "work_contract": (p.work_contract if p.work_contract is not None else
                           (json.loads(issue["work_contract"]) if issue["work_contract"] else ctx.contract)),
         "execution_attempt": issue["execution_attempt"],

@@ -73,7 +73,10 @@ CREATE TABLE IF NOT EXISTS agents (
   created_at TEXT NOT NULL,
   last_ok TEXT,
   last_err TEXT,
-  release_hook INTEGER NOT NULL DEFAULT 0
+  release_hook INTEGER NOT NULL DEFAULT 0,
+  model TEXT,
+  reasoning TEXT,
+  tier TEXT
 );
 CREATE TABLE IF NOT EXISTS dispatches (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -91,7 +94,8 @@ CREATE TABLE IF NOT EXISTS dispatches (
   started_at TEXT,
   last_progress_at TEXT,
   last_tail TEXT NOT NULL DEFAULT '',
-  ended_at TEXT
+  ended_at TEXT,
+  model TEXT NOT NULL DEFAULT ''
 );
 """
 
@@ -153,9 +157,18 @@ def connect(path):
     except sqlite3.OperationalError:
         pass
     for col in ("release_hook INTEGER NOT NULL DEFAULT 0",
-                "notify_hook INTEGER NOT NULL DEFAULT 0"):
+                "notify_hook INTEGER NOT NULL DEFAULT 0",
+                # M3ER6G3S-RZ20: 모델 메타데이터 — 선언(declaration)이지 실행 보장이 아님
+                "model TEXT",
+                "reasoning TEXT",
+                "tier TEXT"):
         try:
             con.execute(f"ALTER TABLE agents ADD COLUMN {col}")
+        except sqlite3.OperationalError:
+            pass
+    for col in ("model TEXT NOT NULL DEFAULT ''",):
+        try:
+            con.execute(f"ALTER TABLE dispatches ADD COLUMN {col}")
         except sqlite3.OperationalError:
             pass
     # dispatch 실행 상태 투영 (TT M3EREF97-FXWQ): 기존 행은 '' = 비-tmux·러너 미수신.

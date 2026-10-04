@@ -850,3 +850,57 @@ def test_lease_released_on_all_exits(client):
         now = dt.datetime.strptime(dbmod.now(), "%Y-%m-%dT%H:%M:%S%z")
         live = bool(g.get("lease_expires")) and dt.datetime.strptime(g["lease_expires"], "%Y-%m-%dT%H:%M:%S%z") > now
         assert not live, f"{target} 탈출 후 live lease 잔존: {g['lease_expires']}"
+
+
+def test_agent_메타데이터_미지정은_회귀_없음_지정은_왕복(client):
+    """RZ20 수용기준 1 — 미지정 등록 무변화, 지정 시 등록·조회·수정 readback."""
+    plain = client.post("/agents", json={"name": "plain", "base_url": "http://x/hook"}).json()
+    assert plain["model"] is None and plain["tier"] is None  # 회귀 0 — 새 필드만 None
+
+    r = client.post("/agents", json={
+        "name": "codex", "base_url": "http://x/hook",
+        "model": "gpt-6.1-sol", "reasoning": "xhigh", "tier": "판정"}).json()
+    assert r["model"] == "gpt-6.1-sol" and r["reasoning"] == "xhigh"
+    assert r["tier"] == "sota"  # 한글 별칭 정규화
+
+    r = client.patch("/agents/codex", json={"model": "gpt-6-sol", "tier": "exec"}).json()
+    assert r["model"] == "gpt-6-sol" and r["tier"] == "exec"
+    assert client.get("/agents").json()[1]["tier"] == "exec"
+
+
+def test_agent_tier_정규화와_거부(client):
+    assert client.post("/agents", json={"name": "a", "base_url": "http://x", "tier": "SOTA"}).json()["tier"] == "sota"
+    assert client.post("/agents", json={"name": "b", "base_url": "http://x", "tier": "구형"}).json()["tier"] == "impl"
+    assert client.post("/agents", json={"name": "c", "base_url": "http://x", "tier": "human"}).json()["tier"] == "human"
+    assert client.post("/agents", json={"name": "d", "base_url": "http://x", "tier": "god"}).status_code == 422
+
+
+def test_dispatch_이력에_model_스냅샷_병기(client, monkeypatch):
+    """RZ20 수용기준 2 — dispatches에 대상 agent model 기록. 에이전트별 계약서 테스트 패턴 재사용."""
+    class Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def read(self):
+            return b"{}"
+
+    import urllib.request as _ur
+    orig = _ur.urlopen
+    _ur.urlopen = lambda req, timeout=10: Response()
+    try:
+        client.post("/agents", json={"name": "codex", "base_url": "http://x/hook",
+                                     "model": "gpt-6.1-sol", "tier": "sota"})
+        client.post("/agents", json={"name": "nomodel", "base_url": "http://y/hook"})
+        i = client.post("/issues", json={"title": "감사"}).json()
+        d1 = client.post(f"/issues/{i['id']}/dispatch", json={"agent": "codex", "message": "m"}).json()
+        d2 = client.post(f"/issues/{i['id']}/dispatch", json={"agent": "nomodel", "message": "m"}).json()
+    finally:
+        _ur.urlopen = orig
+    rows = {r["id"]: r for r in client.get(f"/issues/{i['id']}/dispatches").json()}
+    assert rows[d1["id"]]["model"] == "gpt-6.1-sol"
+    assert rows[d2["id"]]["model"] == ""  # 메타데이터 없는 에이전트는 빈 값
