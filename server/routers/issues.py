@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 import config
 import db as dbmod
 import service
-from models import ClaimIn, CommentIn, IssueCreate, IssuePatch, LeaseIn, VerifyIn
+from models import ClaimIn, CommentIn, IssueCreate, IssuePatch, LeaseIn, ReviewClaimIn, VerifyIn
 from service import Ctx
 from verification import legacy_result
 
@@ -110,6 +110,7 @@ def claim(issue_id: str, p: ClaimIn, ctx: Ctx = Depends(get_ctx)):
         if held >= config.max_leases():
             raise HTTPException(409, f"lease limit: active leases={held} (max={config.max_leases()}) — heartbeat or done first")
         service.bump(c, issue_id, {**service.reset_evidence(c, issue_id), "state": "in_progress", "assignee": p.agent,
+                                   "reviewer": None,  # R6: 재작업 진입 시 이전 리뷰어 표기 제거
                                    "started_at": dbmod.now(),
                                    "work_contract": json.dumps(ctx.contract, ensure_ascii=False),
                                    "execution_attempt": row["execution_attempt"] + 1,
@@ -118,6 +119,33 @@ def claim(issue_id: str, p: ClaimIn, ctx: Ctx = Depends(get_ctx)):
                                    "todo_since": None}, row["version"])
         row = service.get_issue(c, issue_id)
     return dbmod.to_dict(row)
+
+
+@router.post("/issues/{issue_id}/claim-review")
+def claim_review(issue_id: str, p: ReviewClaimIn, ctx: Ctx = Depends(get_ctx)):
+    """리뷰어 claim — review 상태에서만. 상태·계약·attempt는 건드리지 않고 reviewer/lease만 기록."""
+    with ctx.con() as c:
+        # R4: 한도 검사와 기록을 같은 write 트랜잭션으로 — 동시 claim 이중 통과 방지
+        c.execute("BEGIN IMMEDIATE")
+        row = service.get_issue(c, issue_id)
+        if row["state"] != "review":
+            raise HTTPException(409, f"claim-review is for review-state cards only (state is {row['state']})")
+        if row["reviewer"] and row["reviewer"] != p.agent:
+            # R3: lease가 만료된 점유는 인계 가능 — 리뷰어 교체·장애 인계 차단 방지
+            if (row["lease_expires"] or "") > dbmod.now():
+                raise HTTPException(409, f"already claimed by {row['reviewer']}")
+        # R4: 현재 카드의 기존 리뷰어 lease는 제외 — 같은 카드 재claim이 한도로 거부되지 않게
+        held = c.execute("SELECT COUNT(*) n FROM issues WHERE lease_by=? AND lease_expires>? AND id<>?",
+                         (p.agent, dbmod.now(), issue_id)).fetchone()["n"]
+        if held >= config.max_leases():
+            raise HTTPException(409, f"lease limit: active leases={held} (max={config.max_leases()})")
+        service.bump(c, issue_id, {"reviewer": p.agent, "lease_by": p.agent,
+                                   "lease_expires": dbmod.future(p.safe_hours()),
+                                   "heartbeat_at": dbmod.now()}, row["version"])
+        row = service.get_issue(c, issue_id)
+    d = dbmod.to_dict(row)
+    d["work_contract"] = service.REVIEW_CONTRACT  # 리뷰어는 리뷰 계약을 본다(R2)
+    return d
 
 
 @router.post("/issues/{issue_id}/lease")
@@ -167,7 +195,7 @@ def pull(p: ClaimIn, ctx: Ctx = Depends(get_ctx)):
             iid = cand["id"]
             if cand["state"] == "todo":
                 res = c.execute(
-                    "UPDATE issues SET state='in_progress', assignee=?, started_at=?, lease_by=?, lease_expires=?, "
+                    "UPDATE issues SET state='in_progress', assignee=?, reviewer=NULL, started_at=?, lease_by=?, lease_expires=?, "
                     "heartbeat_at=?, updated_at=?, work_contract=?, execution_attempt=execution_attempt+1, "
                     "version=version+1 WHERE id=? AND state='todo' AND assignee=''",
                     (p.agent, ts, p.agent, dbmod.future(p.safe_hours()), ts, ts,
@@ -278,6 +306,11 @@ def patch_issue(issue_id: str, p: IssuePatch, ctx: Ctx = Depends(get_ctx)):
         if p.assignee is not None:
             fields["assignee"] = p.assignee
             if p.assignee == "":
+                fields.update({"lease_by": "", "lease_expires": None})
+        if p.reviewer is not None:
+            # lease는 probe가 조건부로 명시(R5) — reviewer 반납이 재작업자 lease를 덮지 않게 분리
+            fields["reviewer"] = p.reviewer or None
+            if p.reviewer == "" and row["lease_by"] == (row["reviewer"] or ""):
                 fields.update({"lease_by": "", "lease_expires": None})
         if p.archived is not None:
             fields["archived"] = 1 if p.archived else 0

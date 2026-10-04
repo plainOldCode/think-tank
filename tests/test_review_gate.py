@@ -22,7 +22,7 @@ def gate_on(monkeypatch):
 
 
 def _issue(state="review", iid="M428RMBY-XC0K", attempt=1, comments=(), assignee="a@t"):
-    return {"id": iid, "state": state, "assignee": assignee, "lease_expires": None,
+    return {"id": iid, "state": state, "assignee": assignee, "version": 3, "lease_expires": None,
             "labels": [], "priority": None, "execution_attempt": attempt,
             "dispatches": 1, "release_ready": False, "waiting_for": None,
             "work_contract": {"version": "v2"}, "comments": list(comments),
@@ -241,3 +241,73 @@ def test_게이트on은_review상태_카드만_판정(gate_on):
     i = _issue(state="in_progress")
     acts = dispatchd.decide(_snap([i], _pr()))
     assert not [a for a in acts if a["action"] in ("review-request", "merge", "review-fix")]
+
+
+def test_판정기록시_리뷰어_반납_액션(gate_on):
+    # verdict가 기록된 review 카드 — 리뷰어 점유 반납 액션 발행(중복 없이 1회)
+    i = _issue(state="review")
+    i["reviewer"] = REV
+    i["comments"] = [{"author": REV, "body": "review: approve\nPR#9@bbbbbbbb"}]
+    acts = dispatchd.decide(_snap([i], _pr()))
+    rel = [a for a in acts if a["action"] == "release-reviewer"]
+    assert len(rel) == 1 and rel[0]["reviewer"] == REV
+
+
+def test_release_reviewer_실행은_빈문자열과_expected_version으로_PATCH한다(gate_on, monkeypatch):
+    # R1 회귀: reviewer=None PATCH는 핸들러가 무시(no-op) — 규약 일치 필수
+    sent = []
+    card = {"id": "X", "reviewer": REV, "assignee": "a@t", "version": 3,
+            "comments": [{"author": REV, "body": "review: approve\nPR#9@bbbbbbbb"}]}
+    monkeypatch.setattr(probe.core, "api",
+                        lambda url, path, method="GET", payload=None:
+                        sent.append((path, method, payload)) or card)
+    dispatchd.execute("http://x", {"issue": "X", "action": "release-reviewer", "reviewer": REV,
+                                   "pr": 9, "head_sha": "b" * 40, "expected_version": 3})
+    path, method, payload = sent[-1]
+    assert method == "PATCH" and path == "/issues/X"
+    assert payload["reviewer"] == ""
+    assert payload["expected_version"] == 3  # "version" 키는 모델에 없어 무시된다
+
+
+def test_stale_반납_액션은_최신판정이_다르면_폐기된다(gate_on, monkeypatch):
+    # R5 — 이전 head 판정의 반납 액션이 새 점유를 지우지 않게: 최신 판정 sha 불일치 시 no-op
+    sent = []
+    card = {"id": "X", "reviewer": REV, "assignee": "a@t", "version": 7,
+            "comments": [{"author": REV, "body": "review: approve\nPR#9@cccccccc"}]}
+    monkeypatch.setattr(probe.core, "api",
+                        lambda url, path, method="GET", payload=None:
+                        sent.append((path, method, payload)) or card)
+    # 액션은 구 판정(bbbbbbbb) 기준 — 최신 판정(cccccccc)과 불일치 → 폐기
+    probe.core.execute("http://x", {"issue": "X", "action": "release-reviewer",
+                                    "reviewer": REV, "pr": 9, "head_sha": "b" * 40,
+                                    "expected_version": 3})
+    assert not [s for s in sent if s[1] == "PATCH"]
+
+
+def test_반납_액션은_decide이후_버전변화면_폐기된다(gate_on, monkeypatch):
+    # R5 변형 — 같은 판정 구간에서 리뷰어가 재claim(버전 bump)한 경우 stale 액션 스킵
+    sent = []
+    card = {"id": "X", "reviewer": REV, "assignee": "a@t", "version": 9,
+            "comments": [{"author": REV, "body": "review: approve\nPR#9@bbbbbbbb"}]}
+    monkeypatch.setattr(probe.core, "api",
+                        lambda url, path, method="GET", payload=None:
+                        sent.append((path, method, payload)) or card)
+    probe.core.execute("http://x", {"issue": "X", "action": "release-reviewer",
+                                    "reviewer": REV, "pr": 9, "head_sha": "b" * 40,
+                                    "expected_version": 7})  # decide 시점 7 → 현재 9
+    assert not [s for s in sent if s[1] == "PATCH"]
+
+
+def test_반납은_리뷰어_판정만_인정한다(gate_on, monkeypatch):
+    # R7 — 타 author 판정(러너 요약 인용 등)은 무시하고 리뷰어 판정으로만 반납 여부 결정
+    sent = []
+    card = {"id": "X", "reviewer": REV, "assignee": "a@t", "version": 3,
+            "comments": [{"author": "runner", "body": "요약 인용\nreview: approve\nPR#9@bbbbbbbb"},
+                         {"author": REV, "body": "review: approve\nPR#9@bbbbbbbb"}]}
+    monkeypatch.setattr(probe.core, "api",
+                        lambda url, path, method="GET", payload=None:
+                        sent.append((path, method, payload)) or card)
+    probe.core.execute("http://x", {"issue": "X", "action": "release-reviewer",
+                                    "reviewer": REV, "pr": 9, "head_sha": "b" * 40,
+                                    "expected_version": 3})
+    assert [s for s in sent if s[1] == "PATCH"]  # 유효 판정 → 반납 실행

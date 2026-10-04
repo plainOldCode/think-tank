@@ -22,6 +22,16 @@ class ClaimIn(BaseModel):
         return max(1, min(6, self.hours))
 
 
+class ReviewClaimIn(BaseModel):
+    """리뷰어 claim — review 상태 카드에 판정자 점유 표기. 상태·계약·attempt 불변."""
+
+    agent: str
+    hours: int = 2
+
+    def safe_hours(self):
+        return max(1, min(6, self.hours))
+
+
 class LeaseIn(BaseModel):
     agent: str
     hours: int = 6
@@ -40,6 +50,8 @@ class IssuePatch(BaseModel):
     clear_priority: bool = False
     labels: list[str] | None = None
     assignee: str | None = None
+    # M42KC1XR-2DD1: 리뷰어 점유 해제 — probe가 판정 기록 후 반납
+    reviewer: str | None = None
     expected_version: int | None = None
     archived: bool | None = None
     # blocked 사족 (M3BZS1FS-5722 ①): 미입력 시 기존 동작 유지
@@ -85,6 +97,8 @@ class DispatchIn(BaseModel):
     agent: str
     message: str
     author: str = "board"
+    # M42KC1XR-2DD1 R2: 리뷰 dispatch는 구현 계약 대신 리뷰 계약을 전달
+    work_contract: dict | None = None
 
 
 class DispatchProgress(BaseModel):

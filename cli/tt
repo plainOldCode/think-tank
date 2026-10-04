@@ -112,7 +112,7 @@ case "$cmd" in
       | $JQ 'def badge: if .delayed then " 🟡지연" elif .state=="done" and ((.verification_status // "unverified")=="unverified") then " ⚠unverified" elif .state=="done" and .verification_status=="legacy" then " ⚠legacy" else "" end; .[] | "\(.id)  [\(.state|.[0:4])]  \(.priority|if .==null then "-" else "p"+tostring end)  \(.title)  \(if .assignee!="" then "@"+.assignee else "" end)\(badge)"' ;;
 
   show)
-    req "$URL/issues/$1" | $JQ '"■ \(.id) [\(.state)] \(.title)",  ("  parent: \(.parent_id // "-")  prio: \(.priority // "-")  labels: \(.labels|join(","))  assignee: \(.assignee // "-")  v\(.version)" + (if .state=="done" then "  검증: \(.verification_status // "unverified")" else "" end) + (if .delayed then "  🟡지연(backlog로 내리기: tt state ID backlog)" else "" end)),  "  \(.body|gsub("\n"; "\n  "))",
+    req "$URL/issues/$1" | $JQ '"■ \(.id) [\(.state)] \(.title)",  ("  parent: \(.parent_id // "-")  prio: \(.priority // "-")  labels: \(.labels|join(","))  assignee: \(.assignee // "-")" + (if .reviewer then "  🔍reviewer: \(.reviewer)" else "" end) + "  v\(.version)" + (if .state=="done" then "  검증: \(.verification_status // "unverified")" else "" end) + (if .delayed then "  🟡지연(backlog로 내리기: tt state ID backlog)" else "" end)),  "  \(.body|gsub("\n"; "\n  "))",
       (if (.children|length)>0 then "-- 하위 --" else empty end), (.children[] | "  ↳ \(.id) [\(.state)] \(.title)"),
       (if (.comments|length)>0 then "-- 코멘트 --" else empty end), (.comments[] | "  \(.ts) \(.author): \(.body)"),
       (if (.completion_report.verification.evidence|type)=="array" then

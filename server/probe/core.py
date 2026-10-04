@@ -12,6 +12,8 @@ import subprocess
 import time
 import urllib.request
 
+from service import REVIEW_CONTRACT
+
 PULL_HINT = "tt claim ID {agent} 후 dispatch — pull(풀) 사용 금지(30KP/W1DP)"
 
 
@@ -228,6 +230,13 @@ def decide(snap):
                 gated.add(iid)
                 sha8 = (p.get("head_sha") or "")[:8]
                 verdict = review_verdict(i.get("comments"), reviewer, p["number"], sha8)
+                if verdict in ("approve", "request-changes") and i.get("reviewer"):
+                    # 리뷰어 claim 해제 — 판정 기록됐으면 점유 반납(review-fix 시 작업자 assignee 보존)
+                    actions.append({"agent": "probe", "issue": iid, "action": "release-reviewer",
+                                    "reviewer": i["reviewer"], "pr": p["number"],
+                                    "head_sha": p.get("head_sha", ""),
+                                    "expected_version": i["version"],
+                                    "reason": "판정 기록 — 리뷰어 점유 반납"})
                 if verdict == "request-changes":
                     marker = f"[review-fix #{p['number']}/{sha8}]"
                     if not _probe_marker(i, marker):
@@ -429,6 +438,25 @@ def _probe_flag(url, act, msg):
 
 def execute(url, act):
     kind = act["action"]
+    if kind == "release-reviewer":
+        cur = api(url, f"/issues/{act['issue']}")
+        if cur.get("reviewer") == act.get("reviewer"):
+            # 이 판정이 현재 head에 여전히 유효한지 — decide와 동일 필터(review_verdict)로 재확인.
+            # R7: author·PR 무관한 임의 판정 비교는 유효 반납까지 막는다 — 리뷰어 판정만 인정.
+            if review_verdict(cur.get("comments") or [], act.get("reviewer"),
+                              act.get("pr"), (act.get("head_sha") or "")[:8]) is None:
+                return
+            # decide 이후 카드가 변했다면(재claim·코멘트 등) 이번 라운드 폐기 — 다음 라운드 재판정.
+            # R5: 같은 판정 구간에서 리뷰어가 재claim한 새 lease를 오래된 액션이 지우지 않게.
+            if act.get("expected_version") is not None and cur.get("version") != act["expected_version"]:
+                return
+            # reviewer만 지우고, lease는 리뷰어 본인 것이 확실할 때만 —
+            # 재작업자가 새 lease를 잡은 뒤 오래된 반납 액션이 도착해도 보존(R5).
+            fields = {"reviewer": "", "expected_version": cur["version"]}
+            if cur.get("lease_by") == act.get("reviewer"):
+                fields.update({"lease_by": "", "lease_expires": None})
+            api(url, f"/issues/{act['issue']}", "PATCH", fields)
+        return
     if kind == "merge":
         repo = act.get("repo") or REPO
         # 판정-집행 경합 흡수(t_501e6ec3 통합 회귀): collect 시점 head_sha와
@@ -528,7 +556,9 @@ def execute(url, act):
         sha8 = (act.get("head_sha") or "")[:8]
         repo = act.get("repo") or "plainOldCode/think-tank"
         msg = (f"[auto review] PR #{act['pr']} ({repo}) @ {sha8} — 카드 {act['issue']} "
-               f"리뷰 요청. repo는 https://github.com/{repo} — 기존 로컬 clone 재사용 우선"
+               f"리뷰 요청. 먼저 TT API로 POST /issues/{act['issue']}/claim-review "
+               f"({{\"agent\": \"{agent}\"}})를 호출해 리뷰어 점유를 표기한 뒤 진행. "
+               f"repo는 https://github.com/{repo} — 기존 로컬 clone 재사용 우선"
                f"(없으면 clone), git fetch origin pull/{act['pr']}/head 후 "
                f"git diff origin/main...FETCH_HEAD(로컬 ref를 만들지 않으니 재리뷰에도 안전). "
                "리뷰 방식: 변경 파일 통독 + 변경 심볼 grep으로 호출자 확인(공용 모듈은 필수). "
@@ -537,7 +567,8 @@ def execute(url, act):
                f"첫 줄 'review: approve' 또는 'review: request-changes', 둘째 줄 'PR#{act['pr']}@{sha8}'. "
                f"TT 코멘트 author는 '{agent}'로 게시.")
         try:
-            api(url, f"/issues/{act['issue']}/dispatch", "POST", {"agent": agent, "message": msg})
+            api(url, f"/issues/{act['issue']}/dispatch", "POST",
+                {"agent": agent, "message": msg, "work_contract": REVIEW_CONTRACT})
         except Exception as e:
             api(url, f"/issues/{act['issue']}/comments", "POST",
                 {"author": "probe", "body": f"{act['marker']} 리뷰 dispatch 실패({str(e)[:80]}) — "
