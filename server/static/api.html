@@ -6,23 +6,27 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="icon" href="/favicon.ico">
 <style>
-  :root { --bg:#101418; --panel:#1a2026; --line:#2a333c; --fg:#d8dee4; --dim:#8b98a5; --acc:#58a6ff; }
-  body { margin:0 auto; max-width:860px; padding:24px 16px 80px; background:var(--bg); color:var(--fg);
-         font:14px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace; word-break:keep-all; }
-  h1,h2,h3 { color:var(--acc); margin:1.6em 0 .5em; }
-  h1 { font-size:20px; border-bottom:1px solid var(--line); padding-bottom:8px; }
-  h2 { font-size:16px; } h3 { font-size:14px; }
-  code, pre { background:var(--panel); border:1px solid var(--line); border-radius:5px; font:inherit; }
-  code { padding:1px 4px; }
+  :root { --bg:#fbfbfa; --panel:#fbfbfa; --line:#141414; --fg:#141414; --dim:#6d6d68; --acc:#141414; --warn:#c23b22;
+    --serif: "Iowan Old Style", Palatino, "Apple Myungjo", "Noto Serif CJK KR", Batang, "Times New Roman", serif;
+    --gothic: "Helvetica Neue", "Hiragino Sans", "Apple SD Gothic Neo", "Noto Sans CJK KR", "Malgun Gothic", sans-serif;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  body { margin:0 auto; max-width:740px; padding:28px 22px 80px; background:var(--bg); color:var(--fg);
+         font:15px/1.6 var(--serif); word-break:keep-all; }
+  h1,h2,h3 { color:var(--fg); font-weight:500; letter-spacing:-0.02em; margin:1.5em 0 .4em; font-family:var(--serif); }
+  h1 { font-size:28px; border-bottom:3px solid var(--line); padding-bottom:8px; }
+  h2 { font-size:18px; border-bottom:1px solid var(--line); padding-bottom:4px; } h3 { font-size:16px; }
+  code, pre { background:transparent; border:1px solid #d9d9d6; border-radius:0; font:12.5px/1.5 var(--mono); }
+  code { padding:0 4px; }
   pre { padding:10px 12px; overflow-x:auto; white-space:pre; }
   pre code { background:none; border:none; padding:0; }
-  table { border-collapse:collapse; width:100%; margin:8px 0; font-size:12.5px; }
-  th,td { border:1px solid var(--line); padding:5px 8px; text-align:left; vertical-align:top; }
-  th { background:var(--panel); }
-  a { color:var(--acc); }
-  .bar { display:flex; gap:10px; align-items:center; margin-bottom:12px; color:var(--dim); }
-  .bar b { color:var(--acc); }
-  strong { color:#fff; }
+  table { border-collapse:collapse; width:100%; margin:10px 0 16px; font:13px/1.45 var(--gothic); }
+  th,td { border-bottom:1px solid #d9d9d6; padding:6px 8px; text-align:left; vertical-align:top; }
+  th { border-bottom:1px solid var(--line); font-weight:600; }
+  a { color:var(--fg); }
+  .bar { display:flex; gap:12px; align-items:baseline; margin-bottom:4px; color:var(--dim); font:13px/1.4 var(--gothic); }
+  .bar b { color:var(--fg); font-family:var(--serif); font-size:18px; font-weight:500; }
+  .bar b::before { content:""; display:inline-block; width:8px; height:8px; background:var(--warn); margin-right:6px; transform:translateY(-1px); }
+  strong { font-weight:600; }
 </style>
 </head>
 <body>

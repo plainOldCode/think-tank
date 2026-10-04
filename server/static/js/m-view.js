@@ -1,3 +1,31 @@
+let PROG = {};
+function subtreeMap(rows) {
+  const byId = {};
+  const kids = {};
+  for (const i of rows || []) byId[i.id] = i;
+  for (const i of rows || []) if (i.parent_id && byId[i.parent_id]) (kids[i.parent_id] ||= []).push(i);
+  const walk = (id) => {
+    let done = 0, total = 0;
+    for (const k of kids[id] || []) {
+      const sub = walk(k.id);
+      if (k.state !== "cancelled") {
+        total += 1;
+        if (k.state === "done") done += 1;
+      }
+      done += sub.done;
+      total += sub.total;
+    }
+    return { done, total };
+  };
+  const out = {};
+  for (const i of rows || []) {
+    const c = walk(i.id);
+    if (!c.total) continue;
+    const w = Math.round(100 * c.done / c.total);
+    out[i.id] = `<div class="subprog"><i><b style="width:${w}%"></b></i><em>${c.done}/${c.total}</em></div>`;
+  }
+  return out;
+}
 // mobile 뷰 — 탭/목록/카드 렌더/상세 갱신
 async function load(){
   let rows;
@@ -27,7 +55,9 @@ function renderTabs(rows){
 function pick(t){ tab=t; localStorage.setItem("tt-m-tab",t); renderTabs(JSON.parse(LAST||"[]")); render(JSON.parse(LAST||"[]")); }
 function render(all){
   collectDrafts();
-  const rows = (all||JSON.parse(LAST||"[]")).filter(i => i.state === tab)
+  const allRows = all||JSON.parse(LAST||"[]");
+  PROG = subtreeMap(allRows);
+  const rows = allRows.filter(i => i.state === tab)
     .sort((a,b) => (b.updated_at||"").localeCompare(a.updated_at||""));
   let html = "";
   if (tab === "in_progress") {
@@ -36,11 +66,11 @@ function render(all){
       <button class="${sub==="lease"?"on":""}" onclick="event.stopPropagation();setSub('lease')">청구중 ${leased.length}</button>
       <button class="${sub==="all"?"on":""}" onclick="event.stopPropagation();setSub('all')">전체 ${rows.length}</button></div>`;
     const show = sub === "lease" ? leased : rows;
-    $("#list").innerHTML = bar + (show.length ? show.map(card).join("") : `<div class="empty">청구(lease) 중인 카드 없음</div>`);
+    $("#list").innerHTML = bar + (show.length ? show.map(i => card(i)).join("") : `<div class="empty">청구(lease) 중인 카드 없음</div>`);
     for (const id of OPEN) { const d = $("#d-"+CSS.escape(id)); if (d) { d.classList.add("open"); refreshDetail(id); } }
     return;
   }
-  $("#list").innerHTML = rows.length ? rows.map(card).join("") : `<div class="empty">${TABS.find(t=>t[0]===tab)[1]} 없음</div>`;
+  $("#list").innerHTML = rows.length ? rows.map(i => card(i)).join("") : `<div class="empty">${TABS.find(t=>t[0]===tab)[1]} 없음</div>`;
   for (const id of OPEN) {
     const d = $("#d-"+CSS.escape(id));
     if (d) { d.classList.add("open"); refreshDetail(id); } else { OPEN.delete(id); delete DRAFT[id]; }
@@ -63,10 +93,14 @@ function card(i){
   if (i.state === "blocked") acts = `<span class="tag" style="color:var(--block)">wait: ${esc(i.waiting_actor||"?" )}</span>
     <button class="back" onclick="send('${esc(i.id)}','todo')">↩ 되돌림</button>`;
   if (i.state === "done") acts = i.verification_status ? `<span class="tag">${esc(i.verification_status)}</span>` : "";
+  const named = i.assignee || i.lease_by || "";
+  const sealColor = named ? `hsl(${hueOf(named)},70%,46%)` : "";
+  const seal = named ? `<i class="seal" title="${esc(named)}" style="background:${sealColor}"></i>` : "";
   return `<div class="card${mine?" mine":""}${other?" other":""}" id="c-${esc(i.id)}">
     <span class="id">${esc(i.id)}</span> ${i.priority?`<span class="tag">p${i.priority}</span>`:""}${i.labels.map(l=>`<span class="tag">#${esc(l)}</span>`).join("")}
     <h3>${esc(i.title)}</h3>
-    ${i.delayed?`<span class="tag" style="color:var(--warn)">🟡지연</span>`:""}${i.assignee?`<span class="tag">@${esc(i.assignee)}</span>`:""}${i.state==="in_progress" ? leaseTag(i) : (i.lease_expires?`<span class="tag">lease ${esc(i.lease_expires.slice(5,16))}</span>`:"")}
+    ${i.delayed?`<span class="tag" style="color:var(--warn)">🟡지연</span>`:""}${i.assignee?`<span class="tag who">${seal}@${esc(i.assignee)}</span>`:""}${i.state==="in_progress" ? leaseTag(i) : (i.lease_expires?`<span class="tag">lease ${esc(i.lease_expires.slice(5,16))}</span>`:"")}
+    ${PROG[i.id] || ""}
     <div class="acts">${acts}<button class="back" onclick="toggle('${esc(i.id)}')">자세히</button></div>
     <div class="det" id="d-${esc(i.id)}"><div class="body">불러오는 중…</div>
       <div id="cs-${esc(i.id)}"></div>

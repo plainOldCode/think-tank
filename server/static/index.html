@@ -5,30 +5,33 @@
 <title>think-tank</title>
 <link rel="icon" href="/favicon.ico">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<link rel="stylesheet" href="/css/board.css">
+<link rel="stylesheet" href="/css/board.css?v=prog">
 </head>
-<body>
-<header><b>think-tank</b><small id="counts"></small>
-  <form style="margin:0;display:flex;gap:6px" onsubmit="return newIssue(event)">
+<body onkeydown="if(event.key==='Escape')closeDetail()">
+<header>
+  <div class="mast"><b>think-tank</b><small id="counts"></small></div>
+  <div class="tools">
+  <form onsubmit="return newIssue(event)">
     <input name="title" placeholder="새 이슈 등록" size="24" required>
     <select name="state"><option>todo</option><option>backlog</option></select>
     <button>등록</button>
   </form>
-  <span style="flex:1"></span>
-  <select id="lab" onchange="load()" style="color:var(--fg);background:var(--panel);border:1px solid var(--line)"></select>
-  <label style="color:var(--dim);display:flex;align-items:center;gap:4px">archived
+  <span class="spacer"></span>
+  <select id="lab" onchange="load()"></select>
+  <label>archived
     <input type="checkbox" id="arch" onchange="load()"></label>
   <button onclick="toggleAgents()" id="agentbtn">Agents 0</button>
   <button onclick="toggleCancelled()" id="cxbtn" title="cancel된 카드 열 표시/숨김">취소됨</button>
-  <a href="/api.html" style="color:var(--acc)">API(AI)</a>
-  <a href="/docs" style="color:var(--acc)">OpenAPI</a>
+  <a href="/api.html">API(AI)</a>
+  <a href="/docs">OpenAPI</a>
   <button onclick="load()">새로고침</button>
+  </div>
 <small id="runbanner" title="tmux 실행형 dispatch(러너 수신) — 실행 상태는 카드의 TT 상태와 독립"></small>
 </header>
 <main>
   <div id="board"></div>
-  <div id="detail"><button id="dclose" onclick="document.getElementById('detail').classList.remove('open')">✕ 닫기</button><div id="dcontent"><p style="color:var(--dim)">카드를 선택하세요.</p></div></div>
-  <div id="agentpanel" style="display:none;position:fixed;top:44px;right:10px;width:380px;max-height:70vh;overflow-y:auto;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:12px;z-index:50;box-shadow:0 8px 30px rgba(0,0,0,.5)"></div>
+  <div id="detail"><button id="dclose" onclick="closeDetail()">✕ 닫기</button><div id="dcontent"><p style="color:var(--dim)">카드를 선택하세요.</p></div></div>
+  <div id="agentpanel" style="display:none"></div>
 </main>
 <script src="/js/tt-util.js"></script>
 <script src="/js/tt-run.js"></script>

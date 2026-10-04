@@ -8,6 +8,7 @@ let AGENTS = [], SID = "";
 let ME = localStorage.getItem("tt-m-me") || "";
 const $ = s => document.querySelector(s);
 const esc = s => String(s??"").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const hueOf = s => { let h = 0; for (const ch of String(s||"")) h = (h * 31 + ch.codePointAt(0)) % 360; return h; };
 function tsDate(s){ const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})([+-]\d{2})(\d{2})$/.exec(s||""); if(!m) return null;
   const off = (+m[7])*60 + (m[7].startsWith("-") ? -(+m[8]) : +m[8]);
   return new Date(Date.UTC(+m[1], +m[2]-1, +m[3], +m[4], +m[5], +m[6]) - off*60000); }

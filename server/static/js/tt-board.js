@@ -12,6 +12,33 @@ const leaseInfo = i => {
   return { color: `hsl(${h},70%,55%)`, agent: i.lease_by, text: stale ? "⌛만료" : alive ? "●작업중" : "🔒" + i.lease_by, stale, alive };
 };
 
+
+function ssGet(k) { try { return sessionStorage.getItem(k); } catch (e) { return null; } }
+function ssSet(k, v) { try { sessionStorage.setItem(k, v); } catch (e) {} }
+function groupOpen(key) { return ssGet("tt-grp-" + key) !== "0"; }
+function nodeOpen(id) { return ssGet("tt-node-" + id) !== "0"; }
+function groupOf(i) {
+  if (!i) return "";
+  if (i.state === "review") return "review";
+  if (i.state === "in_progress") return "progress";
+  if (i.state === "todo" || i.state === "backlog") return "wait";
+  if (i.state === "blocked") return "block";
+  if (i.state === "done") return "done";
+  if (i.state === "cancelled") return "cancel";
+  return "";
+}
+function toggleGroup(g, key) {
+  if (!g || !g.classList) return;
+  g.classList.toggle("shut");
+  ssSet("tt-grp-" + key, g.classList.contains("shut") ? "0" : "1");
+}
+function toggleNode(id, btn) {
+  const node = btn && btn.closest ? btn.closest(".node") : null;
+  if (!node || !node.classList) return;
+  node.classList.toggle("shut");
+  ssSet("tt-node-" + id, node.classList.contains("shut") ? "0" : "1");
+}
+
 async function load() {
   let issues = await j("/issues?limit=500&archived=" + (document.getElementById("arch").checked ? "all" : "no"));
   LAST = issues.slice();
@@ -19,6 +46,27 @@ async function load() {
   await refreshActive();   // 조용한 조회(실패 시 마지막 표시 유지) — 실패해도 보드 렌더는 계속
   renderBoard(issues);
   if (current) show(current, true);
+}
+
+
+function subtreeCount(id, kidsOf) {
+  let done = 0, total = 0;
+  for (const k of kidsOf[id] || []) {
+    const sub = subtreeCount(k.id, kidsOf);
+    if (k.state !== "cancelled") {
+      total += 1;
+      if (k.state === "done") done += 1;
+    }
+    done += sub.done;
+    total += sub.total;
+  }
+  return { done, total };
+}
+function subtreeBar(id, kidsOf) {
+  const c = subtreeCount(id, kidsOf);
+  if (!c.total) return "";
+  const w = Math.round(100 * c.done / c.total);
+  return `<div class="subprog"><i><b style="width:${w}%"></b></i><em>${c.done}/${c.total}</em></div>`;
 }
 
 function renderBoard(issues) {
@@ -49,34 +97,88 @@ function renderBoard(issues) {
   }
   document.getElementById("counts").textContent = issues.length + " issues";
   const roots = issues.filter(i => !i.parent_id || !byId[i.parent_id]);
-  const subRows = (parent) => (kidsOf[parent.id] || []).map(k => {
-    const li = leaseInfo(k);
-    const sty = li ? `cursor:pointer;border-left:3px solid ${li.stale ? "var(--warn)" : li.color};` : k.state === "done" ? "cursor:pointer;border-left:3px solid var(--done);" : "";
-    return `<div class="sub${k.state === "done" ? " done" : ""}" style="${sty}" onclick="event.stopPropagation();show('${esc(k.id)}')">
-       ${esc(k.id.slice(-4))} <span class="st">[${esc(k.state)}]</span>${li ? ` <span style="color:${li.alive ? "var(--done)" : li.color};${li.alive ? "animation:hbpulse 1.1s infinite" : ""}">${li.stale ? "⌛" : li.alive ? "●" : "🔒"}</span>` : ""} ${chipFor(k.id)} ${esc(k.title)}${k.assignee?` @${esc(k.assignee)}`:""}
-       ${(kidsOf[k.id]||[]).length ? subRows(k) : ""}
-     </div>`; });
-  document.getElementById("cxbtn").style.opacity = SHOW_CX ? "1" : ".45";
-  for (const st of (SHOW_CX ? COLS.concat("cancelled") : COLS)) {
-    const rootsHere = roots.filter(x => x.state === st);
-    const col = document.createElement("div"); col.className = "col";
-    col.innerHTML = `<h3>${st} <span>${rootsHere.length}</span></h3>`;
-    for (const i of rootsHere) {
-      const li = leaseInfo(i);
-      const c = document.createElement("div");
-      c.className = "card" + (i.archived ? " archived" : "") + (li && li.stale ? " stale" : "") + (i.state === "done" ? " done" : "");
-      if (li) c.style.borderLeft = `3px solid ${li.color}`;
-      c.innerHTML = `<span class="id">${esc(i.id)}</span>
-        ${i.archived ? `<span class="tag">🗄archived</span>` : ""}
-        ${li ? `<span class="lease" style="color:${li.alive ? "var(--done)" : li.color};${li.alive ? "animation:hbpulse 1.1s infinite" : ""}"> ${esc(li.text)}</span>` : ""}
-        ${i.labels.length?`<span class="tag"> ${esc(i.labels.join(" "))}</span>`:""}
-        ${i.state==="blocked"&&i.waiting_for?`<span class="tag" style="color:var(--warn)">⏸ ${esc(i.waiting_for)}${i.waiting_actor?" @"+esc(i.waiting_actor):""}${i.release_ready?" →해제가능":""}</span>`:""}
-        <p>${esc(i.title)}</p>${i.delayed?`<span class="tag" style="color:var(--warn)">🟡지연</span>`:""}${i.assignee?`<span class="tag">@${esc(i.assignee)}</span>`:""}
-        ${(kidsOf[i.id]||[]).length ? `<div class="sub">${subRows(i)}</div>` : ""}`;
-      c.onclick = () => show(i.id);
-      col.appendChild(c);
+  const leaseRemain = (i) => {
+    if (!i.lease_expires) return "";
+    let t; try { t = tsParse(i.lease_expires); } catch (e) { return ""; }
+    if (!t || isNaN(+t)) return "";
+    const m = Math.round((t - Date.now()) / 60000);
+    if (m <= 0) return "lease 만료";
+    if (m < 60) return "잔여 " + m + "m";
+    return "잔여 " + (m / 60).toFixed(1) + "h";
+  };
+  const agentLine = (i) => {
+    const name = i.assignee || "";
+    const remain = leaseRemain(i);
+    if (!name && !remain) return "";
+    const dot = name ? `<i class="seal" title="${esc(name)}" style="background:hsl(${hueOf(name)},70%,46%)"></i>` : "";
+    return `<div class="who">${dot}${name ? "@"+esc(name) : ""}${remain ? ` <span class="lease">${esc(remain)}</span>` : ""}</div>`;
+  };
+  const stateLine = (i) => {
+    const bits = [];
+    if (i.state === "in_progress") bits.push(i.lease_by && i.lease_by !== i.assignee ? `@${esc(i.lease_by)} 진행중` : "진행중");
+    else if (i.state === "blocked") bits.push(`wait: ${esc(i.waiting_actor || "?")}` + (i.waiting_for ? ` · ${esc(i.waiting_for)}${i.release_ready ? " →해제가능" : ""}` : ""));
+    else if (i.state === "done" && i.verification_status) bits.push(esc(i.verification_status));
+    if (i.delayed) bits.push("🟡지연");
+    if (i.archived) bits.push("🗄archived");
+    const chip = chipFor(i.id);
+    if (chip) bits.push(chip);
+    return bits.length ? `<div class="subline">${bits.join(" · ")}</div>` : "";
+  };
+  const byUpdated = (a, b) => (b.updated_at || "").localeCompare(a.updated_at || "");
+  const renderNode = (i) => {
+    const kids = (kidsOf[i.id] || []).filter(k => groupOf(k) === groupOf(i)).sort(byUpdated);
+    const shut = kids.length && !nodeOpen(i.id);
+    const node = document.createElement("div");
+    node.className = "node" + (shut ? " shut" : "");
+    const li = leaseInfo(i);
+    const parent = i.parent_id ? byId[i.parent_id] : null;
+    const cross = i.parent_id && (!parent || groupOf(parent) !== groupOf(i));
+    const twist = kids.length ? `<button type="button" class="twist" onclick="event.stopPropagation();toggleNode('${esc(i.id)}',this)"><span class="when-open">▾</span><span class="when-shut">▸</span></button>` : "";
+    const card = document.createElement("div");
+    card.className = "card" + (i.archived ? " archived" : "") + (li && li.stale ? " stale" : "") + (i.state === "done" ? " done" : "");
+    const bar = subtreeBar(i.id, kidsOf);
+    card.innerHTML = `<div class="idline">${twist}<span class="id">${esc(i.id)}</span>${i.priority?` <span class="tag">p${esc(i.priority)}</span>`:""}${(i.labels||[]).map(l=>`<span class="tag">#${esc(l)}</span>`).join("")}${cross?` <span class="parentref">↑ ${esc(parent ? parent.id : i.parent_id)}</span>`:""}</div>
+      <div class="ttl">${esc(i.title)}</div>
+      ${agentLine(i)}
+      ${stateLine(i)}
+      ${bar}`;
+    card.onclick = () => show(i.id);
+    node.appendChild(card);
+    if (kids.length) {
+      const box = document.createElement("div");
+      box.className = "kids";
+      for (const k of kids) box.appendChild(renderNode(k));
+      node.appendChild(box);
     }
-    board.appendChild(col);
+    return node;
+  };
+  document.getElementById("cxbtn").style.opacity = SHOW_CX ? "1" : ".45";
+  const groups = [["review","리뷰"],["progress","진행중"],["wait","시작 대기"],["block","막힘"],["done","완료"]];
+  if (SHOW_CX) groups.push(["cancel","취소됨"]);
+  const list = document.createElement("div"); list.className = "list";
+  for (const [key, label] of groups) {
+    const members = issues.filter(x => groupOf(x) === key);
+    if (!members.length) continue;
+    const tops = members.filter(i => {
+      const parent = i.parent_id && byId[i.parent_id];
+      return !parent || groupOf(parent) !== key;
+    }).sort(byUpdated);
+    const open = groupOpen(key);
+    const g = document.createElement("div");
+    g.className = "group" + (open ? "" : " shut");
+    const h = document.createElement("button");
+    h.type = "button";
+    h.className = "glabel";
+    h.innerHTML = `<span class="twist"><span class="when-open">▾</span><span class="when-shut">▸</span></span> ${label} <span class="n">${members.length}</span>`;
+    h.onclick = () => toggleGroup(g, key);
+    const body = document.createElement("div");
+    body.className = "gbody";
+    for (const i of tops) body.appendChild(renderNode(i));
+    g.appendChild(h);
+    g.appendChild(body);
+    list.appendChild(g);
   }
+  board.appendChild(list);
+  board.appendChild(list);
   if (current) show(current, true);
 }
