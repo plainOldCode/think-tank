@@ -705,3 +705,21 @@ def test_stale_반납은_재작업자_lease를_보존한다(client, monkeypatch)
     assert d["reviewer"] is None          # 리뷰어 점유는 해제
     assert d["lease_by"] == "worker"      # 재작업자 lease 보존
     assert d["assignee"] == "worker"
+
+
+def test_작업자_재claim은_이전_리뷰어_표기를_제거한다(client):
+    """R6 — review→todo→claim 후에도 reviewer가 남는 것 방지."""
+    issue = client.post("/issues", json={"title": "R6"}).json()
+    claimed = client.post(f"/issues/{issue['id']}/claim", json={"agent": "worker"}).json()
+    client.patch(f"/issues/{issue['id']}", json={"state": "done", "completion_report": {
+        "contract_version": claimed["work_contract"]["version"], "attempt": 1, "method": "planned",
+        "design": {"criteria": "c", "verification": "v"},
+        "implementation": {"summary": "s", "commands": "cc"},
+        "verification": {"commands": "ccc", "evidence": "e"},
+        "result": "passed", "limitations": ""}})
+    assert client.post(f"/issues/{issue['id']}/claim-review", json={"agent": "codex"}).status_code == 200
+    # 재작업: review → todo → claim
+    client.patch(f"/issues/{issue['id']}", json={"state": "todo"})
+    c2 = client.post(f"/issues/{issue['id']}/claim", json={"agent": "worker2"}).json()
+    assert c2["reviewer"] is None
+    assert c2["state"] == "in_progress"

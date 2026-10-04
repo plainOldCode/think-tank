@@ -265,3 +265,17 @@ def test_release_reviewer_실행은_빈문자열과_expected_version으로_PATCH
     assert method == "PATCH" and path == "/issues/X"
     assert payload["reviewer"] == ""
     assert payload["expected_version"] == 3  # "version" 키는 모델에 없어 무시된다
+
+
+def test_stale_반납_액션은_최신판정이_다르면_폐기된다(gate_on, monkeypatch):
+    # R5 — 이전 head 판정의 반납 액션이 새 점유를 지우지 않게: 최신 판정 sha 불일치 시 no-op
+    sent = []
+    card = {"id": "X", "reviewer": REV, "assignee": "a@t", "version": 7,
+            "comments": [{"author": REV, "body": "review: approve\nPR#9@cccccccc"}]}
+    monkeypatch.setattr(probe.core, "api",
+                        lambda url, path, method="GET", payload=None:
+                        sent.append((path, method, payload)) or card)
+    # 액션은 구 판정(bbbbbbbb) 기준 — 최신 판정(cccccccc)과 불일치 → 폐기
+    probe.core.execute("http://x", {"issue": "X", "action": "release-reviewer",
+                                    "reviewer": REV, "head_sha": "b" * 40})
+    assert not [s for s in sent if s[1] == "PATCH"]

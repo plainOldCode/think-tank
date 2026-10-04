@@ -110,6 +110,7 @@ def claim(issue_id: str, p: ClaimIn, ctx: Ctx = Depends(get_ctx)):
         if held >= config.max_leases():
             raise HTTPException(409, f"lease limit: active leases={held} (max={config.max_leases()}) — heartbeat or done first")
         service.bump(c, issue_id, {**service.reset_evidence(c, issue_id), "state": "in_progress", "assignee": p.agent,
+                                   "reviewer": None,  # R6: 재작업 진입 시 이전 리뷰어 표기 제거
                                    "started_at": dbmod.now(),
                                    "work_contract": json.dumps(ctx.contract, ensure_ascii=False),
                                    "execution_attempt": row["execution_attempt"] + 1,
