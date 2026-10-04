@@ -1,5 +1,5 @@
 """API 스키마 — pydantic 모델 (라우팅/로직과 분리)."""
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 from verification import CompletionReport
 
@@ -83,6 +83,33 @@ class AgentIn(BaseModel):
     enabled: bool = True
     release_hook: bool = False  # reconcile release 명령 수신 능력 (M3BZS1FS-5722 ③)
     notify_hook: bool = False  # blocked(human) Level4 알림 수신 능력 (M3BZV172-9F0S B)
+    # M3ER6G3S-RZ20: 실행 모델 메타데이터 — 선언(declaration)일 뿐 실행 보장이 아니다.
+    # model/reasoning은 자유 문자열(검증 없음), tier는 정규화된 계층 enum.
+    model: str | None = None
+    reasoning: str | None = None
+    tier: str | None = None
+
+    @model_validator(mode="after")
+    def normalize_tier(self):
+        self.tier = _normalize_tier(self.tier)
+        return self
+
+
+TIER_ALIASES = {"판정": "sota", "실행": "exec", "구형": "impl"}
+TIERS = {"sota", "exec", "impl", "human"}
+
+
+def _normalize_tier(tier):
+    """tier 정규화 — 한글 별칭(판정/실행/구형)→sota/exec/impl, 대소문자 무시. None 통과."""
+    if tier is None:
+        return None
+    t = tier.strip().lower()
+    if not t:
+        return None
+    t = TIER_ALIASES.get(t, t)
+    if t not in TIERS:
+        raise ValueError(f"tier는 {sorted(TIERS)} (판정|실행|구형 별칭 허용)")
+    return t
 
 
 class AgentPatch(BaseModel):
@@ -91,6 +118,17 @@ class AgentPatch(BaseModel):
     enabled: bool | None = None
     release_hook: bool | None = None
     notify_hook: bool | None = None
+    model: str | None = None
+    reasoning: str | None = None
+    tier: str | None = None
+
+    @model_validator(mode="after")
+    def normalize_tier(self):
+        # RZ20-F1: 빈 문자열은 '삭제' 의도 — None로 정규화하면 미지정과 구분이 사라져 삭제가 무시된다
+        if self.tier is not None:
+            t = self.tier.strip()
+            self.tier = "" if t == "" else _normalize_tier(t)
+        return self
 
 
 class DispatchIn(BaseModel):

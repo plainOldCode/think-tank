@@ -52,6 +52,7 @@ function renderAgents() {
     <b>등록 agent</b> <small style="color:var(--dim)">(webhook hook 대상)</small>
     ${agents.map(a=>`<div class="cmt">
       <small>${esc(a.name)} → <a href="${esc(a.base_url)}" style="color:var(--acc)" target="_blank" rel="noopener">${esc(a.base_url)}</a> ${a.secret?"🔑":""} ${a.enabled?'<span style="color:var(--done)">on</span>':'<span style="color:var(--warn)">off</span>'}</small><br>
+      ${((a.model||a.reasoning||a.tier)?`<small style="color:var(--dim)">meta: ${a.model?("model="+esc(a.model)+(a.reasoning?"/"+esc(a.reasoning):"")):(a.reasoning?("reasoning="+esc(a.reasoning)):"")} ${a.tier?`<span style="color:var(--acc)">[${esc(a.tier)}]</span>`:""}</small><br>`:"")}
       <small style="color:var(--dim)">ok ${esc(a.last_ok?.slice(5,16)||"–")} · err ${esc(a.last_err||"–")}</small>
       <button data-agent="${esc(a.name)}" onclick="agentPatch(this.dataset.agent,{enabled:!${a.enabled?1:0}})">${a.enabled?"비활성":"활성"}</button>
       <button data-agent="${esc(a.name)}" onclick="delAgent(this.dataset.agent)">삭제</button>
