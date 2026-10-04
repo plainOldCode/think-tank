@@ -221,6 +221,10 @@ def decide(snap):
             continue
         if ci_passed(p):
             if reviewer:
+                if i["state"] != "review":
+                    # 게이트 on: 제출 전 카드는 리뷰·병합 대상 아님 — 움직이는 대상 리뷰 낭비 방지.
+                    # agent가 보고 제출(state=review)하면 다음 라운드에서 판정.
+                    continue
                 gated.add(iid)
                 sha8 = (p.get("head_sha") or "")[:8]
                 verdict = review_verdict(i.get("comments"), reviewer, p["number"], sha8)
@@ -525,8 +529,8 @@ def execute(url, act):
         repo = act.get("repo") or "plainOldCode/think-tank"
         msg = (f"[auto review] PR #{act['pr']} ({repo}) @ {sha8} — 카드 {act['issue']} "
                f"리뷰 요청. repo는 https://github.com/{repo} — 기존 로컬 clone 재사용 우선"
-               f"(없으면 clone), git fetch origin pull/{act['pr']}/head:pr-{act['pr']} 후 "
-               f"git diff origin/main...pr-{act['pr']}. "
+               f"(없으면 clone), git fetch origin pull/{act['pr']}/head 후 "
+               f"git diff origin/main...FETCH_HEAD(로컬 ref를 만들지 않으니 재리뷰에도 안전). "
                "리뷰 방식: 변경 파일 통독 + 변경 심볼 grep으로 호출자 확인(공용 모듈은 필수). "
                "판정 기준: 계약 v2.1 준수·시크릿 노출·테스트 적절성·놓친 엣지. "
                "결과 제출: GitHub PR 코멘트와 TT 카드 코멘트 양쪽(docs/review-gate.md 형식) — "

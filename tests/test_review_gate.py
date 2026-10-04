@@ -234,3 +234,10 @@ def test_run_once는_게이트_on시_하이드레이트_선행(gate_on, monkeypa
     monkeypatch.setattr(probe.core, "decide", fake_decide)
     probe.core.run_once("u")
     assert ("decide", True) in order, "decide 전에 코멘트가 채워져야 함"
+
+
+def test_게이트on은_review상태_카드만_판정(gate_on):
+    # 제출 전(in_progress) 카드는 리뷰·병합 대상 아님 — 보고 제출 후 판정
+    i = _issue(state="in_progress")
+    acts = dispatchd.decide(_snap([i], _pr()))
+    assert not [a for a in acts if a["action"] in ("review-request", "merge", "review-fix")]
