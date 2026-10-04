@@ -332,3 +332,455 @@ form { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 12px; align-items: 
   }
   #detail.open { transform: none; }
 }
+
+/* Themes. Pixel is :root with no data-theme. Choice is html[data-theme]. */
+html[data-theme] body {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+html[data-theme] #detail { transition-timing-function: ease; }
+
+html[data-theme="newsprint"] {
+  --bg: #f4efe4;
+  --panel: #f4efe4;
+  --ink: #161513;
+  --line: #161513;
+  --rule: #cfc6b6;
+  --hair: #cfc6b6;
+  --mast: #161513;
+  --fg: #161513;
+  --dim: #8a8174;
+  --acc: #161513;
+  --warn: #161513;
+  --done: #3c3832;
+  --bad: #161513;
+  --hot: #161513;
+  --pixel: "Iowan Old Style", "Palatino Linotype", Palatino, "Times New Roman", serif;
+  --serif: "Iowan Old Style", "Palatino Linotype", Palatino, "Times New Roman", serif;
+  --gothic: "Gill Sans", "Trebuchet MS", sans-serif;
+  --mono: "Gill Sans", "Trebuchet MS", sans-serif;
+}
+html[data-theme="newsprint"] .mast { border-bottom: 1px solid #161513; background: transparent; }
+html[data-theme="newsprint"] header { border-bottom: 3px solid #161513; }
+html[data-theme="newsprint"] .mast b { font-style: italic; font-weight: 500; font-size: 34px; letter-spacing: -0.02em; }
+html[data-theme="newsprint"] .mast b::before { display: none; }
+html[data-theme="newsprint"] .mast small,
+html[data-theme="newsprint"] .tools,
+html[data-theme="newsprint"] .tools button,
+html[data-theme="newsprint"] .tools select,
+html[data-theme="newsprint"] .tools input,
+html[data-theme="newsprint"] .id,
+html[data-theme="newsprint"] .tag,
+html[data-theme="newsprint"] #detail .meta,
+html[data-theme="newsprint"] .subprog em {
+  font-family: "Gill Sans", "Trebuchet MS", sans-serif;
+}
+html[data-theme="newsprint"] .tools button,
+html[data-theme="newsprint"] .tools select,
+html[data-theme="newsprint"] .tools input:not([type="checkbox"]) {
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid #161513;
+  border-radius: 0;
+}
+html[data-theme="newsprint"] .tools button { letter-spacing: 0.06em; text-transform: uppercase; }
+html[data-theme="newsprint"] .card {
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid #cfc6b6;
+  border-radius: 0;
+  box-shadow: none;
+}
+html[data-theme="newsprint"] .card:hover { background: rgba(22, 21, 19, 0.04); }
+html[data-theme="newsprint"] .ttl { font-size: 26px; font-weight: 500; letter-spacing: -0.01em; }
+html[data-theme="newsprint"] button.glabel {
+  border-bottom: 1px solid #161513;
+  font-family: "Iowan Old Style", "Palatino Linotype", Palatino, "Times New Roman", serif;
+  font-style: italic;
+  font-size: 22px;
+  letter-spacing: 0;
+  color: #161513;
+}
+html[data-theme="newsprint"] .kids,
+html[data-theme="newsprint"] .sub,
+html[data-theme="newsprint"] #detail { border-left-width: 1px; }
+html[data-theme="newsprint"] #detail,
+html[data-theme="newsprint"] #agentpanel,
+html[data-theme="newsprint"] button,
+html[data-theme="newsprint"] input,
+html[data-theme="newsprint"] select,
+html[data-theme="newsprint"] textarea,
+html[data-theme="newsprint"] #detail pre,
+html[data-theme="newsprint"] button.twist { border-radius: 0; }
+html[data-theme="newsprint"] .subprog i {
+  height: 7px;
+  border: none;
+  border-radius: 0;
+  background-color: transparent;
+  background-image: linear-gradient(#161513, #161513);
+  background-size: 100% 1px;
+  background-position: center;
+  background-repeat: no-repeat;
+  image-rendering: auto;
+}
+html[data-theme="newsprint"] .subprog b { height: 7px; background: #161513; }
+
+html[data-theme="terminal"] {
+  --bg: #050705;
+  --panel: #070d08;
+  --ink: #eaffe4;
+  --line: #2c6a38;
+  --rule: #1c3a22;
+  --hair: #1c3a22;
+  --mast: #6dca62;
+  --fg: #b6ff9a;
+  --dim: #5ea86a;
+  --acc: #b6ff9a;
+  --warn: #eaffe4;
+  --done: #6dca62;
+  --bad: #eaffe4;
+  --hot: #b6ff9a;
+  --pixel: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  --serif: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  --gothic: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  --mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  color-scheme: dark;
+}
+html[data-theme="terminal"] body {
+  background-color: #050705;
+  background-image: repeating-linear-gradient(to bottom, rgba(0, 0, 0, 0.22) 0 1px, transparent 1px 3px);
+}
+html[data-theme="terminal"] header,
+html[data-theme="terminal"] .mast,
+html[data-theme="terminal"] .tools,
+html[data-theme="terminal"] main,
+html[data-theme="terminal"] #board { background: transparent; }
+html[data-theme="terminal"] header,
+html[data-theme="terminal"] .mast { border-bottom-color: #1c3a22; border-bottom-width: 1px; }
+html[data-theme="terminal"] .mast b,
+html[data-theme="terminal"] .ttl { text-shadow: 0 0 8px rgba(160, 255, 140, 0.45); }
+html[data-theme="terminal"] .mast b::before {
+  background: #b6ff9a;
+  border-color: #6dca62;
+  box-shadow: 0 0 8px rgba(160, 255, 140, 0.45);
+}
+html[data-theme="terminal"] .card {
+  background: rgba(7, 13, 8, 0.88);
+  border: 1px solid #1c3a22;
+  border-radius: 0;
+}
+html[data-theme="terminal"] .card:hover { background: #0c140e; }
+html[data-theme="terminal"] button,
+html[data-theme="terminal"] input,
+html[data-theme="terminal"] select,
+html[data-theme="terminal"] textarea,
+html[data-theme="terminal"] #detail pre,
+html[data-theme="terminal"] button.twist {
+  background: #0c140e;
+  color: #d8ffc8;
+  border: 1px solid #2c6a38;
+  border-radius: 0;
+}
+html[data-theme="terminal"] button:hover { background: #b6ff9a; color: #050705; border-color: #b6ff9a; }
+html[data-theme="terminal"] header a { color: #d8ffc8; border-bottom-color: #6dca62; }
+html[data-theme="terminal"] #detail,
+html[data-theme="terminal"] #agentpanel {
+  background: #070d08;
+  border-color: #1c3a22;
+}
+html[data-theme="terminal"] .card.done .ttl,
+html[data-theme="terminal"] .sub.done { color: #6dca62; }
+html[data-theme="terminal"] .subprog i {
+  height: 12px;
+  border: 1px solid #2c6a38;
+  border-radius: 0;
+  background-color: #0c140e;
+  background-image: repeating-linear-gradient(90deg, #16331c 0 8px, #0c140e 8px 10px);
+  image-rendering: pixelated;
+}
+html[data-theme="terminal"] .subprog b {
+  background: #b6ff9a;
+  box-shadow: 0 0 8px rgba(160, 255, 140, 0.35);
+}
+
+html[data-theme="swiss"] {
+  --bg: #efefef;
+  --panel: #ffffff;
+  --ink: #111111;
+  --line: #111111;
+  --rule: #dddddd;
+  --hair: #111111;
+  --mast: #e10600;
+  --fg: #111111;
+  --dim: #444444;
+  --acc: #e10600;
+  --warn: #111111;
+  --done: #111111;
+  --bad: #111111;
+  --hot: #e10600;
+  --pixel: Helvetica, "Helvetica Neue", Arial, sans-serif;
+  --serif: Helvetica, "Helvetica Neue", Arial, sans-serif;
+  --gothic: Helvetica, "Helvetica Neue", Arial, sans-serif;
+  --mono: Helvetica, "Helvetica Neue", Arial, sans-serif;
+}
+html[data-theme="swiss"] header { border-bottom: 8px solid #111; }
+html[data-theme="swiss"] .mast { border-bottom: none; background: #fff; }
+html[data-theme="swiss"] .mast b { font-weight: 700; letter-spacing: -0.03em; }
+html[data-theme="swiss"] .mast b::before { width: 14px; height: 14px; background: #e10600; border: none; }
+html[data-theme="swiss"] .tools,
+html[data-theme="swiss"] button.glabel { letter-spacing: 0.08em; text-transform: uppercase; }
+html[data-theme="swiss"] .tools button,
+html[data-theme="swiss"] .tools select,
+html[data-theme="swiss"] .tools input:not([type="checkbox"]) {
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid #111;
+  border-radius: 0;
+  text-transform: uppercase;
+}
+html[data-theme="swiss"] header a { color: #e10600; border-bottom-color: #e10600; }
+html[data-theme="swiss"] .card {
+  background: #fff;
+  border: none;
+  border-top: 1px solid #111;
+  border-radius: 0;
+  margin: 0;
+}
+html[data-theme="swiss"] .card:hover { background: #fafafa; }
+html[data-theme="swiss"] .ttl { font-weight: 700; font-size: 22px; letter-spacing: -0.03em; }
+html[data-theme="swiss"] button.glabel { border-bottom: none; color: #111; }
+html[data-theme="swiss"] button.glabel .n { color: #e10600; font-weight: 700; font-size: 16px; }
+html[data-theme="swiss"] #detail { border-left: 8px solid #111; background: #fff; }
+html[data-theme="swiss"] .subprog i {
+  height: 10px;
+  border: none;
+  border-radius: 0;
+  background: #eee;
+  background-image: none;
+}
+html[data-theme="swiss"] .subprog b { background: #e10600; }
+html[data-theme="swiss"] .subprog em { font-weight: 700; }
+
+html[data-theme="ticket"] {
+  --bg: #e7d7bf;
+  --panel: #fffaf3;
+  --ink: #24180f;
+  --line: #24180f;
+  --rule: #c8b49a;
+  --hair: #24180f;
+  --mast: #b4332a;
+  --fg: #24180f;
+  --dim: #6b5344;
+  --acc: #b4332a;
+  --warn: #24180f;
+  --done: #24180f;
+  --bad: #24180f;
+  --hot: #b4332a;
+  --pixel: "Avenir Next", "Segoe UI", sans-serif;
+  --serif: "Avenir Next", "Segoe UI", sans-serif;
+  --gothic: "Avenir Next", "Segoe UI", sans-serif;
+  --mono: "Avenir Next", "Segoe UI", sans-serif;
+}
+html[data-theme="ticket"] .mast { background: #f7efe2; border-bottom: none; }
+html[data-theme="ticket"] header { border-bottom: none; }
+html[data-theme="ticket"] .mast b { letter-spacing: 0.02em; }
+html[data-theme="ticket"] .mast b::before { border-radius: 50%; background: #b4332a; }
+html[data-theme="ticket"] .tools { background: #24180f; color: #f7efe2; }
+html[data-theme="ticket"] .tools label { color: #f7efe2; }
+html[data-theme="ticket"] .tools button,
+html[data-theme="ticket"] .tools select,
+html[data-theme="ticket"] .tools input:not([type="checkbox"]) {
+  background: #f7efe2;
+  color: #24180f;
+  border: none;
+  border-radius: 999px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+html[data-theme="ticket"] .tools a { color: #f3d27a; border-bottom-color: #f3d27a; }
+html[data-theme="ticket"] .card {
+  background: #fffaf3;
+  border: 2px solid #24180f;
+  border-left: 12px solid #b4332a;
+  border-radius: 2px;
+}
+html[data-theme="ticket"] .card:hover { background: #fff; }
+html[data-theme="ticket"] button.glabel {
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  font-weight: 700;
+  color: #24180f;
+  border-bottom-color: #24180f;
+}
+html[data-theme="ticket"] #detail { background: #f7efe2; border-left: 2px solid #24180f; }
+html[data-theme="ticket"] .subprog i {
+  height: 22px;
+  border: none;
+  border-radius: 0;
+  background-color: transparent;
+  background-image: radial-gradient(circle at 11px 11px, #fffaf3 0 7px, #24180f 7.5px 9px, transparent 9.5px);
+  background-size: 26px 22px;
+  background-repeat: repeat-x;
+  image-rendering: auto;
+}
+html[data-theme="ticket"] .subprog b {
+  height: 22px;
+  background-color: transparent;
+  background-image: radial-gradient(circle at 11px 11px, #24180f 0 8px, transparent 8.5px);
+  background-size: 26px 22px;
+  background-repeat: repeat-x;
+}
+
+html[data-theme="blueprint"] {
+  --bg: #0c3d7a;
+  --panel: rgba(7, 42, 85, 0.45);
+  --ink: #e7f1ff;
+  --line: #e7f1ff;
+  --rule: rgba(231, 241, 255, 0.35);
+  --hair: rgba(231, 241, 255, 0.7);
+  --mast: #e7f1ff;
+  --fg: #e7f1ff;
+  --dim: rgba(231, 241, 255, 0.72);
+  --acc: #e7f1ff;
+  --warn: #e7f1ff;
+  --done: #e7f1ff;
+  --bad: #e7f1ff;
+  --hot: #e7f1ff;
+  --pixel: "Avenir Next", "Segoe UI", sans-serif;
+  --serif: "Avenir Next", "Segoe UI", sans-serif;
+  --gothic: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  --mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  color-scheme: dark;
+}
+html[data-theme="blueprint"] body {
+  background-color: #0c3d7a;
+  background-image:
+    linear-gradient(rgba(231, 241, 255, 0.08) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(231, 241, 255, 0.08) 1px, transparent 1px);
+  background-size: 100% 24px, 24px 100%;
+}
+html[data-theme="blueprint"] header,
+html[data-theme="blueprint"] .mast,
+html[data-theme="blueprint"] .tools,
+html[data-theme="blueprint"] main,
+html[data-theme="blueprint"] #board,
+html[data-theme="blueprint"] #detail { background: transparent; }
+html[data-theme="blueprint"] header,
+html[data-theme="blueprint"] .mast,
+html[data-theme="blueprint"] #detail,
+html[data-theme="blueprint"] #agentpanel { border-width: 1px; border-color: rgba(231, 241, 255, 0.85); }
+html[data-theme="blueprint"] #agentpanel { background: #0c3d7a; }
+html[data-theme="blueprint"] .mast b { font-weight: 600; letter-spacing: 0.04em; }
+html[data-theme="blueprint"] .mast b::before { background: transparent; border: 1px solid #e7f1ff; }
+html[data-theme="blueprint"] .tools,
+html[data-theme="blueprint"] .id,
+html[data-theme="blueprint"] .tag,
+html[data-theme="blueprint"] button.glabel,
+html[data-theme="blueprint"] .subprog em,
+html[data-theme="blueprint"] #detail .meta {
+  font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+}
+html[data-theme="blueprint"] button.glabel { letter-spacing: 0.14em; text-transform: uppercase; }
+html[data-theme="blueprint"] .card {
+  background: rgba(7, 42, 85, 0.4);
+  border: 1px dashed rgba(231, 241, 255, 0.45);
+  border-radius: 0;
+}
+html[data-theme="blueprint"] .card:hover { background: rgba(7, 42, 85, 0.62); }
+html[data-theme="blueprint"] button,
+html[data-theme="blueprint"] input,
+html[data-theme="blueprint"] select,
+html[data-theme="blueprint"] textarea,
+html[data-theme="blueprint"] #detail pre { border-radius: 0; border-width: 1px; }
+html[data-theme="blueprint"] .card.done .ttl,
+html[data-theme="blueprint"] .sub.done { color: rgba(231, 241, 255, 0.55); }
+html[data-theme="blueprint"] .subprog i {
+  height: 16px;
+  border: none;
+  border-bottom: 1px solid #e7f1ff;
+  border-radius: 0;
+  background: transparent;
+  background-image: none;
+}
+html[data-theme="blueprint"] .subprog b { height: 6px; margin-top: 10px; background: #e7f1ff; }
+
+html[data-theme="soft"] {
+  --bg: #efe4d6;
+  --panel: #fffaf5;
+  --ink: #3a2e28;
+  --line: #c46a4a;
+  --rule: #f0e2d4;
+  --hair: transparent;
+  --mast: #c46a4a;
+  --fg: #3a2e28;
+  --dim: #8a7368;
+  --acc: #c46a4a;
+  --warn: #3a2e28;
+  --done: #6d584e;
+  --bad: #3a2e28;
+  --hot: #c46a4a;
+  --pixel: "Avenir Next", "Segoe UI", sans-serif;
+  --serif: "Avenir Next", "Segoe UI", sans-serif;
+  --gothic: "Avenir Next", "Segoe UI", sans-serif;
+  --mono: "Avenir Next", "Segoe UI", sans-serif;
+}
+html[data-theme="soft"] header,
+html[data-theme="soft"] .mast { border: none; background: transparent; }
+html[data-theme="soft"] .mast b { font-weight: 650; letter-spacing: -0.03em; font-size: 28px; }
+html[data-theme="soft"] .mast b::before { border: none; border-radius: 4px; }
+html[data-theme="soft"] .tools {
+  background: #fffaf5;
+  border-radius: 16px;
+  margin: 0 16px;
+  box-shadow: 0 10px 30px rgba(90, 50, 30, 0.08);
+}
+html[data-theme="soft"] button,
+html[data-theme="soft"] input,
+html[data-theme="soft"] select {
+  background: #f6efe6;
+  color: #3a2e28;
+  border: none;
+  border-radius: 999px;
+}
+html[data-theme="soft"] textarea,
+html[data-theme="soft"] #detail pre { border: none; border-radius: 16px; background: #fffaf5; }
+html[data-theme="soft"] #newbtn,
+html[data-theme="soft"] button:hover { background: #c46a4a; color: #fffaf5; }
+html[data-theme="soft"] header a { color: #c46a4a; border-bottom-color: #c46a4a; }
+html[data-theme="soft"] .card {
+  background: #fffaf5;
+  border: none;
+  border-radius: 16px;
+  box-shadow: 0 10px 30px rgba(90, 50, 30, 0.08);
+}
+html[data-theme="soft"] .card:hover { background: #fff; }
+html[data-theme="soft"] .ttl { font-weight: 650; letter-spacing: -0.02em; }
+html[data-theme="soft"] button.glabel { border-bottom: none; color: #3a2e28; font-weight: 700; }
+html[data-theme="soft"] button.glabel .n {
+  background: #c46a4a;
+  color: #fffaf5;
+  border-radius: 999px;
+  padding: 2px 8px;
+}
+html[data-theme="soft"] button.twist { border-radius: 999px; border: none; }
+html[data-theme="soft"] .kids { border-left: none; }
+html[data-theme="soft"] #detail {
+  background: #efe4d6;
+  border-left: none;
+  box-shadow: -8px 0 30px rgba(90, 50, 30, 0.08);
+}
+html[data-theme="soft"] #agentpanel {
+  border: none;
+  border-radius: 16px;
+  background: #fffaf5;
+  box-shadow: 0 10px 30px rgba(90, 50, 30, 0.12);
+}
+html[data-theme="soft"] .subprog i {
+  height: 14px;
+  border: none;
+  border-radius: 999px;
+  background: #f0e2d4;
+  background-image: none;
+  image-rendering: auto;
+}
+html[data-theme="soft"] .subprog b { background: #c46a4a; border-radius: 999px; }

@@ -53,3 +53,36 @@ async function checkBuild(){
   } catch (e) { }
 }
 setInterval(checkBuild, 300000);
+
+const TT_THEMES = ["pixel", "newsprint", "terminal", "swiss", "ticket", "blueprint", "soft"];
+function applyTheme(name, persist) {
+  if (!TT_THEMES.includes(name)) name = "pixel";
+  try {
+    const root = document.documentElement;
+    if (root && root.setAttribute) {
+      if (name === "pixel") root.removeAttribute("data-theme");
+      else root.setAttribute("data-theme", name);
+    }
+  } catch (e) {}
+  if (persist) { try { localStorage.setItem("tt-theme", name); } catch (e) {} }
+  try {
+    const sel = document.getElementById ? document.getElementById("theme") : (document.querySelector ? document.querySelector("#theme") : null);
+    if (sel) sel.value = name;
+    if (TT_EN && sel && sel.options) {
+      const enName = { pixel: "Pixel", newsprint: "Newsprint", terminal: "Terminal", swiss: "Swiss", ticket: "Ticket", blueprint: "Blueprint", soft: "Soft" };
+      for (let i = 0; i < sel.options.length; i++) {
+        const opt = sel.options[i];
+        if (enName[opt.value]) opt.textContent = enName[opt.value];
+      }
+      if (sel.setAttribute) sel.setAttribute("aria-label", "Theme");
+    }
+  } catch (e) {}
+}
+function setTheme(name) { applyTheme(name, true); }
+function initTheme() {
+  let name = "pixel";
+  try { const s = localStorage.getItem("tt-theme"); if (TT_THEMES.includes(s)) name = s; } catch (e) {}
+  applyTheme(name, false);
+}
+initTheme();
+

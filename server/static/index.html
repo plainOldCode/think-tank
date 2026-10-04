@@ -5,7 +5,7 @@
 <title>think-tank</title>
 <link rel="icon" href="/favicon.ico">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<link rel="stylesheet" href="/css/board.css?v=retro8b">
+<link rel="stylesheet" href="/css/board.css?v=themes">
 </head>
 <body onkeydown="if(event.key==='Escape')closeDetail()">
 <header>
@@ -22,6 +22,16 @@
     <input type="checkbox" id="arch" onchange="load()"></label>
   <button onclick="toggleAgents()" id="agentbtn">Agents 0</button>
   <button onclick="toggleCancelled()" id="cxbtn" title="cancel된 카드 열 표시/숨김">취소됨</button>
+  <label id="themelab" for="theme">테마</label>
+  <select id="theme" onchange="setTheme(this.value)" aria-label="테마">
+    <option value="pixel" selected>픽셀</option>
+    <option value="newsprint">신문</option>
+    <option value="terminal">터미널</option>
+    <option value="swiss">스위스</option>
+    <option value="ticket">티켓</option>
+    <option value="blueprint">청사진</option>
+    <option value="soft">소프트</option>
+  </select>
   <a href="/api.html">API(AI)</a>
   <a href="/docs">OpenAPI</a>
   <button id="reloadbtn" onclick="load()">새로고침</button>

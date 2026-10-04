@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>think-tank — terminal</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin:0; background:#050705; color:#b6ff9a; }
+  body { min-height:100vh; font: 15px/1.45 ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace; padding:32px 16px 48px; }
+  .crt { width:1100px; max-width:100%; margin:0 auto; background:#070d08; border:1px solid #1c3a22; box-shadow: inset 0 0 80px rgba(0,0,0,.65), 0 0 0 8px #020302; position:relative; padding:18px 22px 28px; }
+  .crt:before { content:""; position:absolute; inset:0; pointer-events:none; background: repeating-linear-gradient(to bottom, rgba(0,0,0,.18) 0 1px, transparent 1px 3px); mix-blend-mode:multiply; }
+  .top { display:flex; justify-content:space-between; color:#6dca62; }
+  h1 { margin:8px 0 0; font-size:22px; font-weight:500; letter-spacing:.08em; }
+  h1 span { color:#e8ffe0; text-shadow: 0 0 8px rgba(160,255,140,.45); }
+  .prompt { margin:14px 0; color:#8f8; }
+  .prompt input, .prompt select, .prompt button, .prompt a { font: inherit; color:#d8ffc8; background:#0c140e; border:1px solid #2c6a38; padding:2px 6px; }
+  .prompt button { cursor:pointer; }
+  .prompt a { text-decoration:none; }
+  .rowtools { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+  pre { margin:0; white-space:pre; color:#9dde8c; }
+  .hot { color:#eaffe4; text-shadow:0 0 6px rgba(180,255,160,.35); }
+  .dim { color:#5ea86a; }
+  .sec { margin-top:16px; }
+  .bar { letter-spacing:.12em; }
+</style>
+</head>
+<body>
+<div class="crt">
+  <div class="top"><span>TTY 04 · PHOSPHOR</span><span>15 ISSUES</span></div>
+  <h1>&gt; <span>think-tank</span></h1>
+  <div class="prompt rowtools">
+    <span class="dim">$</span>
+    <input placeholder="New issue" aria-label="New issue" size="16">
+    <select aria-label="State"><option>todo</option><option>backlog</option></select>
+    <button type="button">Add</button>
+    <select aria-label="All labels"><option>All labels</option></select>
+    <label><input type="checkbox"> archived</label>
+    <button type="button">Agents 0</button>
+    <button type="button">Cancelled</button>
+    <a href="#">API(AI)</a>
+    <a href="#">OpenAPI</a>
+    <button type="button">Refresh</button>
+  </div>
+
+  <section class="sec">
+<pre class="hot">IN PROGRESS                                          3
+────────────────────────────────────────────────────────</pre>
+<pre>┌ BD14  parent
+│ <span class="hot">보드 밀도</span>
+│ state  In progress
+│ meter  <span class="bar hot">[##····]</span>  1/4
+│
+└─┬ RH12  nested
+  │ <span class="hot">행 높이</span>
+  │ state  In progress
+  │ meter  <span class="bar hot">[####··]</span>  1/2
+  │
+  └─
+
+┌ CC00
+│ <span class="hot">보드 카드 색</span>
+│ state  In progress
+│ meter  <span class="dim">—  no bar</span>
+└</pre>
+  </section>
+
+  <section class="sec">
+<pre class="hot">WAITING                                             12
+────────────────────────────────────────────────────────</pre>
+<pre>┌ DP09
+│ <span class="hot">배포 체크리스트</span>
+│ state  Waiting · todo
+│ meter  <span class="dim">—  no bar</span>
+└
+<span class="dim">+ 11 more queued in Waiting</span></pre>
+  </section>
+</div>
+</body>
+</html>

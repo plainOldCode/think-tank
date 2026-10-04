@@ -12,7 +12,40 @@ function paintEnChrome() {
   put("reloadbtn", "textContent", "Refresh");
   put("dclose", "textContent", "✕ close");
   put("dpick", "textContent", "Select a card.");
+  put("themelab", "textContent", "Theme");
+  const themeSel = document.getElementById("theme");
+  if (themeSel && themeSel.options) {
+    const enName = { pixel: "Pixel", newsprint: "Newsprint", terminal: "Terminal", swiss: "Swiss", ticket: "Ticket", blueprint: "Blueprint", soft: "Soft" };
+    for (let i = 0; i < themeSel.options.length; i++) {
+      const opt = themeSel.options[i];
+      if (enName[opt.value]) opt.textContent = enName[opt.value];
+    }
+    if (themeSel.setAttribute) themeSel.setAttribute("aria-label", "Theme");
+  }
 }
+const TT_THEMES = ["pixel", "newsprint", "terminal", "swiss", "ticket", "blueprint", "soft"];
+function applyTheme(name, persist) {
+  if (!TT_THEMES.includes(name)) name = "pixel";
+  try {
+    const root = document.documentElement;
+    if (root && root.setAttribute) {
+      if (name === "pixel") root.removeAttribute("data-theme");
+      else root.setAttribute("data-theme", name);
+    }
+  } catch (e) {}
+  if (persist) { try { localStorage.setItem("tt-theme", name); } catch (e) {} }
+  try {
+    const sel = document.getElementById ? document.getElementById("theme") : null;
+    if (sel) sel.value = name;
+  } catch (e) {}
+}
+function setTheme(name) { applyTheme(name, true); }
+function initTheme() {
+  let name = "pixel";
+  try { const s = localStorage.getItem("tt-theme"); if (TT_THEMES.includes(s)) name = s; } catch (e) {}
+  applyTheme(name, false);
+}
+initTheme();
 const esc = s => (s === null || s === undefined ? "" : String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;"));
 const hueOf = s => { let h = 0; for (const c of s) h = (h * 31 + c.codePointAt(0)) % 360; return h; };
 const tsParse = t => new Date(t.replace(/([+-]\d\d)(\d\d)$/, "$1:$2"));
