@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 import config
 import db as dbmod
 import service
-from models import ClaimIn, CommentIn, IssueCreate, IssuePatch, LeaseIn, VerifyIn
+from models import ClaimIn, CommentIn, IssueCreate, IssuePatch, LeaseIn, ReviewClaimIn, VerifyIn
 from service import Ctx
 from verification import legacy_result
 
@@ -116,6 +116,22 @@ def claim(issue_id: str, p: ClaimIn, ctx: Ctx = Depends(get_ctx)):
                                    "lease_by": p.agent, "lease_expires": dbmod.future(p.safe_hours()),
                                    "heartbeat_at": dbmod.now(),
                                    "todo_since": None}, row["version"])
+        row = service.get_issue(c, issue_id)
+    return dbmod.to_dict(row)
+
+
+@router.post("/issues/{issue_id}/claim-review")
+def claim_review(issue_id: str, p: ReviewClaimIn, ctx: Ctx = Depends(get_ctx)):
+    """리뷰어 claim — review 상태에서만. 상태·계약·attempt는 건드리지 않고 reviewer/lease만 기록."""
+    with ctx.con() as c:
+        row = service.get_issue(c, issue_id)
+        if row["state"] != "review":
+            raise HTTPException(409, f"claim-review is for review-state cards only (state is {row['state']})")
+        if row["reviewer"] and row["reviewer"] != p.agent:
+            raise HTTPException(409, f"already claimed by {row['reviewer']}")
+        service.bump(c, issue_id, {"reviewer": p.agent, "lease_by": p.agent,
+                                   "lease_expires": dbmod.future(p.safe_hours()),
+                                   "heartbeat_at": dbmod.now()}, row["version"])
         row = service.get_issue(c, issue_id)
     return dbmod.to_dict(row)
 
@@ -278,6 +294,10 @@ def patch_issue(issue_id: str, p: IssuePatch, ctx: Ctx = Depends(get_ctx)):
         if p.assignee is not None:
             fields["assignee"] = p.assignee
             if p.assignee == "":
+                fields.update({"lease_by": "", "lease_expires": None})
+        if p.reviewer is not None:
+            fields["reviewer"] = p.reviewer or None
+            if p.reviewer == "":
                 fields.update({"lease_by": "", "lease_expires": None})
         if p.archived is not None:
             fields["archived"] = 1 if p.archived else 0

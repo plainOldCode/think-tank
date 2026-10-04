@@ -241,3 +241,13 @@ def test_게이트on은_review상태_카드만_판정(gate_on):
     i = _issue(state="in_progress")
     acts = dispatchd.decide(_snap([i], _pr()))
     assert not [a for a in acts if a["action"] in ("review-request", "merge", "review-fix")]
+
+
+def test_판정기록시_리뷰어_반납_액션(gate_on):
+    # verdict가 기록된 review 카드 — 리뷰어 점유 반납 액션 발행(중복 없이 1회)
+    i = _issue(state="review")
+    i["reviewer"] = REV
+    i["comments"] = [{"author": REV, "body": "review: approve\nPR#9@bbbbbbbb"}]
+    acts = dispatchd.decide(_snap([i], _pr()))
+    rel = [a for a in acts if a["action"] == "release-reviewer"]
+    assert len(rel) == 1 and rel[0]["reviewer"] == REV

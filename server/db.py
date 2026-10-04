@@ -53,7 +53,8 @@ CREATE TABLE IF NOT EXISTS issues (
   execution_attempt INTEGER NOT NULL DEFAULT 0,
   evidence_after_comment_id INTEGER NOT NULL DEFAULT 0,
   verification_status TEXT NOT NULL DEFAULT 'unverified',
-  completion_report TEXT NOT NULL DEFAULT ''
+  completion_report TEXT NOT NULL DEFAULT '',
+  reviewer TEXT
 );
 CREATE TABLE IF NOT EXISTS comments (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -138,7 +139,9 @@ def connect(path):
                 "verification_status TEXT NOT NULL DEFAULT 'unverified'",
                 "completion_report TEXT NOT NULL DEFAULT ''",
                 # SRM1: 지연 표기 — todo 진입 시각(기존 todo 행은 created_at 백필)
-                "todo_since TEXT"):
+                "todo_since TEXT",
+                # M42KC1XR-2DD1: 리뷰어 점유 — review 카드에서 판정자 표기(assignee는 작업자 유지)
+                "reviewer TEXT"):
         try:
             con.execute(f"ALTER TABLE issues ADD COLUMN {col}")
         except sqlite3.OperationalError:

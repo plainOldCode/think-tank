@@ -228,6 +228,10 @@ def decide(snap):
                 gated.add(iid)
                 sha8 = (p.get("head_sha") or "")[:8]
                 verdict = review_verdict(i.get("comments"), reviewer, p["number"], sha8)
+                if verdict in ("approve", "request-changes") and i.get("reviewer"):
+                    # 리뷰어 claim 해제 — 판정 기록됐으면 점유 반납(review-fix 시 작업자 assignee 보존)
+                    actions.append({"agent": "probe", "issue": iid, "action": "release-reviewer",
+                                    "reviewer": i["reviewer"], "reason": "판정 기록 — 리뷰어 점유 반납"})
                 if verdict == "request-changes":
                     marker = f"[review-fix #{p['number']}/{sha8}]"
                     if not _probe_marker(i, marker):
@@ -429,6 +433,12 @@ def _probe_flag(url, act, msg):
 
 def execute(url, act):
     kind = act["action"]
+    if kind == "release-reviewer":
+        cur = api(url, f"/issues/{act['issue']}")
+        if cur.get("reviewer") == act.get("reviewer"):
+            api(url, f"/issues/{act['issue']}", "PATCH",
+                {"version": cur["version"], "reviewer": None})
+        return
     if kind == "merge":
         repo = act.get("repo") or REPO
         # 판정-집행 경합 흡수(t_501e6ec3 통합 회귀): collect 시점 head_sha와
