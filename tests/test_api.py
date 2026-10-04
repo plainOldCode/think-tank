@@ -977,3 +977,35 @@ def test_정적_자산은_no_cache로_서빙된다(tmp_path):
     r = client.get("/issues")
     assert "cache-control" not in r.headers
     _ = static_dir  # 서빙 대상 존재 확인용
+
+
+def test_정적_참조는_버전파라미터로_캐시버스팅된다(tmp_path):
+    """M43KDKWQ-6Y7Z codex 2차 지적 — no-cache는 이미 저장된 구버전 JS를 못 고친다(heuristic
+    freshness는 재요청 자체가 없음). 참조 URL에 내용 해시 ?v=를 붙여야 낡은 캐시와 섞이지 않는다.
+    """
+    import re
+    import pathlib
+    from fastapi.testclient import TestClient
+    from app import create_app, _asset_version, _versioned_html
+    static_dir = pathlib.Path(__file__).resolve().parents[1] / "server" / "static"
+    client = TestClient(create_app(str(tmp_path / "t.db")))
+
+    html = client.get("/").text
+    unversioned = [u for u in re.findall(r'(?:src|href)="(/(?:js|css)/[^"?]+)"', html)]
+    assert not unversioned, f"버전 없는 정적 참조: {unversioned[:3]}"
+    assert re.search(r'src="/js/tt-util\.js\?v=[0-9a-f]{8}"', html), "tt-util.js 버전 파라미터 없음"
+
+    # 버전은 내용 기반 — 같은 내용 같은 해시, 다른 내용 다른 해시
+    assert _asset_version("js/tt-util.js") == _asset_version("js/tt-util.js")
+    assert _asset_version("js/tt-util.js") != _asset_version("js/tt-detail.js")
+
+    # 모바일 페이지도 동일 (실무·제어 분리 구조에서 m-*.js 혼합 캐시 동일 위험)
+    m = client.get("/m").text
+    assert not re.findall(r'(?:src|href)="(/(?:js|css)/[^"?]+)"', m), "mobile.html에 버전 없는 참조"
+
+    # 버전 파라미터가 붙어도 정적 파일은 그대로 서빙된다(브라우저 캐시 키만 달라짐)
+    r1 = client.get("/js/tt-util.js?v=00000000")
+    r2 = client.get("/js/tt-util.js?v=" + _asset_version("js/tt-util.js"))
+    assert r1.status_code == r2.status_code == 200
+    assert r1.content == r2.content
+    _ = _versioned_html, static_dir

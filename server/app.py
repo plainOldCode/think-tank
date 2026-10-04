@@ -10,11 +10,35 @@ from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
+import hashlib
+import re as _re
+
 import config
 import probe
 from routers import agents, issues, meta
 from service import Ctx
 from work_contract import current_contract
+
+
+def _asset_version(rel: str, static_dir: str | None = None) -> str:
+    """정적 파일 내용 해시(?v=) — 내용이 바뀌면 URL이 바뀌어 낡은 캐시와 섞이지 않는다(M43KDKWQ-6Y7Z)."""
+    base = static_dir or os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+    try:
+        with open(os.path.join(base, rel), "rb") as f:
+            return hashlib.sha256(f.read()).hexdigest()[:8]
+    except OSError:
+        return "0"
+
+
+def _versioned_html(html: str, static_dir: str | None = None) -> str:
+    """로컬 js/css 참조에 내용 해시 ?v= 부착 — 이미 저장된 구버전 JS 갱신(codex 2차 지적)."""
+    base = static_dir
+
+    def sub(m):
+        attr, url = m.group(1), m.group(2)
+        return f'{attr}="{url}?v={_asset_version(url.lstrip("/"), base)}"'
+
+    return _re.sub(r'(src|href)="(/(?:js|css)/[^"?]+)"', sub, html)
 
 
 def create_app(db_path: str) -> FastAPI:
@@ -44,7 +68,7 @@ def create_app(db_path: str) -> FastAPI:
     @app.get("/m", include_in_schema=False)
     def mobile():
         path = os.path.join(static_dir, "mobile.html")
-        html = open(path, encoding="utf-8").read().replace("__TT_BUILD__", str(int(os.path.getmtime(path))))
+        html = _versioned_html(open(path, encoding="utf-8").read().replace("__TT_BUILD__", str(int(os.path.getmtime(path)))), static_dir)
         return HTMLResponse(html, headers={"Cache-Control": "no-store"})
 
     # M43KDKWQ-6Y7Z: 정적 자산 no-cache — JS에 캐시 헤더가 없어 구버전 tt-util.js( setTheme 이전)가
@@ -56,6 +80,16 @@ def create_app(db_path: str) -> FastAPI:
         if p == "/" or p.endswith((".html", ".js", ".css")):
             resp.headers["Cache-Control"] = "no-cache"
         return resp
+
+    @app.get("/", include_in_schema=False)
+    def board_index():
+        path = os.path.join(static_dir, "index.html")
+        html = _versioned_html(open(path, encoding="utf-8").read(), static_dir)
+        return HTMLResponse(html, headers={"Cache-Control": "no-cache"})
+
+    @app.get("/index.html", include_in_schema=False)
+    def board_index2():
+        return board_index()
 
     app.mount("/", StaticFiles(directory=static_dir, html=True), name="static")
     return app
