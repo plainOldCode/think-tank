@@ -124,6 +124,8 @@ def claim(issue_id: str, p: ClaimIn, ctx: Ctx = Depends(get_ctx)):
 def claim_review(issue_id: str, p: ReviewClaimIn, ctx: Ctx = Depends(get_ctx)):
     """리뷰어 claim — review 상태에서만. 상태·계약·attempt는 건드리지 않고 reviewer/lease만 기록."""
     with ctx.con() as c:
+        # R4: 한도 검사와 기록을 같은 write 트랜잭션으로 — 동시 claim 이중 통과 방지
+        c.execute("BEGIN IMMEDIATE")
         row = service.get_issue(c, issue_id)
         if row["state"] != "review":
             raise HTTPException(409, f"claim-review is for review-state cards only (state is {row['state']})")
