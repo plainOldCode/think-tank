@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>think-tank — ticket</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin:0; background:#e7d7bf; color:#24180f; }
+  body { font: 15px/1.35 "Avenir Next", "Segoe UI", sans-serif; padding:28px 16px 56px; }
+  .sheet { width:1100px; max-width:100%; margin:0 auto; }
+  .jacket { background:#f7efe2; border:2px solid #24180f; border-radius:18px 18px 0 0; padding:16px 20px 12px; display:flex; justify-content:space-between; align-items:flex-end; }
+  h1 { margin:0; font-size:28px; letter-spacing:.02em; }
+  h1 small { display:block; font-weight:600; letter-spacing:.18em; font-size:11px; text-transform:uppercase; }
+  .issues { font-variant-numeric:tabular-nums; font-size:28px; font-weight:700; }
+  .issues span { display:block; font-size:11px; letter-spacing:.16em; font-weight:600; }
+  .tools { background:#24180f; color:#f7efe2; display:flex; flex-wrap:wrap; gap:8px 12px; align-items:center; padding:10px 16px; font-size:12px; letter-spacing:.04em; text-transform:uppercase; }
+  .tools input, .tools select, .tools button { font: inherit; text-transform:uppercase; background:#f7efe2; color:#24180f; border:none; border-radius:999px; padding:4px 10px; }
+  .tools input { width:150px; text-transform:none; }
+  .tools a { color:#f3d27a; }
+  .tools button { cursor:pointer; }
+  .gate { margin:18px 0 8px; display:flex; justify-content:space-between; align-items:baseline; letter-spacing:.2em; font-size:12px; text-transform:uppercase; font-weight:700; }
+  .pass { display:grid; grid-template-columns: 92px 1fr 150px; background:#fffaf3; border:2px solid #24180f; position:relative; margin:10px 0; }
+  .pass:before { content:""; position:absolute; width:16px; height:16px; background:#e7d7bf; border:2px solid #24180f; border-radius:50%; top:50%; left:-10px; margin-top:-8px; }
+  .stub { background:#b4332a; color:#fffaf3; padding:14px 10px; display:flex; flex-direction:column; justify-content:space-between; letter-spacing:.14em; font-size:11px; text-transform:uppercase; font-weight:700; }
+  .body { padding:14px 16px 16px; border-left:2px dashed #24180f; }
+  .id { letter-spacing:.16em; font-size:11px; text-transform:uppercase; font-weight:700; }
+  h2 { margin:2px 0; font-size:28px; letter-spacing:-.02em; }
+  .state { margin:0; letter-spacing:.08em; text-transform:uppercase; font-size:12px; }
+  .punches { display:flex; gap:8px; align-items:center; justify-content:flex-end; padding-right:22px; }
+  .punches i { width:22px; height:22px; border:2px solid #24180f; border-radius:50%; background:#fff; }
+  .punches i.on { background:#24180f; }
+  .frac { font-variant-numeric:tabular-nums; font-weight:800; margin-left:6px; }
+  .nest { margin-left:48px; }
+  .nest .pass { background:#fff; }
+  .nest h2 { font-size:22px; }
+  .nobar { letter-spacing:.16em; text-transform:uppercase; font-size:12px; font-weight:700; text-align:right; padding-right:18px; }
+  .book { margin-top:8px; background:#fffaf3; border:2px dashed #24180f; padding:10px 14px; display:flex; justify-content:space-between; align-items:center; gap:12px; }
+  .seats { display:flex; gap:6px; flex-wrap:wrap; }
+  .seats span { border:1px solid #24180f; padding:3px 6px; font-size:11px; letter-spacing:.08em; font-weight:700; }
+</style>
+</head>
+<body>
+<div class="sheet">
+  <div class="jacket">
+    <h1>think-tank<small>Boarding · issue list</small></h1>
+    <div class="issues">15<span>issues</span></div>
+  </div>
+  <div class="tools">
+    <input placeholder="New issue" aria-label="New issue">
+    <select aria-label="State"><option>todo</option><option>backlog</option></select>
+    <button type="button">Add</button>
+    <span style="flex-basis:100%; height:0"></span>
+    <select aria-label="All labels"><option>All labels</option></select>
+    <label>archived <input type="checkbox"></label>
+    <button type="button">Agents 0</button>
+    <button type="button">Cancelled</button>
+    <a href="#">API(AI)</a>
+    <a href="#">OpenAPI</a>
+    <button type="button">Refresh</button>
+  </div>
+
+  <div class="gate"><span>In progress</span><span>3</span></div>
+  <article class="pass">
+    <div class="stub">BD14<span>parent</span></div>
+    <div class="body">
+      <div class="id">Gate · open</div>
+      <h2>보드 밀도</h2>
+      <p class="state">In progress</p>
+    </div>
+    <div class="punches" aria-label="1 of 4"><i class="on"></i><i></i><i></i><i></i><span class="frac">1/4</span></div>
+  </article>
+  <article class="pass nest">
+    <div class="stub">RH12<span>nested</span></div>
+    <div class="body">
+      <div class="id">Connected stub</div>
+      <h2>행 높이</h2>
+      <p class="state">In progress</p>
+    </div>
+    <div class="punches" aria-label="1 of 2"><i class="on"></i><i></i><span class="frac">1/2</span></div>
+  </article>
+  <article class="pass">
+    <div class="stub">CC00<span>solo</span></div>
+    <div class="body">
+      <div class="id">No children</div>
+      <h2>보드 카드 색</h2>
+      <p class="state">In progress</p>
+    </div>
+    <div class="nobar">no bar</div>
+  </article>
+
+  <div class="gate"><span>Waiting</span><span>12</span></div>
+  <article class="pass">
+    <div class="stub">DP09<span>todo</span></div>
+    <div class="body">
+      <div class="id">Hold · not boarded</div>
+      <h2>배포 체크리스트</h2>
+      <p class="state">Waiting</p>
+    </div>
+    <div class="nobar">no bar</div>
+  </article>
+  <div class="book">
+    <strong>11 MORE STUBS</strong>
+    <div class="seats" aria-label="11 more waiting"><span>02</span><span>03</span><span>04</span><span>05</span><span>06</span><span>07</span><span>08</span><span>09</span><span>10</span><span>11</span><span>12</span></div>
+  </div>
+</div>
+</body>
+</html>

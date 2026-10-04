@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>think-tank — swiss</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin:0; background:#efefef; color:#111; }
+  body { font: 15px/1.3 Helvetica, "Helvetica Neue", Arial, sans-serif; padding: 40px 16px 72px; }
+  .sheet { width:1100px; max-width:100%; margin:0 auto; background:#fff; padding: 28px 36px 48px; }
+  header { display:grid; grid-template-columns: 1fr auto; align-items:end; border-bottom: 8px solid #111; padding-bottom:10px; }
+  h1 { margin:0; font-size:18px; font-weight:700; letter-spacing:-.03em; }
+  h1:before { content:""; display:inline-block; width:14px; height:14px; background:#e10600; margin-right:8px; vertical-align:-1px; }
+  .count { font-size:42px; font-weight:700; letter-spacing:-.04em; line-height:.8; }
+  .count small { display:block; font-size:11px; font-weight:500; letter-spacing:.14em; text-transform:uppercase; }
+  .tools { display:flex; flex-wrap:wrap; gap:8px 18px; align-items:center; padding:16px 0 8px; font-size:12px; letter-spacing:.04em; text-transform:uppercase; }
+  .tools input, .tools select, .tools button { font: inherit; text-transform:uppercase; border:none; border-bottom:1px solid #111; background:transparent; padding:4px 0; color:#111; }
+  .tools input { width:160px; text-transform:none; letter-spacing:0; }
+  .tools button { cursor:pointer; }
+  .tools a { color:#e10600; text-decoration:none; }
+  .tools .sp { flex-basis:100%; height:0; }
+  .group { display:grid; grid-template-columns: 160px 1fr; gap: 0 28px; margin-top:36px; }
+  .glabel { font-size:12px; letter-spacing:.16em; text-transform:uppercase; padding-top:6px; }
+  .glabel b { display:block; font-size:64px; letter-spacing:-.06em; line-height:.85; color:#e10600; margin-top:6px; }
+  .item { display:grid; grid-template-columns: 72px 1fr 160px; gap:12px; align-items:center; padding:18px 0; border-top:1px solid #111; }
+  .id { font-size:12px; letter-spacing:.08em; }
+  .ttl { font-size:32px; font-weight:700; letter-spacing:-.03em; margin:0; }
+  .sub { font-size:12px; letter-spacing:.08em; text-transform:uppercase; margin:4px 0 0; color:#444; }
+  .meter { height:10px; background:#eee; position:relative; }
+  .meter i { display:block; height:100%; background:#e10600; }
+  .frac { margin-top:6px; font-variant-numeric:tabular-nums; font-size:13px; font-weight:700; }
+  .none { color:#bbb; font-size:22px; font-weight:700; }
+  .nest { margin-left:72px; background:#fafafa; }
+  .nest .item { border-top:1px solid #ddd; padding-left:16px; }
+  .nest .ttl { font-size:22px; }
+  .rest { display:flex; gap:8px; flex-wrap:wrap; padding:14px 0 0; }
+  .rest span { min-width:64px; border-top:4px solid #e10600; padding-top:6px; font-size:11px; letter-spacing:.08em; text-transform:uppercase; }
+</style>
+</head>
+<body>
+<div class="sheet">
+  <header>
+    <h1>think-tank</h1>
+    <div class="count">15<small>issues</small></div>
+  </header>
+  <div class="tools">
+    <input placeholder="New issue" aria-label="New issue">
+    <select aria-label="State"><option>todo</option><option>backlog</option></select>
+    <button type="button">Add</button>
+    <span class="sp"></span>
+    <select aria-label="All labels"><option>All labels</option></select>
+    <label>archived <input type="checkbox"></label>
+    <button type="button">Agents 0</button>
+    <button type="button">Cancelled</button>
+    <a href="#">API(AI)</a>
+    <a href="#">OpenAPI</a>
+    <button type="button">Refresh</button>
+  </div>
+
+  <section class="group">
+    <div class="glabel">In progress<b>3</b></div>
+    <div>
+      <div class="item">
+        <div class="id">BD14</div>
+        <div>
+          <h2 class="ttl">보드 밀도</h2>
+          <p class="sub">In progress · parent</p>
+        </div>
+        <div>
+          <div class="meter" aria-label="1 of 4"><i style="width:25%"></i></div>
+          <div class="frac">1/4</div>
+        </div>
+      </div>
+      <div class="nest">
+        <div class="item">
+          <div class="id">RH12</div>
+          <div>
+            <h2 class="ttl">행 높이</h2>
+            <p class="sub">In progress · nested</p>
+          </div>
+          <div>
+            <div class="meter" aria-label="1 of 2"><i style="width:50%"></i></div>
+            <div class="frac">1/2</div>
+          </div>
+        </div>
+      </div>
+      <div class="item">
+        <div class="id">CC00</div>
+        <div>
+          <h2 class="ttl">보드 카드 색</h2>
+          <p class="sub">In progress</p>
+        </div>
+        <div class="none" title="no children">—</div>
+      </div>
+    </div>
+  </section>
+
+  <section class="group">
+    <div class="glabel">Waiting<b>12</b></div>
+    <div>
+      <div class="item">
+        <div class="id">DP09</div>
+        <div>
+          <h2 class="ttl">배포 체크리스트</h2>
+          <p class="sub">Waiting · todo</p>
+        </div>
+        <div class="none" title="no children">—</div>
+      </div>
+      <p class="sub" style="padding:18px 0 0; letter-spacing:.14em">+ 11 more</p>
+    </div>
+  </section>
+</div>
+</body>
+</html>

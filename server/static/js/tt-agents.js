@@ -47,8 +47,8 @@ function renderAgents() {
   }).join("") || "<p style='color:var(--dim)'>활성 agent 없음</p>";
   p.innerHTML = `<b>agents — 라이브</b>
     <div style="margin:4px 0 6px">${live}</div>
-    ${legacyRows ? `<div style="margin:0 0 8px;padding:4px 8px;background:var(--panel);border-radius:5px">${legacyRows}</div>` : ""}
-    <hr style="border:none;border-top:1px dashed var(--line);margin:10px 0">
+    ${legacyRows ? `<div style="margin:0 0 8px;padding:4px 8px;background:var(--panel);border-radius:0;border:2px solid var(--line)">${legacyRows}</div>` : ""}
+    <hr style="border:none;border-top:2px solid var(--line);margin:10px 0">
     <b>등록 agent</b> <small style="color:var(--dim)">(webhook hook 대상)</small>
     ${agents.map(a=>`<div class="cmt">
       <small>${esc(a.name)} → <a href="${esc(a.base_url)}" style="color:var(--acc)" target="_blank" rel="noopener">${esc(a.base_url)}</a> ${a.secret?"🔑":""} ${a.enabled?'<span style="color:var(--done)">on</span>':'<span style="color:var(--warn)">off</span>'}</small><br>

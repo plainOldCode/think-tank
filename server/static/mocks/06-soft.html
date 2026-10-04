@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>think-tank — soft</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin:0; background:#efe4d6; color:#3a2e28; }
+  body { font: 16px/1.4 "Avenir Next", "Segoe UI", sans-serif; padding:32px 16px 64px; }
+  .sheet { width:1100px; max-width:100%; margin:0 auto; }
+  header { display:flex; justify-content:space-between; align-items:center; margin-bottom:14px; }
+  h1 { margin:0; font-size:32px; font-weight:650; letter-spacing:-.03em; }
+  .pill { background:#fffaf5; border-radius:999px; padding:8px 14px; box-shadow: 0 8px 24px rgba(90,50,30,.08); font-weight:650; }
+  .tools { display:flex; flex-wrap:wrap; gap:8px; align-items:center; background:#fffaf5; border-radius:16px; padding:12px; box-shadow: 0 10px 30px rgba(90,50,30,.08); margin-bottom:22px; }
+  .tools input, .tools select, .tools button { font: inherit; color:#3a2e28; background:#f6efe6; border:none; border-radius:999px; padding:8px 12px; }
+  .tools input { width:170px; }
+  .tools button { cursor:pointer; background:#c46a4a; color:#fffaf5; }
+  .tools button.ghost { background:#f6efe6; color:#3a2e28; }
+  .tools a { color:#c46a4a; font-weight:650; text-decoration:none; padding:0 6px; }
+  .group { margin-top:8px; }
+  .glabel { display:flex; align-items:center; gap:10px; margin:18px 4px 10px; font-weight:700; letter-spacing:.04em; }
+  .glabel .n { background:#c46a4a; color:#fffaf5; border-radius:999px; min-width:28px; text-align:center; padding:2px 8px; font-size:13px; }
+  .card { background:#fffaf5; border-radius:16px; padding:16px 18px; box-shadow: 0 10px 30px rgba(90,50,30,.08); margin:10px 0; }
+  .id { font-size:12px; letter-spacing:.12em; text-transform:uppercase; color:#8a7368; font-weight:700; }
+  h2 { margin:4px 0; font-size:26px; letter-spacing:-.02em; }
+  .state { margin:0; color:#6d584e; }
+  .meter { display:flex; align-items:center; gap:10px; margin-top:12px; }
+  .track { flex:1; height:14px; background:#f0e2d4; border-radius:999px; overflow:hidden; }
+  .track b { display:block; height:100%; background:#c46a4a; border-radius:999px; }
+  .meter em { font-style:normal; font-variant-numeric:tabular-nums; font-weight:700; }
+  .nest { margin-left:28px; }
+  .chip { display:inline-block; background:#f6efe6; color:#8a7368; border-radius:999px; padding:6px 10px; font-size:12px; font-weight:700; letter-spacing:.06em; text-transform:uppercase; }
+  .more { display:flex; gap:8px; flex-wrap:wrap; padding:4px 4px 0; }
+  .more span { background:#fffaf5; border-radius:16px; padding:10px 12px; box-shadow: 0 8px 20px rgba(90,50,30,.06); font-size:12px; font-weight:700; letter-spacing:.06em; color:#8a7368; }
+</style>
+</head>
+<body>
+<div class="sheet">
+  <header>
+    <h1>think-tank</h1>
+    <div class="pill">15 issues</div>
+  </header>
+  <div class="tools">
+    <input placeholder="New issue" aria-label="New issue">
+    <select aria-label="State"><option>todo</option><option>backlog</option></select>
+    <button type="button">Add</button>
+    <span style="flex-basis:100%; height:0"></span>
+    <select aria-label="All labels"><option>All labels</option></select>
+    <label style="padding:0 6px">archived <input type="checkbox"></label>
+    <button type="button" class="ghost">Agents 0</button>
+    <button type="button" class="ghost">Cancelled</button>
+    <a href="#">API(AI)</a>
+    <a href="#">OpenAPI</a>
+    <button type="button" class="ghost">Refresh</button>
+  </div>
+
+  <section class="group">
+    <div class="glabel">In progress <span class="n">3</span></div>
+    <article class="card">
+      <div class="id">BD14 · parent</div>
+      <h2>보드 밀도</h2>
+      <p class="state">In progress</p>
+      <div class="meter" aria-label="1 of 4"><div class="track"><b style="width:25%"></b></div><em>1/4</em></div>
+      <article class="card nest">
+        <div class="id">RH12 · nested</div>
+        <h2>행 높이</h2>
+        <p class="state">In progress</p>
+        <div class="meter" aria-label="1 of 2"><div class="track"><b style="width:50%"></b></div><em>1/2</em></div>
+      </article>
+    </article>
+    <article class="card">
+      <div class="id">CC00</div>
+      <h2>보드 카드 색</h2>
+      <p class="state">In progress</p>
+      <p><span class="chip">no bar</span></p>
+    </article>
+  </section>
+
+  <section class="group">
+    <div class="glabel">Waiting <span class="n">12</span></div>
+    <article class="card">
+      <div class="id">DP09 · todo</div>
+      <h2>배포 체크리스트</h2>
+      <p class="state">Waiting</p>
+    </article>
+    <p class="state" style="margin:8px 6px 0">And 11 more waiting.</p>
+  </section>
+</div>
+</body>
+</html>

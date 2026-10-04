@@ -40,7 +40,7 @@ async function pickFromSheet(aid){
 }
 function showDispatch(id, aid){
   openSheet(`<h4>${esc(aid)} 에게 지시 (dispatch · 상태는 상대가 claim 시에만 이동)</h4>
-    <textarea id="dmsg" rows="3" style="width:100%;margin-top:8px;background:var(--bg);border:1px solid var(--line);border-radius:9px;color:var(--tx);padding:12px;font-size:14.5px">이 카드를 진행해주세요</textarea>
+    <textarea id="dmsg" rows="3" style="width:100%;margin-top:8px;background:var(--bg);border:2px solid var(--line);border-radius:0;color:var(--tx);padding:12px;font-size:14.5px">이 카드를 진행해주세요</textarea>
     <button class="go" onclick="sendDispatch('${esc(id)}','${esc(aid)}')">➤ dispatch 발송</button>
     <button class="back" style="margin-top:8px;width:100%" onclick="startMenu('${esc(id)}')">← 뒤로</button>`);
 }
@@ -60,7 +60,7 @@ async function pass(id, version){
   SID = id;
   let html = `<h4>완료 통과 근거 한 줄 (서버 저장·감사용)</h4>`;
   if (!ME) html += nameField();
-  html += `<input id="pev" placeholder="예: 재실행 통과, 스모크 green" style="width:100%;margin-top:8px;background:var(--bg);border:1px solid var(--line);border-radius:9px;color:var(--tx);padding:12px;font-size:14.5px">
+  html += `<input id="pev" placeholder="예: 재실행 통과, 스모크 green" style="width:100%;margin-top:8px;background:var(--bg);border:2px solid var(--line);border-radius:0;color:var(--tx);padding:12px;font-size:14.5px">
     <button class="ok" onclick="passConfirm(${version})">✓ done 처리</button>
     <button class="back" style="margin-top:8px;width:100%" onclick="closeSheet()">취소</button>`;
   openSheet(html);

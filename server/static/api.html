@@ -6,23 +6,27 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="icon" href="/favicon.ico">
 <style>
-  :root { --bg:#101418; --panel:#1a2026; --line:#2a333c; --fg:#d8dee4; --dim:#8b98a5; --acc:#58a6ff; }
-  body { margin:0 auto; max-width:860px; padding:24px 16px 80px; background:var(--bg); color:var(--fg);
-         font:14px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace; word-break:keep-all; }
-  h1,h2,h3 { color:var(--acc); margin:1.6em 0 .5em; }
-  h1 { font-size:20px; border-bottom:1px solid var(--line); padding-bottom:8px; }
-  h2 { font-size:16px; } h3 { font-size:14px; }
-  code, pre { background:var(--panel); border:1px solid var(--line); border-radius:5px; font:inherit; }
-  code { padding:1px 4px; }
+  @font-face { font-family:"Galmuri Mono"; src:url("/fonts/GalmuriMono11.woff2") format("woff2"); font-weight:400; font-style:normal; font-display:swap; }
+  :root { --bg:#f7f6f3; --panel:#ffffff; --line:#d4cfc6; --fg:#141414; --dim:#6d6d68; --acc:#141414; --warn:#141414;
+    --pixel:"Galmuri Mono", ui-monospace, "Courier New", monospace;
+    --serif:var(--pixel); --gothic:var(--pixel); --mono:var(--pixel); }
+  body { margin:0 auto; max-width:740px; padding:28px 22px 80px; background:var(--bg); color:var(--fg);
+         font:14px/1.55 var(--pixel); word-break:keep-all; -webkit-font-smoothing:none; }
+  h1,h2,h3 { color:var(--fg); font-weight:400; letter-spacing:0; margin:1.5em 0 .4em; font-family:var(--pixel); }
+  h1 { font-size:22px; border-bottom:4px solid #141414; padding-bottom:8px; }
+  h2 { font-size:16px; border-bottom:2px solid #d4cfc6; padding-bottom:4px; } h3 { font-size:15px; }
+  code, pre { background:var(--panel); border:2px solid var(--line); border-radius:0; font:12.5px/1.5 var(--pixel); }
+  code { padding:0 4px; }
   pre { padding:10px 12px; overflow-x:auto; white-space:pre; }
   pre code { background:none; border:none; padding:0; }
-  table { border-collapse:collapse; width:100%; margin:8px 0; font-size:12.5px; }
-  th,td { border:1px solid var(--line); padding:5px 8px; text-align:left; vertical-align:top; }
-  th { background:var(--panel); }
-  a { color:var(--acc); }
-  .bar { display:flex; gap:10px; align-items:center; margin-bottom:12px; color:var(--dim); }
-  .bar b { color:var(--acc); }
-  strong { color:#fff; }
+  table { border-collapse:collapse; width:100%; margin:10px 0 16px; font:13px/1.45 var(--pixel); }
+  th,td { border-bottom:2px solid var(--line); padding:6px 8px; text-align:left; vertical-align:top; }
+  th { border-bottom:2px solid #141414; font-weight:400; }
+  a { color:var(--fg); }
+  .bar { display:flex; gap:12px; align-items:baseline; margin-bottom:4px; color:var(--dim); font:13px/1.4 var(--pixel); }
+  .bar b { color:var(--fg); font-family:var(--pixel); font-size:16px; font-weight:400; }
+  .bar b::before { content:""; display:inline-block; width:10px; height:10px; background:#c23b22; border:2px solid #141414; margin-right:6px; transform:translateY(-1px); }
+  strong { font-weight:600; }
 </style>
 </head>
 <body>
