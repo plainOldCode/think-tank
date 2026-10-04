@@ -87,6 +87,49 @@ def _review_grace_min():
         return 20
 
 
+REVIEW_LINE = re.compile(r"^review:\s*(approve|request-changes)\b", re.I)
+PR_SHA = re.compile(r"PR#(\d+)@([0-9a-fA-F]{8})")
+
+
+def review_verdict(comments, reviewer, pr_no, sha8):
+    """현재 PR head(pr_no@sha8)에 유효한 리뷰어 판정. 없거나 stale이면 None.
+
+    리뷰어 코멘트만 인정(author 일치), 'PR#<n>@<sha8>' 불일치는 stale. 최신 판정 우선.
+    """
+    verdict = None
+    for c in comments or []:
+        if c.get("author") != reviewer:
+            continue
+        body = c.get("body") or ""
+        m = PR_SHA.search(body)
+        if not m or int(m.group(1)) != pr_no or m.group(2).lower() != (sha8 or "").lower():
+            continue
+        v = REVIEW_LINE.search(body.strip())
+        if v:
+            verdict = v.group(1).lower()
+    return verdict
+
+
+def _probe_marker(i, marker):
+    return any(marker in (c.get("body") or "") for c in (i.get("comments") or [])
+               if c.get("author") == "probe")
+
+
+def hydrate_reviews(url, snap):
+    """게이트 판정용 코멘트 취득 — open PR에 묶인 후보 카드 중 코멘트가 아직 없는 것만.
+
+    snapshot은 review 카드 코멘트만 취득하므로(in_progress 등 병합 후보 누락),
+    run_once에서 decide 전에 채운다(판정 dedup 마커도 같은 코멘트를 읽음).
+    """
+    cand = {pr_card_id(p) for p in (snap.get("prs") or []) if pr_card_id(p)}
+    for i in snap.get("issues") or []:
+        if i["id"] in cand and "comments" not in i:
+            try:
+                i["comments"] = api(url, f"/issues/{i['id']}").get("comments") or []
+            except Exception:
+                i["comments"] = []
+
+
 def _age_min(now, updated):
     """iso(±TZ) 두 시각 차(분). 해석 불가 시 None(코멘트 보류)."""
     from datetime import datetime
@@ -155,7 +198,10 @@ def decide(snap):
                         "reason": reason})
 
     # ⓪(사실상 우선) probe: CI green PR + 카드 연결/수령/계약 검증 → gh pr merge
+    # 리뷰 게이트(N0AN, docs/review-gate.md): TT_REVIEW_AGENT 설정 시 승인 코멘트 필요.
     by_id = {i["id"]: i for i in issues}
+    reviewer = os.environ.get("TT_REVIEW_AGENT", "").strip()
+    gated = set()  # 리뷰 진행 중 카드 — ⓪b needs-merge 소음 제외
     for p in snap.get("prs") or []:
         iid = pr_card_id(p)
         i = by_id.get(iid) if iid else None
@@ -174,6 +220,31 @@ def decide(snap):
         if want != pr_repo:
             continue
         if ci_passed(p):
+            if reviewer:
+                gated.add(iid)
+                sha8 = (p.get("head_sha") or "")[:8]
+                verdict = review_verdict(i.get("comments"), reviewer, p["number"], sha8)
+                if verdict == "request-changes":
+                    marker = f"[review-fix #{p['number']}/{sha8}]"
+                    if not _probe_marker(i, marker):
+                        actions.append({"agent": "probe", "issue": iid, "action": "review-fix",
+                                        "pr": p["number"], "repo": pr_repo,
+                                        "branch": p.get("branch", ""),
+                                        "head_sha": p.get("head_sha", ""), "marker": marker,
+                                        "reason": f"PR#{p['number']} 리뷰 request-changes — "
+                                                  "review 반납+수정 위임"})
+                    continue
+                if verdict is None:  # 미리뷰 또는 stale — (재)요청
+                    marker = f"[review-req #{p['number']}/{sha8}]"
+                    if not _probe_marker(i, marker):
+                        actions.append({"agent": "probe", "issue": iid, "action": "review-request",
+                                        "pr": p["number"], "repo": pr_repo,
+                                        "branch": p.get("branch", ""),
+                                        "head_sha": p.get("head_sha", ""), "marker": marker,
+                                        "reason": f"PR#{p['number']} CI green — 리뷰 요청 → {reviewer}"})
+                    continue
+                # approve — 아래 merge로 통과
+                gated.discard(iid)
             actions.append({"agent": "probe", "issue": iid, "action": "merge", "pr": p["number"],
                             "head_sha": p.get("head_sha", ""),
                             "repo": pr_repo,
@@ -181,7 +252,8 @@ def decide(snap):
 
     # ⓪b review 카드 중 병합 불가 후보 — 사람 판단 요청 코멘트 (M3R7M0ZR-YF99).
     # merge 후보(⓪)에 없는 review 카드만. 회차 마커 '[needs-merge a<n>'로 회차당 1회.
-    merged_targets = {a["issue"] for a in actions if a["action"] == "merge"}
+    # 리뷰 게이트로 보류 중인 카드(gated)도 제외 — review-request/review-fix가 담당.
+    merged_targets = {a["issue"] for a in actions if a["action"] == "merge"} | gated
     for i in issues:
         if i["state"] != "review" or i["id"] in merged_targets:
             continue
@@ -442,6 +514,60 @@ def execute(url, act):
             {"author": "probe", "body": f"{marker} PR#{act['pr']} CI 실패 — {agent}({target}) "
                                         "review+수정 위임"})
         return
+    if kind == "review-request":
+        # 리뷰 게이트 1단계 — 리뷰어 에이전트에 리뷰 요청 (docs/review-gate.md)
+        cur = api(url, f"/issues/{act['issue']}")
+        if any(act["marker"] in (c.get("body") or "") for c in (cur.get("comments") or [])
+               if c.get("author") == "probe"):
+            return  # 경합 방어 — decide 판정 후 재확인
+        agent = os.environ.get("TT_REVIEW_AGENT", "").strip() or "kanban-adapter"
+        sha8 = (act.get("head_sha") or "")[:8]
+        msg = (f"[auto review] PR #{act['pr']} ({act.get('repo')}) @ {sha8} — 카드 {act['issue']} "
+               "리뷰 요청. 리뷰 방식: git diff 기준 변경 파일 통독 + 변경 심볼 grep으로 호출자 확인"
+               "(공용 모듈은 필수). 판정 기준: 계약 v2.1 준수·시크릿 노출·테스트 적절성·놓친 엣지. "
+               "결과 제출: GitHub PR 코멘트와 TT 카드 코멘트 양쪽(docs/review-gate.md 형식) — "
+               f"첫 줄 'review: approve' 또는 'review: request-changes', 둘째 줄 'PR#{act['pr']}@{sha8}'.")
+        try:
+            api(url, f"/issues/{act['issue']}/dispatch", "POST", {"agent": agent, "message": msg})
+        except Exception as e:
+            api(url, f"/issues/{act['issue']}/comments", "POST",
+                {"author": "probe", "body": f"{act['marker']} 리뷰 dispatch 실패({str(e)[:80]}) — "
+                                            "사람 판단 대기"})
+            return
+        api(url, f"/issues/{act['issue']}/comments", "POST",
+            {"author": "probe", "body": f"{act['marker']} PR#{act['pr']} CI green — "
+                                        f"리뷰 요청 → {agent}"})
+        return
+    if kind == "review-fix":
+        # 리뷰 게이트 2단계 — request-changes: 카드 review 반납 + 배정 에이전트에 수정 위임
+        cur = api(url, f"/issues/{act['issue']}")
+        if any(act["marker"] in (c.get("body") or "") for c in (cur.get("comments") or [])
+               if c.get("author") == "probe"):
+            return
+        assignee = cur.get("assignee") or ""
+        if assignee:
+            msg = (f"[auto review-fix] PR #{act['pr']} 리뷰 request-changes — 리뷰 코멘트(PR/카드)를 "
+                   f"읽고 같은 브랜치 {act.get('branch', '')} 위에서 수정 커밋. push하면 probe가 재리뷰 요청.")
+            try:
+                api(url, f"/issues/{act['issue']}/dispatch", "POST",
+                    {"agent": assignee, "message": msg})
+            except Exception as e:
+                api(url, f"/issues/{act['issue']}/comments", "POST",
+                    {"author": "probe", "body": f"{act['marker']} 수정 dispatch 실패({str(e)[:80]}) — "
+                                                "사람 판단 대기"})
+        else:
+            api(url, f"/issues/{act['issue']}/comments", "POST",
+                {"author": "probe", "body": f"{act['marker']} 리뷰 request-changes — "
+                                            "배정 에이전트 없음, 사람 판단 대기"})
+        try:
+            api(url, f"/issues/{act['issue']}", "PATCH",
+                {"version": get_version(url, act["issue"]), "state": "review"})
+        except Exception:
+            pass
+        api(url, f"/issues/{act['issue']}/comments", "POST",
+            {"author": "probe", "body": f"{act['marker']} PR#{act['pr']} request-changes — "
+                                        "review 반납+수정 위임"})
+        return
     v = get_version(url, act["issue"])
     if kind == "review-note":
         cur = api(url, f"/issues/{act['issue']}")
@@ -523,6 +649,8 @@ def run_once(url, dry=False):
     for r in collect_repos(snap.get("issues") or []):
         repos.append(r)
     snap["prs"] = collect_prs(repos)
+    if os.getenv("TT_REVIEW_AGENT", "").strip():
+        hydrate_reviews(url, snap)
     acts = decide(snap)
     for a in acts:
         print(time.strftime("%F %T"), a, flush=True)

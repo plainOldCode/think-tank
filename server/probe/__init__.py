@@ -6,5 +6,5 @@ standalone 모드: dispatchd.py shim → main() (launchd 전환 기간 하위호
 from .core import (  # noqa: F401
     PULL_HINT, REPO, REPO_CARDS, api, card_from_branch, card_repo, ci_passed,
     collect_prs, collect_repos, decide, execute, gh_exec, gh_json, get_version,
-    loop, main, run_once, snapshot,
+    hydrate_reviews, loop, main, review_verdict, run_once, snapshot,
 )
