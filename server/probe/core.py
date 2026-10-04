@@ -438,10 +438,12 @@ def execute(url, act):
     if kind == "release-reviewer":
         cur = api(url, f"/issues/{act['issue']}")
         if cur.get("reviewer") == act.get("reviewer"):
-            # reviewer="" → 서버에서 None+lease 해제. expected_version으로 경합 방어
-            # (t_501e6ec3: 판정-집행 경합 — collect 시점 version과 현재 다르면 409 후 다음 라운드 재시도)
-            api(url, f"/issues/{act['issue']}", "PATCH",
-                {"expected_version": cur["version"], "reviewer": ""})
+            # reviewer만 지우고, lease는 리뷰어 본인 것이 확실할 때만 —
+            # 재작업자가 새 lease를 잡은 뒤 오래된 반납 액션이 도착해도 보존(R5).
+            fields = {"reviewer": "", "expected_version": cur["version"]}
+            if cur.get("lease_by") == act.get("reviewer"):
+                fields.update({"lease_by": "", "lease_expires": None})
+            api(url, f"/issues/{act['issue']}", "PATCH", fields)
         return
     if kind == "merge":
         repo = act.get("repo") or REPO
@@ -542,7 +544,9 @@ def execute(url, act):
         sha8 = (act.get("head_sha") or "")[:8]
         repo = act.get("repo") or "plainOldCode/think-tank"
         msg = (f"[auto review] PR #{act['pr']} ({repo}) @ {sha8} — 카드 {act['issue']} "
-               f"리뷰 요청. repo는 https://github.com/{repo} — 기존 로컬 clone 재사용 우선"
+               f"리뷰 요청. 먼저 TT API로 POST /issues/{act['issue']}/claim-review "
+               f"({{\"agent\": \"{agent}\"}})를 호출해 리뷰어 점유를 표기한 뒤 진행. "
+               f"repo는 https://github.com/{repo} — 기존 로컬 clone 재사용 우선"
                f"(없으면 clone), git fetch origin pull/{act['pr']}/head 후 "
                f"git diff origin/main...FETCH_HEAD(로컬 ref를 만들지 않으니 재리뷰에도 안전). "
                "리뷰 방식: 변경 파일 통독 + 변경 심볼 grep으로 호출자 확인(공용 모듈은 필수). "

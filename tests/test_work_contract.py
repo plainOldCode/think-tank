@@ -644,3 +644,64 @@ def test_리뷰_dispatch는_리뷰_계약을_전달한다(client, monkeypatch):
         "result": "passed", "limitations": ""}})
     r = client.post(f"/issues/{issue['id']}/claim-review", json={"agent": "codex"}).json()
     assert r["work_contract"] == service.REVIEW_CONTRACT
+
+
+def test_리뷰어_재claim은_한도_제외되고_타인은_한도_적용(client, monkeypatch):
+    """R4 — 같은 카드 재claim(refresh)은 현재 카드 lease를 한도에서 제외."""
+    monkeypatch.setenv("TT_MAX_LEASES", "1")
+    issue = client.post("/issues", json={"title": "한도"}).json()
+    claimed = client.post(f"/issues/{issue['id']}/claim", json={"agent": "worker"}).json()
+    client.patch(f"/issues/{issue['id']}", json={"state": "done", "completion_report": {
+        "contract_version": claimed["work_contract"]["version"], "attempt": 1, "method": "planned",
+        "design": {"criteria": "c", "verification": "v"},
+        "implementation": {"summary": "s", "commands": "cc"},
+        "verification": {"commands": "ccc", "evidence": "e"},
+        "result": "passed", "limitations": ""}})
+    assert client.post(f"/issues/{issue['id']}/claim-review", json={"agent": "codex"}).status_code == 200
+    # 재claim(갱신) — 자기 lease가 한도 1에 걸려도 본인 카드라 허용
+    assert client.post(f"/issues/{issue['id']}/claim-review", json={"agent": "codex"}).status_code == 200
+    # 타 에이전트가 별도 카드를 이미 점유 중이면 다른 리뷰 카드 선점은 한도로 거부
+    other = client.post("/issues", json={"title": "다른 카드"}).json()
+    client.post(f"/issues/{other['id']}/claim", json={"agent": "claude"})
+    other2 = client.post("/issues", json={"title": "다른 리뷰"}).json()
+    o2 = client.post(f"/issues/{other2['id']}/claim", json={"agent": "worker"}).json()
+    client.patch(f"/issues/{other2['id']}", json={"state": "done", "completion_report": {
+        "contract_version": o2["work_contract"]["version"], "attempt": 1, "method": "planned",
+        "design": {"criteria": "c", "verification": "v"},
+        "implementation": {"summary": "s", "commands": "cc"},
+        "verification": {"commands": "ccc", "evidence": "e"},
+        "result": "passed", "limitations": ""}})
+    r = client.post(f"/issues/{other2['id']}/claim-review", json={"agent": "claude"})
+    assert r.status_code == 409 and "lease limit" in r.json()["detail"]
+
+
+def test_stale_반납은_재작업자_lease를_보존한다(client, monkeypatch):
+    """R5 — release-reviewer 실행 시 lease_by가 다른 에이전트(재작업자)면 lease를 건드리지 않는다."""
+    import probe.core
+
+    issue = client.post("/issues", json={"title": "stale 반납"}).json()
+    claimed = client.post(f"/issues/{issue['id']}/claim", json={"agent": "worker"}).json()
+    client.patch(f"/issues/{issue['id']}", json={"state": "done", "completion_report": {
+        "contract_version": claimed["work_contract"]["version"], "attempt": 1, "method": "planned",
+        "design": {"criteria": "c", "verification": "v"},
+        "implementation": {"summary": "s", "commands": "cc"},
+        "verification": {"commands": "ccc", "evidence": "e"},
+        "result": "passed", "limitations": ""}})
+    body = client.post(f"/issues/{issue['id']}/claim-review", json={"agent": "codex"}).json()
+    # 재작업자가 lease를 넘겨받은 상태(리뷰어 claim은 아직 미반납 — stale 액션 도착 시나리오)
+    import sqlite3
+    con = sqlite3.connect(client.app.state.db_path)
+    con.execute("UPDATE issues SET lease_by='worker', lease_expires='2099-01-01T00:00:00+00:00' WHERE id=?", (issue["id"],))
+    con.commit(); con.close()
+
+    def fake_api(url, path, method="GET", payload=None):
+        if method == "GET":
+            return client.get(path).json()
+        return client.request(method, path, json=payload).json()
+
+    monkeypatch.setattr(probe.core, "api", fake_api)
+    probe.core.execute("u", {"issue": issue["id"], "action": "release-reviewer", "reviewer": "codex"})
+    d = client.get(f"/issues/{issue['id']}").json()
+    assert d["reviewer"] is None          # 리뷰어 점유는 해제
+    assert d["lease_by"] == "worker"      # 재작업자 lease 보존
+    assert d["assignee"] == "worker"

@@ -131,8 +131,9 @@ def claim_review(issue_id: str, p: ReviewClaimIn, ctx: Ctx = Depends(get_ctx)):
             # R3: lease가 만료된 점유는 인계 가능 — 리뷰어 교체·장애 인계 차단 방지
             if (row["lease_expires"] or "") > dbmod.now():
                 raise HTTPException(409, f"already claimed by {row['reviewer']}")
-        held = c.execute("SELECT COUNT(*) n FROM issues WHERE lease_by=? AND lease_expires>?",
-                         (p.agent, dbmod.now())).fetchone()["n"]
+        # R4: 현재 카드의 기존 리뷰어 lease는 제외 — 같은 카드 재claim이 한도로 거부되지 않게
+        held = c.execute("SELECT COUNT(*) n FROM issues WHERE lease_by=? AND lease_expires>? AND id<>?",
+                         (p.agent, dbmod.now(), issue_id)).fetchone()["n"]
         if held >= config.max_leases():
             raise HTTPException(409, f"lease limit: active leases={held} (max={config.max_leases()})")
         service.bump(c, issue_id, {"reviewer": p.agent, "lease_by": p.agent,
@@ -304,8 +305,9 @@ def patch_issue(issue_id: str, p: IssuePatch, ctx: Ctx = Depends(get_ctx)):
             if p.assignee == "":
                 fields.update({"lease_by": "", "lease_expires": None})
         if p.reviewer is not None:
+            # lease는 probe가 조건부로 명시(R5) — reviewer 반납이 재작업자 lease를 덮지 않게 분리
             fields["reviewer"] = p.reviewer or None
-            if p.reviewer == "":
+            if p.reviewer == "" and row["lease_by"] == (row["reviewer"] or ""):
                 fields.update({"lease_by": "", "lease_expires": None})
         if p.archived is not None:
             fields["archived"] = 1 if p.archived else 0
