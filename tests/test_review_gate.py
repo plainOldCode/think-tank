@@ -22,7 +22,7 @@ def gate_on(monkeypatch):
 
 
 def _issue(state="review", iid="M428RMBY-XC0K", attempt=1, comments=(), assignee="a@t"):
-    return {"id": iid, "state": state, "assignee": assignee, "lease_expires": None,
+    return {"id": iid, "state": state, "assignee": assignee, "version": 3, "lease_expires": None,
             "labels": [], "priority": None, "execution_attempt": attempt,
             "dispatches": 1, "release_ready": False, "waiting_for": None,
             "work_contract": {"version": "v2"}, "comments": list(comments),
@@ -278,4 +278,18 @@ def test_stale_반납_액션은_최신판정이_다르면_폐기된다(gate_on, 
     # 액션은 구 판정(bbbbbbbb) 기준 — 최신 판정(cccccccc)과 불일치 → 폐기
     probe.core.execute("http://x", {"issue": "X", "action": "release-reviewer",
                                     "reviewer": REV, "head_sha": "b" * 40})
+    assert not [s for s in sent if s[1] == "PATCH"]
+
+
+def test_반납_액션은_decide이후_버전변화면_폐기된다(gate_on, monkeypatch):
+    # R5 변형 — 같은 판정 구간에서 리뷰어가 재claim(버전 bump)한 경우 stale 액션 스킵
+    sent = []
+    card = {"id": "X", "reviewer": REV, "assignee": "a@t", "version": 9,
+            "comments": [{"author": REV, "body": "review: approve\nPR#9@bbbbbbbb"}]}
+    monkeypatch.setattr(probe.core, "api",
+                        lambda url, path, method="GET", payload=None:
+                        sent.append((path, method, payload)) or card)
+    probe.core.execute("http://x", {"issue": "X", "action": "release-reviewer",
+                                    "reviewer": REV, "head_sha": "b" * 40,
+                                    "expected_version": 7})  # decide 시점 7 → 현재 9
     assert not [s for s in sent if s[1] == "PATCH"]

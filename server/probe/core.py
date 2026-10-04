@@ -234,6 +234,7 @@ def decide(snap):
                     # 리뷰어 claim 해제 — 판정 기록됐으면 점유 반납(review-fix 시 작업자 assignee 보존)
                     actions.append({"agent": "probe", "issue": iid, "action": "release-reviewer",
                                     "reviewer": i["reviewer"], "head_sha": p.get("head_sha", ""),
+                                    "expected_version": i["version"],
                                     "reason": "판정 기록 — 리뷰어 점유 반납"})
                 if verdict == "request-changes":
                     marker = f"[review-fix #{p['number']}/{sha8}]"
@@ -439,8 +440,11 @@ def execute(url, act):
     if kind == "release-reviewer":
         cur = api(url, f"/issues/{act['issue']}")
         if cur.get("reviewer") == act.get("reviewer"):
-            # R5: 이 판정이 이 PR의 최신 판정일 때만 반납 — 오래된 액션이 새 점유를 덮지 않게.
-            # (판정-판정 경합: 재리뷰로 새 sha 판정이 찍혔으면 이 액션은 폐기.)
+            # decide 이후 카드가 변했다면(재claim·코멘트 등) 이번 라운드 폐기 — 다음 라운드 재판정.
+            # R5: 같은 판정 구간에서 리뷰어가 재claim한 새 lease를 오래된 액션이 지우지 않게.
+            if act.get("expected_version") is not None and cur.get("version") != act["expected_version"]:
+                return
+            # R5: 이 판정이 이 PR의 최신 판정일 때만 반납 — 구 판정 액션 폐기.
             latest = ""
             for c in reversed(cur.get("comments") or []):
                 mm = re.search(r"review: (?:approve|request-changes)\s*\n?\s*PR#\d+@([0-9a-f]{8})",

@@ -195,7 +195,7 @@ def pull(p: ClaimIn, ctx: Ctx = Depends(get_ctx)):
             iid = cand["id"]
             if cand["state"] == "todo":
                 res = c.execute(
-                    "UPDATE issues SET state='in_progress', assignee=?, started_at=?, lease_by=?, lease_expires=?, "
+                    "UPDATE issues SET state='in_progress', assignee=?, reviewer=NULL, started_at=?, lease_by=?, lease_expires=?, "
                     "heartbeat_at=?, updated_at=?, work_contract=?, execution_attempt=execution_attempt+1, "
                     "version=version+1 WHERE id=? AND state='todo' AND assignee=''",
                     (p.agent, ts, p.agent, dbmod.future(p.safe_hours()), ts, ts,
