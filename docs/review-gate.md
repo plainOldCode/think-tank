@@ -12,8 +12,16 @@ CI green만으로 머지되던 경로에 **리뷰어 승인 조건**을 추가�
 | 역할 | 담당 | 비고 |
 |---|---|---|
 | 작성 에이전트 | 카드 claim 에이전트 | 브랜치 push, completion report |
-| 리뷰어 | hermes kanban triage (MoA: gpt-6.1-sol + astra + opus-5.5) | PR diff + repo context 리뷰 |
+| 리뷰어 | TT_REVIEW_AGENT로 선택 | fast path(codex/claude 직접 실행) 또는 심층(hermes kanban triage MoA) |
 | 후속 수정 에이전트 | **agent-agnostic** | context가 repo+PR 자체이므로 TT dispatch 표준 인터페이스만 지키면 누구든 |
+
+리뷰어 엔진:
+
+| 엔진 | 경로 | 특성 |
+|---|---|---|
+| codex | tt-runner 에이전트 `codex` (gpt-6.1-sol xhigh) | fast path — 수 분, 직접 실행 |
+| claude | tt-runner 에이전트 `claude` (opus-5.5 medium) | fast path — 교차 리뷰용 |
+| hermes kanban | tt-reviewer 수신기 → tt-review 보드 (triage MoA) | 심층 — DAG 분해, ~80분 실측 |
 
 ## 리뷰 코멘트 형식 (계약)
 
