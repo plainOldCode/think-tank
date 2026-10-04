@@ -82,9 +82,21 @@ review/todo/blocked/done/cancelled 전이 시 lease 자동 해제. 부모 done: 
 
 - todo→done 직접 전이 금지(수령 이력 필수). cron은 `require_label` 게이트로 `auto` 라벨 카드만 수령(agent당 활성 lease 2한도)
 - **done은 확인 경로만**: 유효한 v2 보고를 동반한 완료 제출(PATCH state=done)도 review에 정지(보고 보존). done 확정은 ① probe가 green PR 병합 후 verify ② 사람의 `tt verify`/`force_done`/`close` 라벨. agent의 done 직행은 없다(2026-09-30, #9)
-- 브랜치 규약 3-1: 코드 작업은 `tt/<카드ID>-<slug>` 브랜치 → GitHub PR → CI(pytest+smoke) green이면 probe(dispatchd)가 병합. 메인 직push 금지
+- 브랜치 규약 3-1: 코드 작업은 `tt/<카드ID>-<slug>` 브랜치 → GitHub PR → CI(pytest+smoke) green **+ 리뷰 승인**(게이트 on 시, 아래)이면 probe(dispatchd)가 병합. 메인 직push 금지
 - review 카드 병합 불가 판정(needs-merge 코멘트, 회차당 1회): PR 없음은 review 전이 후 유예(`TT_REVIEW_GRACE_MIN` 기본 20분) 경과 후, CI 진행중은 보류 후 30초 라운드 재확인, CI 실패는 즉시(2026-09-30, #10)
 - 계약 v2(3단계 설계/구현/검증 보고): `tt contract` 조회, claim 시 버전 고정(해시). 보고의 `reported`와 승인의 `approved` 구분 유지
+
+## 리뷰 게이트 (자동 리뷰)
+
+CI green PR이라도 리뷰 승인 판정이 없으면 probe가 병합하지 않는다(2026-10-04). 상세 규약은
+[docs/review-gate.md](docs/review-gate.md).
+
+- 활성화: 서버 env `TT_REVIEW_AGENT=<에이전트명>` (기본 off — 기존 동작 유지). 게이트는 **review 상태 카드만** 판정·병합한다 — 제출 전(작업 중) 카드의 PR은 이동 중 리뷰 낭비를 막으려고 대상에서 제외
+- 판정 기록: 리뷰어 에이전트가 TT 카드 코멘트로 첫 줄 `review: approve|request-changes`, 둘째 줄 `PR#<n>@<sha8>`. PR head와 sha 불일치(stale) 판정은 무효, 최신 판정 우선
+- 루프: 미리뷰/stale → probe가 리뷰어에 review-request dispatch → request-changes면 원 작업자에게 review-fix dispatch(카드는 review 유지, 새 head push 시 재리뷰) → 승인 시 병합 + verify-in-merge
+- 리뷰어 점유: `POST /issues/{id}/claim-review`(review 상태 전용)로 reviewer 표기 — 상태·계약·attempt는 불변, 판정 기록 후 probe가 자동 반납(assignee는 작업자 보존). `tt show`에 🔍reviewer 표기
+- 리뷰 계약: 리뷰 dispatch의 work_contract는 구현 계약 대신 `review-v1`(role: reviewer — "판정이 목적, 코드를 고치지 않는다")을 전달
+- 판정 게시 하베스터: 에이전트 샌드박스 승인 정책이 게시 명령을 막을 수 있으므로(실측), 러너가 run 완료 후 최종 메시지에서 판정 마커를 수확해 TT(리뷰어 author)+PR에 대행 게시한다 — 에이전트는 판정만, 게시는 코드
 
 ## 개발
 
