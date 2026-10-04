@@ -54,7 +54,7 @@ async function checkBuild(){
 }
 setInterval(checkBuild, 300000);
 
-const TT_THEMES = ["pixel", "newsprint", "terminal", "swiss", "ticket", "blueprint", "soft"];
+const TT_THEMES = ["pixel", "ink", "newsprint", "terminal", "swiss", "ticket", "blueprint", "soft"];
 function applyTheme(name, persist) {
   if (!TT_THEMES.includes(name)) name = "pixel";
   try {
@@ -69,7 +69,7 @@ function applyTheme(name, persist) {
     const sel = document.getElementById ? document.getElementById("theme") : (document.querySelector ? document.querySelector("#theme") : null);
     if (sel) sel.value = name;
     if (TT_EN && sel && sel.options) {
-      const enName = { pixel: "Pixel", newsprint: "Newsprint", terminal: "Terminal", swiss: "Swiss", ticket: "Ticket", blueprint: "Blueprint", soft: "Soft" };
+      const enName = { pixel: "Pixel", ink: "Ink", newsprint: "Newsprint", terminal: "Terminal", swiss: "Swiss", ticket: "Ticket", blueprint: "Blueprint", soft: "Soft" };
       for (let i = 0; i < sel.options.length; i++) {
         const opt = sel.options[i];
         if (enName[opt.value]) opt.textContent = enName[opt.value];

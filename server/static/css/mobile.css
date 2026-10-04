@@ -289,6 +289,168 @@ html[data-theme] body {
 }
 html[data-theme] .sheet { transition-timing-function: ease; }
 
+
+html[data-theme="ink"] {
+  --bg: #fbfbfa;
+  --card: #fbfbfa;
+  --line: #141414;
+  --rule: #d8d4cc;
+  --hair: #d8d4cc;
+  --mast: #6f6b64;
+  --tx: #141414;
+  --dim: #6d6d68;
+  --todo: #141414;
+  --prog: #141414;
+  --rev: #141414;
+  --block: #141414;
+  --done: #141414;
+  --warn: #141414;
+  --ink: #141414;
+  --hot: #141414;
+  --pixel: "Helvetica Neue", "Hiragino Sans", "Apple SD Gothic Neo", "Noto Sans CJK KR", "Noto Sans KR", "Malgun Gothic", sans-serif;
+  --serif: "Iowan Old Style", "Palatino Linotype", Palatino, "Apple Myungjo", "Hiragino Mincho ProN", "Source Han Serif K", "Noto Serif CJK KR", "Noto Serif KR", Batang, "Times New Roman", serif;
+  --gothic: "Helvetica Neue", "Hiragino Sans", "Apple SD Gothic Neo", "Noto Sans CJK KR", "Noto Sans KR", "Malgun Gothic", sans-serif;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+html[data-theme="ink"] header {
+  background: var(--bg);
+  border-bottom: 2px solid var(--mast);
+}
+html[data-theme="ink"] header b {
+  font-family: var(--serif);
+  font-size: 22px;
+  font-weight: 500;
+  letter-spacing: -0.03em;
+}
+html[data-theme="ink"] header b::before {
+  width: 9px;
+  height: 9px;
+  background: #c23b22;
+  border: none;
+  box-shadow: none;
+}
+html[data-theme="ink"] header .tag,
+html[data-theme="ink"] header .me,
+html[data-theme="ink"] .card .id,
+html[data-theme="ink"] .subprog em,
+html[data-theme="ink"] .sheet button small { font-family: var(--mono); }
+html[data-theme="ink"] .subprog em { color: var(--dim); }
+html[data-theme="ink"] header .theme {
+  font-family: var(--gothic);
+  background: transparent;
+  border: 1px solid #d8d4cc;
+  border-radius: 5px;
+}
+html[data-theme="ink"] nav {
+  background: var(--bg);
+  border-top: 1px solid #d8d4cc;
+}
+html[data-theme="ink"] nav button {
+  border-top-width: 2px;
+  font-family: var(--gothic);
+  font-weight: 400;
+}
+html[data-theme="ink"] nav button.on { font-weight: 600; background: transparent; border-top-color: var(--mast); }
+html[data-theme="ink"] nav .n { font-family: var(--serif); font-size: 16px; font-weight: 500; }
+html[data-theme="ink"] .card {
+  background: transparent;
+  border: 1px solid #d8d4cc;
+  border-radius: 5px;
+  box-shadow: none;
+}
+html[data-theme="ink"] .card.mine { background: transparent; }
+html[data-theme="ink"] .card h3,
+html[data-theme="ink"] .empty,
+html[data-theme="ink"] .det .body,
+html[data-theme="ink"] .sheet h4 {
+  font-family: var(--serif);
+  font-weight: 500;
+  letter-spacing: -0.015em;
+}
+html[data-theme="ink"] .card h3 { font-size: 17px; line-height: 1.3; }
+html[data-theme="ink"] .seal {
+  width: 7px;
+  height: 7px;
+  border: none;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .18);
+}
+html[data-theme="ink"] .subprog i {
+  height: 3px;
+  border: none;
+  border-radius: 5px;
+  background: #d8d4cc;
+  background-image: none;
+  image-rendering: auto;
+}
+html[data-theme="ink"] .subprog b {
+  height: 100%;
+  background: #141414;
+  border-radius: 5px;
+  box-shadow: none;
+}
+html[data-theme="ink"] .acts button,
+html[data-theme="ink"] .addc input,
+html[data-theme="ink"] .back,
+html[data-theme="ink"] .sheet button,
+html[data-theme="ink"] .toast {
+  font-family: var(--gothic);
+  border: 1px solid #d8d4cc;
+  border-radius: 5px;
+  background: transparent;
+}
+html[data-theme="ink"] .go,
+html[data-theme="ink"] .ok,
+html[data-theme="ink"] .addc button,
+html[data-theme="ink"] .sheet button.go,
+html[data-theme="ink"] .sheet button.ok {
+  background: var(--line);
+  color: #fbfbfa;
+  border-color: var(--line);
+  border-radius: 5px;
+}
+html[data-theme="ink"] .addc button { border: 0; }
+html[data-theme="ink"] .hb { border: 1px dashed #d8d4cc; border-radius: 5px; background: transparent; }
+html[data-theme="ink"] .det { border-top: 1px solid #d8d4cc; }
+html[data-theme="ink"] .cm { border-left: 1px solid #d8d4cc; }
+html[data-theme="ink"] .cm b { font-weight: 600; }
+html[data-theme="ink"] .hbdot {
+  width: 5px;
+  height: 5px;
+  border: none;
+  border-radius: 0;
+  background: var(--ink);
+  animation-timing-function: ease;
+}
+html[data-theme="ink"] .sheet textarea,
+html[data-theme="ink"] .sheet input {
+  border-radius: 5px !important;
+  border: 1px solid #d8d4cc !important;
+  font-family: var(--gothic);
+  background: var(--bg);
+}
+html[data-theme="ink"] .subtabs { border-bottom: 1px solid #d8d4cc; }
+html[data-theme="ink"] .subtabs button {
+  font-family: var(--gothic);
+  border-bottom-width: 2px;
+  letter-spacing: 0.06em;
+}
+html[data-theme="ink"] .subtabs button.on { font-weight: 600; background: transparent; }
+html[data-theme="ink"] .sheet {
+  background: var(--bg);
+  border-top: 1px solid #d8d4cc;
+  border-radius: 5px 5px 0 0;
+  box-shadow: none;
+  transition-timing-function: ease;
+}
+html[data-theme="ink"] .toast {
+  background: var(--line);
+  color: #fbfbfa;
+  border: 0;
+  font-family: var(--gothic);
+  transition-timing-function: ease;
+}
+
 html[data-theme="newsprint"] {
   --bg: #f4efe4;
   --card: #f4efe4;

@@ -15,7 +15,7 @@ function paintEnChrome() {
   put("themelab", "textContent", "Theme");
   const themeSel = document.getElementById("theme");
   if (themeSel && themeSel.options) {
-    const enName = { pixel: "Pixel", newsprint: "Newsprint", terminal: "Terminal", swiss: "Swiss", ticket: "Ticket", blueprint: "Blueprint", soft: "Soft" };
+    const enName = { pixel: "Pixel", ink: "Ink", newsprint: "Newsprint", terminal: "Terminal", swiss: "Swiss", ticket: "Ticket", blueprint: "Blueprint", soft: "Soft" };
     for (let i = 0; i < themeSel.options.length; i++) {
       const opt = themeSel.options[i];
       if (enName[opt.value]) opt.textContent = enName[opt.value];
@@ -23,7 +23,7 @@ function paintEnChrome() {
     if (themeSel.setAttribute) themeSel.setAttribute("aria-label", "Theme");
   }
 }
-const TT_THEMES = ["pixel", "newsprint", "terminal", "swiss", "ticket", "blueprint", "soft"];
+const TT_THEMES = ["pixel", "ink", "newsprint", "terminal", "swiss", "ticket", "blueprint", "soft"];
 function applyTheme(name, persist) {
   if (!TT_THEMES.includes(name)) name = "pixel";
   try {
