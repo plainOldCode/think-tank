@@ -71,6 +71,14 @@ def test_stale_리뷰는_무효_재요청(gate_on):
     assert [a for a in acts if a["action"] == "review-request"]
 
 
+def test_pr번호_불일치_리뷰도_stale_재요청(gate_on):
+    # sha8 일치해도 PR#이 다르면 무효 — stale fail-safe(t_c69b13f0 F3).
+    i = _issue(comments=[{"author": REV, "body": f"review: approve\nPR#8@{SHA8} ok"}])
+    acts = dispatchd.decide(_snap([i], _pr()))
+    assert [a for a in acts if a["action"] == "review-request"]
+    assert not [a for a in acts if a["action"] == "merge"]
+
+
 def test_다른리뷰어_코멘트는_무시(gate_on):
     i = _issue(comments=[{"author": "random-bot", "body": f"review: approve\nPR#9@{SHA8}"}])
     acts = dispatchd.decide(_snap([i], _pr()))
@@ -104,10 +112,22 @@ def test_review_fix_중복_금지(gate_on):
 
 
 def test_게이트카드는_needs_merge_소음_제외(gate_on):
-    # review 카드 + green PR + 미리뷰 → review-request만. needs-merge 노트 없음.
+    # review 카드 + green PR + 미리뷰 → review-request만. ⓔb 노트 전무(docs/review-gate.md:56).
     acts = dispatchd.decide(_snap([_issue()], _pr()))
     assert [a for a in acts if a["action"] == "review-request"]
-    assert not [a for a in acts if a["action"] == "review-note" and "PR 없음" in a["reason"]]
+    # review-note 전무 단언 — '"PR 없음" in reason' 필터는 게이트 카드의 실제 소음
+    # ('PR green — 병합 판정 제외됨…')을 못 잡아 '| gated' 제거 뮤테이션에서도 GREEN이었음(t_c69b13f0).
+    assert not [a for a in acts if a["action"] == "review-note"]
+
+
+# --- review_verdict: 유효 판정 2건 — 최신 우선 ---
+
+def test_review_verdict는_최신_판정_우선():
+    # 리뷰어가 판정을 2회 남기면 배열 뒤(최신) 판정이 이김 — TT 코멘트는 id 오름차순(F2 실츬).
+    old = {"author": REV, "body": f"review: approve\nPR#9@{SHA8} lgtm"}
+    new = {"author": REV, "body": f"review: request-changes\nPR#9@{SHA8} 수정 필요"}
+    assert probe.core.review_verdict([old, new], REV, 9, SHA8) == "request-changes"
+    assert probe.core.review_verdict([new, old], REV, 9, SHA8) == "approve"
 
 
 # --- execute ---
@@ -210,6 +230,37 @@ def test_hydrate_reviews는_후보카드_코멘트만_취득(monkeypatch):
     probe.core.hydrate_reviews("u", snap)
     assert snap["issues"][0]["comments"], "merge 후보 카드 코멘트 취득"
     assert f"/issues/M428RMBY-XC0K" in got
+
+
+def test_hydrate_reviews는_비후보카드를_GET하지_않음(monkeypatch):
+    # PR에 묶이지 않은 카드(비후보)는 GET 금지(t_c69b13f0 F4) — comments 키도 추가하지 않음.
+    got = []
+
+    def fake_api(url, path, method="GET", body=None):
+        got.append(path)
+        return {"comments": []}
+
+    monkeypatch.setattr(probe.core, "api", fake_api)
+    i = _issue(iid="M428RMMX-OTHER", state="in_progress")
+    del i["comments"]
+    snap = _snap([i], _pr())  # PR은 M428RMBY-XC0K에만 연결
+    probe.core.hydrate_reviews("u", snap)
+    assert not got, "비후보 카드는 GET하지 않음"
+    assert "comments" not in snap["issues"][0]
+
+
+def test_hydrate_reviews_api_실패시_빈코멘트_폴백(monkeypatch):
+    # 후보 카드 GET 실패 시 comments=[] 폴백 — run_once는 hydrate를 무방비 호출하므로
+    # 예외 누출 시 사이클 전체가 죽는다(t_c69b13f0 F4).
+    def fake_api(url, path, method="GET", body=None):
+        raise RuntimeError("tt unreachable")
+
+    monkeypatch.setattr(probe.core, "api", fake_api)
+    i = _issue()
+    del i["comments"]
+    snap = _snap([i], _pr())
+    probe.core.hydrate_reviews("u", snap)
+    assert snap["issues"][0]["comments"] == []
 
 
 def test_run_once는_게이트_on시_하이드레이트_선행(gate_on, monkeypatch):
