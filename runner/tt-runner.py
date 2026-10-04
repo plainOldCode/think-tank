@@ -223,7 +223,10 @@ def resolve_profile(payload):
 
 CODEX_PERM_ARGS = {
     "read": ["-s", "read-only"],
-    "auto": ["-s", "workspace-write", "--approve-for-me"],
+    # 0.155-alpha/0.157.0 실측(9/26): -s와 --approve-for-me는 상호배타(incompatible
+    # arguments, exit 1). --approve-for-me 자체가 workspace-write 샌드박스로 라우팅
+    # (exec --help 명세)하므로 -s를 붙이지 않는다. file-write 스모크 AUTO-OK 통과.
+    "auto": ["--approve-for-me"],
     "all": ["-s", "danger-full-access", "--dangerously-bypass-approvals-and-sandbox"],
 }
 
@@ -242,6 +245,9 @@ def build_argv(prof, opts, out_file):
         rs = opts.get("reasoning") or prof.get("reasoning")
         if rs:
             argv += ["-c", "model_reasoning_effort=%s" % rs]
+        # 프로필별 codex config override (N0AN PE11: 리뷰어는 network 필요 — opt-in)
+        for cfg in prof.get("codex_overrides") or []:
+            argv += ["-c", str(cfg)]
         if out_file:
             argv += ["--output-last-message", out_file]
         argv += ["--skip-git-repo-check"]
@@ -626,6 +632,14 @@ def execute_once(p, session):
     tt_comment(ent["issue_id"], "runner:%s dispatch#%s → tmux %s (queued, ws=%s)"
                % (machine_name(), p["dispatch_id"], ent["session"], workspace))
     log("START dispatch#%s session=%s ws=%s" % (p["dispatch_id"], ent["session"], workspace))
+    # M42KC1XR-2DD1: 리뷰 dispatch면 리뷰어 claim — 보드에 판정자 가시화
+    if (ent.get("message") or "").startswith("[auto review]"):
+        try:
+            tt_http("POST", "/issues/%s/claim-review" % ent["issue_id"],
+                    {"agent": os.environ.get("TT_AGENT", "runner"), "hours": 2})
+            log("REVIEWER-CLAIM dispatch#%s issue=%s" % (p["dispatch_id"], ent["issue_id"]))
+        except Exception as e:
+            log("REVIEWER-CLAIM-FAIL dispatch#%s %s" % (p["dispatch_id"], e))
 
 
 def maybe_approve_release(p):
@@ -727,6 +741,7 @@ def finalize(runs_dir_name, key, ent, exit_code, tail=""):
         tt_comment(issue, "runner:%s dispatch#%s done exit=0 session=%s\n%s"
                    % (machine_name(), did, session, mask(summary)))
         log("DONE dispatch#%s exit=0 session=%s" % (did, session))
+        _harvest_review_verdict(issue, ent, summary)
         update_run(key, status="done", exit=exit_code, ended=time.time())
         return "done"
     # (M3BZS1G3 ①) 실패 출력에서 입력/승인 요구 시그니처 → crashed가 아니라 BLOCKED.
@@ -746,6 +761,41 @@ def finalize(runs_dir_name, key, ent, exit_code, tail=""):
     log("FAILED dispatch#%s exit=%s" % (did, exit_code))
     update_run(key, status="failed", exit=exit_code, ended=time.time())
     return "failed"
+
+
+def _harvest_review_verdict(issue, ent, summary):
+    """M42TXTDX-2E8K: 리뷰 판정 하베스터 — 에이전트 게시 정책 거부와 무관하게 판정 기록.
+    out_file 최종 메시지에서 review: 마커 + PR#n@sha8을 찾아 TT(author=TT_AGENT)와
+    GitHub PR에 게시. 이미 같은 마커가 TT에 있으면 생략(중복 방지)."""
+    m = re.search(r"(?m)^review: (approve|request-changes)[ \t]*\n?[ \t]*PR#(\d+)@([0-9a-f]{8})", summary or "")
+    if not m:
+        return
+    rest = (summary[m.start():] or "").strip()
+    if not rest:
+        return
+    marker = "PR#%s@%s" % (m.group(2), m.group(3))
+    try:
+        # 게이트는 리뷰어 에이전트 author로 판정을 읽는다 — TT_AGENT가 아니라 dispatch 에이전트로 게시
+        author = (ent.get("agent") or os.environ.get("TT_AGENT", "runner")).strip()
+        d = tt_http("GET", "/issues/%s" % issue) or {}
+        for c in (d.get("comments") or []):
+            body = (c.get("body") or "").strip()
+            if body.startswith("review:") and marker in body:
+                log("REVIEW-HARVEST skip — 이미 기록됨 issue=%s" % issue)
+                break
+        else:
+            tt_http("POST", "/issues/%s/comments" % issue, {"author": author, "body": rest})
+            log("REVIEW-HARVEST TT issue=%s %s author=%s" % (issue, marker, author))
+    except Exception as e:
+        log("REVIEW-HARVEST-FAIL TT %s" % e)
+    rm = re.search(r"\(([\w.-]+/[\w.-]+)\)", ent.get("message") or "")
+    repo = rm.group(1) if rm else "plainOldCode/think-tank"
+    try:
+        subprocess.run(["/opt/homebrew/bin/gh", "pr", "comment", m.group(2), "--repo", repo,
+                        "--body", rest], capture_output=True, timeout=30)
+        log("REVIEW-HARVEST PR#%s (%s)" % (m.group(2), repo))
+    except Exception as e:
+        log("REVIEW-HARVEST-FAIL PR %s" % e)
 
 
 def pane_fingerprint(name, key=None):
