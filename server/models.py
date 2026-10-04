@@ -124,7 +124,10 @@ class AgentPatch(BaseModel):
 
     @model_validator(mode="after")
     def normalize_tier(self):
-        self.tier = _normalize_tier(self.tier)
+        # RZ20-F1: 빈 문자열은 '삭제' 의도 — None로 정규화하면 미지정과 구분이 사라져 삭제가 무시된다
+        if self.tier is not None:
+            t = self.tier.strip()
+            self.tier = "" if t == "" else _normalize_tier(t)
         return self
 
 

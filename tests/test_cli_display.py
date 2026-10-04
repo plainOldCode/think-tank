@@ -128,3 +128,32 @@ def test_search_verification_필터(cli):
     rep = run("search", "표시 테스트", "--verification", "reported").stdout
     assert artifact in unv and kept not in unv
     assert kept in rep and artifact not in rep
+
+
+def test_cli_agent_add_값_누락은_무한반복_없이_종료한다(cli):
+    """RZ20-F2 — --model 값 생략 시 usage와 함께 즉시 nonzero 종료(무한반복 금지)."""
+    run, url, api, db = cli
+    api("/agents", "POST", {"name": "optx", "base_url": "http://x/hook"})
+    r = run("agent", "add", "newx", "http://x/hook", "--model")
+    assert r.returncode != 0, "옵션 값 누락인데 종료하지 않음"
+    assert "값 누락" in r.stderr
+    assert r.returncode != 124  # timeout 아님 — 무한반복 재현 방지
+
+
+def test_cli_agents는_모델없는_티어도_표시하고_접두를_보존한다(cli):
+    """RZ20-F3 — reasoning/tier만 있어도 표시, 기존 접두 포맷 불변."""
+    run, url, api, db = cli
+    api("/agents", "POST", {"name": "full", "base_url": "http://a/hook",
+                            "model": "gpt-6.1-sol", "reasoning": "xhigh", "tier": "sota"})
+    api("/agents", "POST", {"name": "tieronly", "base_url": "http://b/hook", "tier": "human"})
+    api("/agents", "POST", {"name": "ronly", "base_url": "http://c/hook", "reasoning": "high"})
+    api("/agents", "POST", {"name": "plain", "base_url": "http://d/hook"})
+    out = run("agents").stdout
+    line = {l.split()[0]: l for l in out.strip().splitlines()}
+    assert "model=gpt-6.1-sol/xhigh [sota]" in line["full"]
+    assert "[human]" in line["tieronly"] and "model=" not in line["tieronly"]
+    assert "reasoning=high" in line["ronly"]
+    assert "model=" not in line["plain"]  # 메타데이터 없으면 접미 없음
+    # 접두 보존 — name·base_url·on·ok=·err= 순서 그대로
+    for name in ("full", "tieronly", "ronly", "plain"):
+        assert f"{name}  http" in line[name] and "  on  ok=" in line[name]

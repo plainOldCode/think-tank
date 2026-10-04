@@ -54,11 +54,11 @@ def patch_agent(name: str, p: AgentPatch, ctx: Ctx = Depends(get_ctx)):
         fields["release_hook"] = 1 if p.release_hook else 0
     if p.notify_hook is not None:
         fields["notify_hook"] = 1 if p.notify_hook else 0
-    # M3ER6G3S-RZ20: model/reasoning은 자유 문자열, tier는 모델에서 정규화 완료
+    # M3ER6G3S-RZ20: model/reasoning은 자유 문자열, tier는 모델에서 정규화 완료.
+    # RZ20-F1: model_fields_set으로 미지정과 명시적 삭제를 구분 — ""/null은 NULL 기록.
     for k in ("model", "reasoning", "tier"):
-        v = getattr(p, k)
-        if v is not None:
-            fields[k] = v or None
+        if k in p.model_fields_set:
+            fields[k] = getattr(p, k) or None
     with ctx.con() as c:
         if not c.execute("SELECT 1 FROM agents WHERE name=?", (name,)).fetchone():
             raise HTTPException(404, f"agent {name} not found")

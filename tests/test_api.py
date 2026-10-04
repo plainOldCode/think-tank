@@ -876,7 +876,16 @@ def test_agent_tier_정규화와_거부(client):
 
 
 def test_dispatch_이력에_model_스냅샷_병기(client, monkeypatch):
-    """RZ20 수용기준 2 — dispatches에 대상 agent model 기록. 에이전트별 계약서 테스트 패턴 재사용."""
+    """RZ20 수용기준 2 — dispatches에 대상 agent model 기록 + 성공 발송 + webhook payload 병기.
+
+    mock은 service.deliver의 실제 인터페이스(read(n), status)를 따른다 — 그렇지 않으면
+    delivery가 전부 error로 기록되고도 이 테스트가 통과하는 구멍이 생긴다(RZ20 리뷰 지적 5).
+    """
+    import json as _json
+    import urllib.request as _ur
+
+    payloads = []
+
     class Response:
         status = 200
 
@@ -886,12 +895,15 @@ def test_dispatch_이력에_model_스냅샷_병기(client, monkeypatch):
         def __exit__(self, *args):
             pass
 
-        def read(self):
+        def read(self, n=-1):
             return b"{}"
 
-    import urllib.request as _ur
+    def fake_urlopen(req, timeout=10):
+        payloads.append(_json.loads(req.data))
+        return Response()
+
     orig = _ur.urlopen
-    _ur.urlopen = lambda req, timeout=10: Response()
+    _ur.urlopen = fake_urlopen
     try:
         client.post("/agents", json={"name": "codex", "base_url": "http://x/hook",
                                      "model": "gpt-6.1-sol", "tier": "sota"})
@@ -902,5 +914,47 @@ def test_dispatch_이력에_model_스냅샷_병기(client, monkeypatch):
     finally:
         _ur.urlopen = orig
     rows = {r["id"]: r for r in client.get(f"/issues/{i['id']}/dispatches").json()}
+    assert rows[d1["id"]]["status"] == "ok"  # 발송 성공 — mock 인터페이스 정합 확인
+    assert rows[d2["id"]]["status"] == "ok"
     assert rows[d1["id"]]["model"] == "gpt-6.1-sol"
     assert rows[d2["id"]]["model"] == ""  # 메타데이터 없는 에이전트는 빈 값
+    # webhook payload에도 감사용 model 병기
+    by_did = {p["dispatch_id"]: p for p in payloads}
+    assert by_did[d1["id"]]["model"] == "gpt-6.1-sol"
+    assert by_did[d2["id"]]["model"] == ""
+
+
+def test_agent_tier_공백과_무효값_PATCH_경계(client):
+    """RZ20-F1 경계 — 공백 문자열은 삭제, 무효값은 422."""
+    client.post("/agents", json={"name": "tb", "base_url": "http://x", "tier": "exec"})
+    assert client.patch("/agents/tb", json={"tier": "   "}).json()["tier"] is None  # 공백=삭제
+    client.patch("/agents/tb", json={"tier": "판정"})
+    assert client.patch("/agents/tb", json={"tier": "god"}).status_code == 422
+    assert client.get("/agents").json()[-1]["tier"] == "sota"  # 무효 PATCH 후 기존값 보존
+
+
+def test_agent_tier_명시적_삭제는_readback된다(client):
+    """RZ20-F1 — tier=""/null은 미지정이 아니라 삭제다. model_fields_set으로 구분."""
+    client.post("/agents", json={"name": "t", "base_url": "http://x", "model": "m", "tier": "sota"})
+    # 미지정 PATCH — 변화 없음
+    r = client.patch("/agents/t", json={"enabled": False}).json()
+    assert r["tier"] == "sota" and r["model"] == "m"
+    # 명시적 삭제 — 빈 문자열
+    r = client.patch("/agents/t", json={"tier": ""}).json()
+    assert r["tier"] is None and r["model"] == "m"  # 다른 필드 보존
+    # 재설정 후 명시적 null 삭제
+    client.patch("/agents/t", json={"tier": "exec"})
+    r = client.patch("/agents/t", json={"tier": None}).json()
+    assert r["tier"] is None
+    # CLI 경로: tt agent set NAME tier= (빈 값) → 삭제
+    r = client.patch("/agents/t", json={"tier": ""}).json()
+    assert r["tier"] is None
+
+
+def test_agent_모델없이_reasoning_tier만_등록_가능(client):
+    """RZ20-F3 — model 없는 human/추론 전용 선언도 등록·조회된다."""
+    r = client.post("/agents", json={"name": "human1", "base_url": "http://x",
+                                     "tier": "human", "reasoning": "xhigh"}).json()
+    assert r["tier"] == "human" and r["reasoning"] == "xhigh" and r["model"] is None
+    rows = {a["name"]: a for a in client.get("/agents").json()}
+    assert rows["human1"]["tier"] == "human"

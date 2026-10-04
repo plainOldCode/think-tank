@@ -282,8 +282,9 @@ case "$cmd" in
     echo "push: ${unpushed:-커밋 없음} → $out" ;;
 
   agents)
-    # RZ20: model/reasoning/tier 접미 — 기존 접두(name·base_url·on/off·ok/err) 포맷 유지(후방호환)
-    req "$URL/agents" | $JQ '.[] | "\(.name)  \(.base_url)  \(if .enabled==1 then "on" else "off" end)  ok=\(.last_ok // "-")  err=\(.last_err // "")\(if .model then "  model=\(.model)\(if .reasoning then "/\(.reasoning)" else "" end) [\(.tier // "-")]" else "" end)"' ;;
+    # RZ20: model/reasoning/tier 접미 — 기존 접두(name·base_url·on/off·ok/err) 포맷 유지(후방호환).
+    # RZ20-F3: 세 필드는 독립 선택값 — model 없이도 reasoning/tier 표시.
+    req "$URL/agents" | $JQ '.[] | "\(.name)  \(.base_url)  \(if .enabled==1 then "on" else "off" end)  ok=\(.last_ok // "-")  err=\(.last_err // "")" + (if (.model or .reasoning or .tier) then (if .model then "  model=\(.model)\(if .reasoning then "/\(.reasoning)" else "" end)" elif .reasoning then "  reasoning=\(.reasoning)" else "" end) + (if .tier then " [\(.tier)]" else "" end) else "" end)' ;;
 
   agent)
     sub="${1:-}"; [[ -z "$sub" ]] && { echo "usage: tt agent add NAME URL [secret] [--model M] [--reasoning R] [--tier T] | set NAME key=val... | rm NAME | enable|disable NAME | release|notify NAME on|off" >&2; exit 1; }
@@ -295,12 +296,12 @@ case "$cmd" in
         if [[ $# -gt 0 && "$1" != --* ]]; then secret="$1"; shift; fi
         payload="$(jq -n --arg n "$name" --arg u "$url" --arg s "$secret" '{name:$n, base_url:$u, secret:$s}')"
         while [[ $# -gt 0 ]]; do case "$1" in
-          --model) payload="$(echo "$payload" | jq --arg v "$2" '. + {model:$v}')"; shift 2 ;;
-          --reasoning) payload="$(echo "$payload" | jq --arg v "$2" '. + {reasoning:$v}')"; shift 2 ;;
-          --tier) payload="$(echo "$payload" | jq --arg v "$2" '. + {tier:$v}')"; shift 2 ;;
+          --model|--reasoning|--tier)
+            [[ $# -ge 2 ]] || { echo "값 누락: $1 (사용법: $1 값)" >&2; exit 1; }
+            payload="$(echo "$payload" | jq --arg k "${1#--}" --arg v "$2" '. + {($k):$v}')"; shift 2 ;;
           *) echo "알 수 없는 옵션: $1" >&2; exit 1 ;;
         esac; done
-        req -X POST "$URL/agents" -d "$payload" | $JQ '"등록: \(.name) → \(.base_url)\(if .model then "  model=\(.model)\(if .reasoning then "/\(.reasoning)" else "" end) [\(.tier // "-")]" else "" end)"' ;;
+        req -X POST "$URL/agents" -d "$payload" | $JQ '"등록: \(.name) → \(.base_url)" + (if (.model or .reasoning or .tier) then (if .model then "  model=\(.model)\(if .reasoning then "/\(.reasoning)" else "" end)" elif .reasoning then "  reasoning=\(.reasoning)" else "" end) + (if .tier then " [\(.tier)]" else "" end) else "" end)' ;;
       set)
         [[ $# -lt 3 ]] && { echo "usage: tt agent set NAME model=M reasoning=R tier=T" >&2; exit 1; }
         name="$2"; shift 2
