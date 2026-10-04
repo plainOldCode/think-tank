@@ -47,6 +47,16 @@ def create_app(db_path: str) -> FastAPI:
         html = open(path, encoding="utf-8").read().replace("__TT_BUILD__", str(int(os.path.getmtime(path))))
         return HTMLResponse(html, headers={"Cache-Control": "no-store"})
 
+    # M43KDKWQ-6Y7Z: 정적 자산 no-cache — JS에 캐시 헤더가 없어 구버전 tt-util.js( setTheme 이전)가
+    # 신규 index.html과 섞여 닫기·테마 선택이 ReferenceError로 죽는 혼합 캐시를 방지. ETag 재검증으로 304 유지.
+    @app.middleware("http")
+    async def static_no_cache(request, call_next):
+        resp = await call_next(request)
+        p = request.url.path
+        if p == "/" or p.endswith((".html", ".js", ".css")):
+            resp.headers["Cache-Control"] = "no-cache"
+        return resp
+
     app.mount("/", StaticFiles(directory=static_dir, html=True), name="static")
     return app
 

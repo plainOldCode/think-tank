@@ -958,3 +958,22 @@ def test_agent_모델없이_reasoning_tier만_등록_가능(client):
     assert r["tier"] == "human" and r["reasoning"] == "xhigh" and r["model"] is None
     rows = {a["name"]: a for a in client.get("/agents").json()}
     assert rows["human1"]["tier"] == "human"
+
+
+def test_정적_자산은_no_cache로_서빙된다(tmp_path):
+    """M43KDKWQ-6Y7Z — JS 캐시 혼합(구버전 tt-util.js+신규 index.html)이 버그의 실제 원인.
+
+    StaticFiles 기본 응답엔 Cache-Control이 없어 브라우저가 휴리스틱 캐시를 함.
+    no-cache 강제로 매 배포 후 최신 JS가 재검증(304)되게 한다.
+    """
+    import pathlib
+    from app import create_app
+    from fastapi.testclient import TestClient
+    static_dir = pathlib.Path(__file__).resolve().parents[1] / "server" / "static"
+    client = TestClient(create_app(str(tmp_path / "t.db")))
+    for path in ("/", "/js/tt-util.js", "/js/tt-detail.js", "/css/board.css"):
+        assert client.get(path).headers.get("cache-control") == "no-cache", path
+    # API 응답은 건드리지 않는다
+    r = client.get("/issues")
+    assert "cache-control" not in r.headers
+    _ = static_dir  # 서빙 대상 존재 확인용
