@@ -48,9 +48,11 @@ merge 후보(카드 연결 + work_contract + attempt≥1 + non-draft + repo 일�
    기존 merge 경로 그대로 — 병합 후 verify-in-merge(M3R7M0ZR-YF99) 포함.
 4. 새 커밋 push → head 변경 → 기존 리뷰는 stale → 1로 회귀(재리뷰).
 
-- 리뷰 코멘트 유효성: TT 코멘트 중 author가 리뷰어 허용 목록에 있고
+- 리뷰 코멘트 유효성: TT 코멘트 중 author가 리뷰어와 일치하고
   `PR#<n>@<sha8>`의 n·sha8이 현재 PR과 일치하는 것만 인정.
-- 리뷰어 허용 목록: env `TT_REVIEW_AGENTS`(쉼표 목록). POC 기본값 `kanban-adapter`.
+- 리뷰어: env `TT_REVIEW_AGENT` 단일 에이전트명. **미설정이면 게이트 off**
+  (기존 동작 — TT_PROBE_INTERVAL과 같은 기본 off 안전 패턴). mini 활성화는
+  launchd plist env 추가 시점부터(리뷰어 실행기 2HZF 준비 후).
 - 리뷰 게이트로 merge 제외된 카드는 ⓪b needs-merge 코멘트 대상에서 **제외**(소음 방지).
 - CI red는 기존 ci-fix가 우선 — 리뷰는 green 이후에만.
 
