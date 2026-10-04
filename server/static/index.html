@@ -5,16 +5,16 @@
 <title>think-tank</title>
 <link rel="icon" href="/favicon.ico">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<link rel="stylesheet" href="/css/board.css?v=retro8">
+<link rel="stylesheet" href="/css/board.css?v=retro8b">
 </head>
 <body onkeydown="if(event.key==='Escape')closeDetail()">
 <header>
   <div class="mast"><b>think-tank</b><small id="counts"></small></div>
   <div class="tools">
   <form onsubmit="return newIssue(event)">
-    <input name="title" placeholder="새 이슈 등록" size="24" required>
+    <input id="newtitle" name="title" placeholder="새 이슈 등록" size="24" required>
     <select name="state"><option>todo</option><option>backlog</option></select>
-    <button>등록</button>
+    <button id="newbtn">등록</button>
   </form>
   <span class="spacer"></span>
   <select id="lab" onchange="load()"></select>
@@ -24,13 +24,13 @@
   <button onclick="toggleCancelled()" id="cxbtn" title="cancel된 카드 열 표시/숨김">취소됨</button>
   <a href="/api.html">API(AI)</a>
   <a href="/docs">OpenAPI</a>
-  <button onclick="load()">새로고침</button>
+  <button id="reloadbtn" onclick="load()">새로고침</button>
   </div>
 <small id="runbanner" title="tmux 실행형 dispatch(러너 수신) — 실행 상태는 카드의 TT 상태와 독립"></small>
 </header>
 <main>
   <div id="board"></div>
-  <div id="detail"><button id="dclose" onclick="closeDetail()">✕ 닫기</button><div id="dcontent"><p style="color:var(--dim)">카드를 선택하세요.</p></div></div>
+  <div id="detail"><button id="dclose" onclick="closeDetail()">✕ 닫기</button><div id="dcontent"><p id="dpick" style="color:var(--dim)">카드를 선택하세요.</p></div></div>
   <div id="agentpanel" style="display:none"></div>
 </main>
 <script src="/js/tt-util.js"></script>

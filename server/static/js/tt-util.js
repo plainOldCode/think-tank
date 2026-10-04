@@ -1,5 +1,18 @@
 // 공용 유틸 — fetch 래퍼/이스케이프/시각 파싱. 전역 배선(인라인 onclick) 때문에 classic script 유지.
 const API = "";
+const TT_EN = (() => { try { return new URLSearchParams(location.search || "").get("lang") === "en"; } catch (e) { return false; } })();
+function paintEnChrome() {
+  if (!TT_EN) return;
+  const put = (id, key, val) => { const el = document.getElementById(id); if (el) el[key] = val; };
+  try { if (document.documentElement) document.documentElement.lang = "en"; } catch (e) {}
+  put("newtitle", "placeholder", "New issue");
+  put("newbtn", "textContent", "Add");
+  put("cxbtn", "textContent", "Cancelled");
+  put("cxbtn", "title", "Show or hide cancelled");
+  put("reloadbtn", "textContent", "Refresh");
+  put("dclose", "textContent", "✕ close");
+  put("dpick", "textContent", "Select a card.");
+}
 const esc = s => (s === null || s === undefined ? "" : String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;"));
 const hueOf = s => { let h = 0; for (const c of s) h = (h * 31 + c.codePointAt(0)) % 360; return h; };
 const tsParse = t => new Date(t.replace(/([+-]\d\d)(\d\d)$/, "$1:$2"));

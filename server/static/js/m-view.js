@@ -66,11 +66,11 @@ function render(all){
       <button class="${sub==="lease"?"on":""}" onclick="event.stopPropagation();setSub('lease')">청구중 ${leased.length}</button>
       <button class="${sub==="all"?"on":""}" onclick="event.stopPropagation();setSub('all')">전체 ${rows.length}</button></div>`;
     const show = sub === "lease" ? leased : rows;
-    $("#list").innerHTML = bar + (show.length ? show.map(i => card(i)).join("") : `<div class="empty">청구(lease) 중인 카드 없음</div>`);
+    $("#list").innerHTML = bar + (show.length ? show.map(i => card(i)).join("") : `<div class="empty">${TT_EN ? "No leased cards" : "청구(lease) 중인 카드 없음"}</div>`);
     for (const id of OPEN) { const d = $("#d-"+CSS.escape(id)); if (d) { d.classList.add("open"); refreshDetail(id); } }
     return;
   }
-  $("#list").innerHTML = rows.length ? rows.map(i => card(i)).join("") : `<div class="empty">${TABS.find(t=>t[0]===tab)[1]} 없음</div>`;
+  $("#list").innerHTML = rows.length ? rows.map(i => card(i)).join("") : `<div class="empty">${TT_EN ? "No " + TABS.find(t=>t[0]===tab)[1] + " cards" : TABS.find(t=>t[0]===tab)[1] + " 없음"}</div>`;
   for (const id of OPEN) {
     const d = $("#d-"+CSS.escape(id));
     if (d) { d.classList.add("open"); refreshDetail(id); } else { OPEN.delete(id); delete DRAFT[id]; }
@@ -88,7 +88,7 @@ function card(i){
     if (ME && (i.lease_by === ME || i.assignee === ME)) { mine = true; acts =
       `<button class="rev" onclick="send('${esc(i.id)}','review')">→ 리뷰 요청</button>
        <button class="hb" onclick="beat('${esc(i.id)}')">♥ 연장</button>`; }
-    else { other = true; acts = `<span class="tag" style="color:var(--prog)">@${esc(i.assignee||i.lease_by||"?")} 진행중</span>`; }
+    else { other = true; acts = `<span class="tag" style="color:var(--prog)">@${esc(i.assignee||i.lease_by||"?")} ${TT_EN ? "In progress" : "진행중"}</span>`; }
   }
   if (i.state === "blocked") acts = `<span class="tag" style="color:var(--block)">wait: ${esc(i.waiting_actor||"?" )}</span>
     <button class="back" onclick="send('${esc(i.id)}','todo')">↩ 되돌림</button>`;

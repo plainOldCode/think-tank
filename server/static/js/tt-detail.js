@@ -16,7 +16,7 @@ async function show(id, keep) {
     in_progress:["blocked","done","todo","review"], review:["todo","blocked","done","cancelled"],
     blocked:["in_progress","todo","cancelled"], done:["todo"], cancelled:["todo"]};
   d.innerHTML = `
-    ${i.parent_id ? `<p class="up"><button type="button" onclick="show('${esc(i.parent_id)}')">상위 이슈로</button></p>` : ""}
+    ${i.parent_id ? `<p class="up"><button type="button" onclick="show('${esc(i.parent_id)}')">${TT_EN ? "parent issue" : "상위 이슈로"}</button></p>` : ""}
     <h2>${esc(i.title)}</h2>
     <div class="meta"><span class="k">${esc(i.id)}</span> · ${esc(i.state)} · ${i.priority?"p"+i.priority:"–"} · ${esc(i.labels.join(" "))||"—"} · ${i.assignee?("@"+esc(i.assignee)):"미배정"} · v${i.version}<br>
     created ${esc(i.created_at)}${i.completed_at?` · done ${esc(i.completed_at)}`:""}

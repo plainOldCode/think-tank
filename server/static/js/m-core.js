@@ -1,5 +1,9 @@
 // mobile 코어 — 상수/상태/유틸/서명. 전역 배선(인라인 onclick) 때문에 classic script 유지.
-const TABS = [["review","리뷰","rev"],["in_progress","진행중","prog"],["todo","시작 대기","todo"],["blocked","막힘","block"],["done","완료","done"]];
+const TT_EN = (() => { try { return new URLSearchParams(location.search || "").get("lang") === "en"; } catch (e) { return false; } })();
+if (TT_EN) { try { if (document.documentElement) document.documentElement.lang = "en"; } catch (e) {} }
+const TABS = TT_EN
+  ? [["review","Review","rev"],["in_progress","In progress","prog"],["todo","Waiting","todo"],["blocked","Blocked","block"],["done","Done","done"]]
+  : [["review","리뷰","rev"],["in_progress","진행중","prog"],["todo","시작 대기","todo"],["blocked","막힘","block"],["done","완료","done"]];
 let LAST = "", tab = localStorage.getItem("tt-m-tab") || "review";
 let OPEN = new Set(), DRAFT = {};
 try { DRAFT = JSON.parse(localStorage.getItem("tt-m-draft") || "{}"); for (const id of JSON.parse(localStorage.getItem("tt-m-open") || "[]")) OPEN.add(id); } catch (e) { DRAFT = {}; }

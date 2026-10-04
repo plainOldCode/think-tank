@@ -80,7 +80,7 @@ function renderBoard(issues) {
   const labSel = document.getElementById("lab");
   const want = labSel.value;
   const labels = [...new Set(issues.flatMap(i => i.labels))].sort();
-  labSel.innerHTML = '<option value="">라벨 전체</option>' + labels.map(l => `<option${l===want?" selected":""} value="${esc(l)}">${esc(l)}</option>`).join("");
+  labSel.innerHTML = `<option value="">${TT_EN ? "All labels" : "라벨 전체"}</option>` + labels.map(l => `<option${l===want?" selected":""} value="${esc(l)}">${esc(l)}</option>`).join("");
   if (!labSel.dataset.init) {
     labSel.dataset.init = "1";
     const u = new URLSearchParams(location.search).get("label");
@@ -115,7 +115,8 @@ function renderBoard(issues) {
   };
   const stateLine = (i) => {
     const bits = [];
-    if (i.state === "in_progress") bits.push(i.lease_by && i.lease_by !== i.assignee ? `@${esc(i.lease_by)} 진행중` : "진행중");
+    const progWord = TT_EN ? "In progress" : "진행중";
+    if (i.state === "in_progress") bits.push(i.lease_by && i.lease_by !== i.assignee ? `@${esc(i.lease_by)} ${progWord}` : progWord);
     else if (i.state === "blocked") bits.push(`wait: ${esc(i.waiting_actor || "?")}` + (i.waiting_for ? ` · ${esc(i.waiting_for)}${i.release_ready ? " →해제가능" : ""}` : ""));
     else if (i.state === "done" && i.verification_status) bits.push(esc(i.verification_status));
     if (i.delayed) bits.push("🟡지연");
@@ -153,8 +154,10 @@ function renderBoard(issues) {
     return node;
   };
   document.getElementById("cxbtn").style.opacity = SHOW_CX ? "1" : ".45";
-  const groups = [["review","리뷰"],["progress","진행중"],["wait","시작 대기"],["block","막힘"],["done","완료"]];
-  if (SHOW_CX) groups.push(["cancel","취소됨"]);
+  const groups = TT_EN
+    ? [["review","Review"],["progress","In progress"],["wait","Waiting"],["block","Blocked"],["done","Done"]]
+    : [["review","리뷰"],["progress","진행중"],["wait","시작 대기"],["block","막힘"],["done","완료"]];
+  if (SHOW_CX) groups.push(["cancel", TT_EN ? "Cancelled" : "취소됨"]);
   const list = document.createElement("div"); list.className = "list";
   for (const [key, label] of groups) {
     const members = issues.filter(x => groupOf(x) === key);
@@ -182,3 +185,5 @@ function renderBoard(issues) {
   board.appendChild(list);
   if (current) show(current, true);
 }
+
+paintEnChrome();
