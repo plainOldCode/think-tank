@@ -93,3 +93,13 @@ PR push → CI green → probe: 리뷰 없음 → [review-req] dispatch → 리�
   └─ request-changes → probe: 카드 review 반납 + [review-fix] dispatch
        → 수정 에이전트 push → head 변경 → 재리뷰 [review-req] …
 ```
+
+## 리뷰어 엔진 실측 (2026-10-04)
+
+| 엔진 | 소요 | 비고 |
+| --- | --- | --- |
+| codex (tt-runner) | ~12분 | 실제 결함 지적(템플릿 재리뷰 fetch non-fast-forward) |
+| claude (tt-runner) | ~4분 | 심층 판정 — 중복·CONFLICTING·회귀 규명 |
+| hermes MoA | ~80분 | 작업기용 — 리뷰어로는 과속 |
+
+게이트 운영: `TT_REVIEW_AGENT=codex`. claude는 교차 리뷰 엔진, hermes는 리뷰 dispatch 대상 제외.
