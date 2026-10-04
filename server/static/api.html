@@ -6,26 +6,26 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="icon" href="/favicon.ico">
 <style>
-  :root { --bg:#fbfbfa; --panel:#fbfbfa; --line:#141414; --fg:#141414; --dim:#6d6d68; --acc:#141414; --warn:#c23b22;
-    --serif: "Iowan Old Style", Palatino, "Apple Myungjo", "Noto Serif CJK KR", Batang, "Times New Roman", serif;
-    --gothic: "Helvetica Neue", "Hiragino Sans", "Apple SD Gothic Neo", "Noto Sans CJK KR", "Malgun Gothic", sans-serif;
-    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  @font-face { font-family:"Galmuri Mono"; src:url("/fonts/GalmuriMono11.woff2") format("woff2"); font-weight:400; font-style:normal; font-display:swap; }
+  :root { --bg:#9bbc0f; --panel:#8bac0f; --line:#0f380f; --fg:#0f380f; --dim:#306230; --acc:#0f380f; --warn:#c23b22;
+    --pixel:"Galmuri Mono", ui-monospace, "Courier New", monospace;
+    --serif:var(--pixel); --gothic:var(--pixel); --mono:var(--pixel); }
   body { margin:0 auto; max-width:740px; padding:28px 22px 80px; background:var(--bg); color:var(--fg);
-         font:15px/1.6 var(--serif); word-break:keep-all; }
-  h1,h2,h3 { color:var(--fg); font-weight:500; letter-spacing:-0.02em; margin:1.5em 0 .4em; font-family:var(--serif); }
-  h1 { font-size:28px; border-bottom:3px solid var(--line); padding-bottom:8px; }
-  h2 { font-size:18px; border-bottom:1px solid var(--line); padding-bottom:4px; } h3 { font-size:16px; }
-  code, pre { background:transparent; border:1px solid #d9d9d6; border-radius:0; font:12.5px/1.5 var(--mono); }
+         font:14px/1.55 var(--pixel); word-break:keep-all; -webkit-font-smoothing:none; }
+  h1,h2,h3 { color:var(--fg); font-weight:400; letter-spacing:0; margin:1.5em 0 .4em; font-family:var(--pixel); }
+  h1 { font-size:22px; border-bottom:4px solid var(--line); padding-bottom:8px; }
+  h2 { font-size:16px; border-bottom:2px solid var(--line); padding-bottom:4px; } h3 { font-size:15px; }
+  code, pre { background:var(--panel); border:2px solid var(--line); border-radius:0; font:12.5px/1.5 var(--pixel); }
   code { padding:0 4px; }
   pre { padding:10px 12px; overflow-x:auto; white-space:pre; }
   pre code { background:none; border:none; padding:0; }
-  table { border-collapse:collapse; width:100%; margin:10px 0 16px; font:13px/1.45 var(--gothic); }
-  th,td { border-bottom:1px solid #d9d9d6; padding:6px 8px; text-align:left; vertical-align:top; }
-  th { border-bottom:1px solid var(--line); font-weight:600; }
+  table { border-collapse:collapse; width:100%; margin:10px 0 16px; font:13px/1.45 var(--pixel); }
+  th,td { border-bottom:2px solid var(--dim); padding:6px 8px; text-align:left; vertical-align:top; }
+  th { border-bottom:2px solid var(--line); font-weight:400; }
   a { color:var(--fg); }
-  .bar { display:flex; gap:12px; align-items:baseline; margin-bottom:4px; color:var(--dim); font:13px/1.4 var(--gothic); }
-  .bar b { color:var(--fg); font-family:var(--serif); font-size:18px; font-weight:500; }
-  .bar b::before { content:""; display:inline-block; width:8px; height:8px; background:var(--warn); margin-right:6px; transform:translateY(-1px); }
+  .bar { display:flex; gap:12px; align-items:baseline; margin-bottom:4px; color:var(--dim); font:13px/1.4 var(--pixel); }
+  .bar b { color:var(--fg); font-family:var(--pixel); font-size:16px; font-weight:400; }
+  .bar b::before { content:""; display:inline-block; width:10px; height:10px; background:var(--warn); border:2px solid var(--line); margin-right:6px; transform:translateY(-1px); }
   strong { font-weight:600; }
 </style>
 </head>

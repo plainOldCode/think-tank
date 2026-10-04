@@ -29,7 +29,7 @@ function saveMe(v){ ME=(v||"").trim(); if (ME){ localStorage.setItem("tt-m-me",M
     try{ const h=JSON.parse(localStorage.getItem("tt-m-names")||"[]").filter(n=>n!==ME); h.unshift(ME); localStorage.setItem("tt-m-names",JSON.stringify(h.slice(0,5))); }catch(e){} } return ME; }
 function nameHist(){ try{ return JSON.parse(localStorage.getItem("tt-m-names")||"[]"); }catch(e){ return []; } }
 function nameField(){ const h=nameHist(); const dl=h.map(n=>`<option value="${esc(n)}">`).join("");
-  return `<input id="mein" list="mnames" placeholder="작업자 이름 (예: name@laptop) — claim/서명용" value="${esc(ME)}" style="width:100%;margin-top:8px;background:var(--bg);border:1px solid var(--line);border-radius:9px;color:var(--tx);padding:12px;font-size:14.5px"><datalist id="mnames">${dl}</datalist>`; }
+  return `<input id="mein" list="mnames" placeholder="작업자 이름 (예: name@laptop) — claim/서명용" value="${esc(ME)}" style="width:100%;margin-top:8px;background:var(--bg);border:2px solid var(--line);border-radius:0;color:var(--tx);padding:12px;font-size:14.5px"><datalist id="mnames">${dl}</datalist>`; }
 async function j(path, opts){ const r = await fetch(path, opts); const d = await r.json().catch(()=>({}));
   if(!r.ok) throw new Error(d.detail || r.status); return d; }
 async function api(path, method, body){ try{ return await j(path,{method, headers:{"content-type":"application/json"}, body:JSON.stringify(body)}); }

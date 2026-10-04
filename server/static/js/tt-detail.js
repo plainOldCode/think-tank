@@ -42,7 +42,7 @@ async function show(id, keep) {
     </form>` : `<p style="color:var(--dim);font-size:11px">등록 agent 없음 — 상단 Agents 버튼에서 webhook 등록</p>`}
     ${renderRunSection(dsp)}
     <h3 style="font-size:12px;color:var(--dim)">진행 로그 / 대화</h3>
-    ${i.comments.map(c=>{const r=isResultComment(i,c);return `<div class="cmt${r?' result':''}"${r?' title="결과 보고"':''}><small>${esc(c.ts)} <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:hsl(${hueOf(c.author)},70%,55%);margin:0 4px 0 2px;vertical-align:1px"></span><b style="color:hsl(${hueOf(c.author)},70%,65%)">${esc(c.author)}</b>${r?' <span style="color:var(--done)">결과</span>':''}</small><br>${esc(c.body)}</div>`;}).join("")||"<p style='color:var(--dim)'>없음</p>"}
+    ${i.comments.map(c=>{const r=isResultComment(i,c);return `<div class="cmt${r?' result':''}"${r?' title="결과 보고"':''}><small>${esc(c.ts)} <span style="display:inline-block;width:8px;height:8px;border-radius:0;background:hsl(${hueOf(c.author)},70%,55%);margin:0 4px 0 2px;vertical-align:1px"></span><b style="color:hsl(${hueOf(c.author)},70%,65%)">${esc(c.author)}</b>${r?' <span style="color:var(--done)">결과</span>':''}</small><br>${esc(c.body)}</div>`;}).join("")||"<p style='color:var(--dim)'>없음</p>"}
     <form class="row" onsubmit="return cmt(event)">
       <input name="author" placeholder="agent" value="human" size="8" required>
       <input name="body" placeholder="로그 남기기" style="flex:1" required>
