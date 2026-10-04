@@ -522,11 +522,16 @@ def execute(url, act):
             return  # 경합 방어 — decide 판정 후 재확인
         agent = os.environ.get("TT_REVIEW_AGENT", "").strip() or "kanban-adapter"
         sha8 = (act.get("head_sha") or "")[:8]
-        msg = (f"[auto review] PR #{act['pr']} ({act.get('repo')}) @ {sha8} — 카드 {act['issue']} "
-               "리뷰 요청. 리뷰 방식: git diff 기준 변경 파일 통독 + 변경 심볼 grep으로 호출자 확인"
-               "(공용 모듈은 필수). 판정 기준: 계약 v2.1 준수·시크릿 노출·테스트 적절성·놓친 엣지. "
+        repo = act.get("repo") or "plainOldCode/think-tank"
+        msg = (f"[auto review] PR #{act['pr']} ({repo}) @ {sha8} — 카드 {act['issue']} "
+               f"리뷰 요청. repo는 https://github.com/{repo} — 기존 로컬 clone 재사용 우선"
+               f"(없으면 clone), git fetch origin pull/{act['pr']}/head:pr-{act['pr']} 후 "
+               f"git diff origin/main...pr-{act['pr']}. "
+               "리뷰 방식: 변경 파일 통독 + 변경 심볼 grep으로 호출자 확인(공용 모듈은 필수). "
+               "판정 기준: 계약 v2.1 준수·시크릿 노출·테스트 적절성·놓친 엣지. "
                "결과 제출: GitHub PR 코멘트와 TT 카드 코멘트 양쪽(docs/review-gate.md 형식) — "
-               f"첫 줄 'review: approve' 또는 'review: request-changes', 둘째 줄 'PR#{act['pr']}@{sha8}'.")
+               f"첫 줄 'review: approve' 또는 'review: request-changes', 둘째 줄 'PR#{act['pr']}@{sha8}'. "
+               f"TT 코멘트 author는 '{agent}'로 게시.")
         try:
             api(url, f"/issues/{act['issue']}/dispatch", "POST", {"agent": agent, "message": msg})
         except Exception as e:
