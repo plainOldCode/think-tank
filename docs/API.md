@@ -55,6 +55,7 @@ CLI: `tt contract`, `tt done ID --report FILE`, `tt verify ID --report FILE`. �
 - `GET/POST /agents`, `PATCH/DELETE /agents/{name}` — `{name, base_url(http/s), secret?, enabled?, model?, reasoning?, tier?}`
   - `model`/`reasoning`: 자유 문자열(검증 없음). **선언(declaration)이지 실행 보장(enforcement)이 아님** — runner가 실제로 다른 모델을 쓰면 그건 runner의 문제다. 2026-09-26 모델 pinning 사건(M3ER6G3S-RZ20)에서의 교훈: 판정 계층 규약이 TT 어디에도 없으면 사고처럼 보인다
   - `tier`: 계층 enum `sota|exec|impl|human` — 한글 별칭 `판정|실행|구형` 자동 정규화, 대소문자 무시, 무효값 422. sota=판정(설계/리뷰), exec=실행/판독, impl=구현, human=사람
+  - 명시적 삭제: PATCH에서 해당 필드를 `""` 또는 `null`로 보내면 NULL 기록(미지정과 구분 — model_fields_set 판정). 무효 tier 값은 422 후 기존값 보존. `tt agent set NAME tier=` = 삭제
   - CLI: `tt agent add NAME URL [secret] [--model M] [--reasoning R] [--tier T]`, `tt agent set NAME model=M reasoning=R tier=T`, `tt agents` 출력에 `model=x/y [tier]` 접미(기존 접두 포맷 유지 — 후방호환)
 - `POST /issues/{id}/dispatch {agent, message, author?}`:
   1. `message`를 issue 댓글로 기록 (author=지시자)
