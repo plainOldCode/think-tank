@@ -544,6 +544,10 @@ def test_probe_반납은_실제_핸들러에서_reviewer와_lease를_지우고_a
         "result": "passed", "limitations": ""}})
     body = client.post(f"/issues/{issue['id']}/claim-review", json={"agent": "codex"}).json()
     assert body["reviewer"] == "codex" and body["lease_by"] == "codex"
+    # 유효 판정 기록(R7 필터 통과용) — 코멘트가 버전을 올리므로 반납 액션은 최신 버전 기준
+    client.post(f"/issues/{issue['id']}/comments", json={
+        "author": "codex", "body": "review: approve\nPR#1@aaaaaaaa"})
+    cur_version = client.get(f"/issues/{issue['id']}").json()["version"]
 
     def fake_api(url, path, method="GET", payload=None):
         if method == "GET":
@@ -552,7 +556,8 @@ def test_probe_반납은_실제_핸들러에서_reviewer와_lease를_지우고_a
 
     monkeypatch.setattr(probe.core, "api", fake_api)
     probe.core.execute("u", {"issue": issue["id"], "action": "release-reviewer",
-                             "reviewer": "codex"})
+                             "reviewer": "codex", "pr": 1, "head_sha": "a" * 8,
+                             "expected_version": cur_version})
     d = client.get(f"/issues/{issue['id']}").json()
     assert d["reviewer"] is None
     assert d["lease_by"] == "" and d["lease_expires"] is None
@@ -688,6 +693,10 @@ def test_stale_반납은_재작업자_lease를_보존한다(client, monkeypatch)
         "verification": {"commands": "ccc", "evidence": "e"},
         "result": "passed", "limitations": ""}})
     body = client.post(f"/issues/{issue['id']}/claim-review", json={"agent": "codex"}).json()
+    # 유효 판정 기록(R7 필터 통과용) — codex 판정 PR#1@aaaaaaaa
+    client.post(f"/issues/{issue['id']}/comments", json={
+        "author": "codex", "body": "review: approve\nPR#1@aaaaaaaa"})
+    cur_version = client.get(f"/issues/{issue['id']}").json()["version"]
     # 재작업자가 lease를 넘겨받은 상태(리뷰어 claim은 아직 미반납 — stale 액션 도착 시나리오)
     import sqlite3
     con = sqlite3.connect(client.app.state.db_path)
@@ -700,7 +709,9 @@ def test_stale_반납은_재작업자_lease를_보존한다(client, monkeypatch)
         return client.request(method, path, json=payload).json()
 
     monkeypatch.setattr(probe.core, "api", fake_api)
-    probe.core.execute("u", {"issue": issue["id"], "action": "release-reviewer", "reviewer": "codex"})
+    probe.core.execute("u", {"issue": issue["id"], "action": "release-reviewer", "reviewer": "codex",
+                             "pr": 1, "head_sha": "a" * 8,
+                             "expected_version": cur_version})
     d = client.get(f"/issues/{issue['id']}").json()
     assert d["reviewer"] is None          # 리뷰어 점유는 해제
     assert d["lease_by"] == "worker"      # 재작업자 lease 보존

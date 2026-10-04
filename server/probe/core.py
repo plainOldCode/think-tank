@@ -233,7 +233,8 @@ def decide(snap):
                 if verdict in ("approve", "request-changes") and i.get("reviewer"):
                     # 리뷰어 claim 해제 — 판정 기록됐으면 점유 반납(review-fix 시 작업자 assignee 보존)
                     actions.append({"agent": "probe", "issue": iid, "action": "release-reviewer",
-                                    "reviewer": i["reviewer"], "head_sha": p.get("head_sha", ""),
+                                    "reviewer": i["reviewer"], "pr": p["number"],
+                                    "head_sha": p.get("head_sha", ""),
                                     "expected_version": i["version"],
                                     "reason": "판정 기록 — 리뷰어 점유 반납"})
                 if verdict == "request-changes":
@@ -440,19 +441,14 @@ def execute(url, act):
     if kind == "release-reviewer":
         cur = api(url, f"/issues/{act['issue']}")
         if cur.get("reviewer") == act.get("reviewer"):
+            # 이 판정이 현재 head에 여전히 유효한지 — decide와 동일 필터(review_verdict)로 재확인.
+            # R7: author·PR 무관한 임의 판정 비교는 유효 반납까지 막는다 — 리뷰어 판정만 인정.
+            if review_verdict(cur.get("comments") or [], act.get("reviewer"),
+                              act.get("pr"), (act.get("head_sha") or "")[:8]) is None:
+                return
             # decide 이후 카드가 변했다면(재claim·코멘트 등) 이번 라운드 폐기 — 다음 라운드 재판정.
             # R5: 같은 판정 구간에서 리뷰어가 재claim한 새 lease를 오래된 액션이 지우지 않게.
             if act.get("expected_version") is not None and cur.get("version") != act["expected_version"]:
-                return
-            # R5: 이 판정이 이 PR의 최신 판정일 때만 반납 — 구 판정 액션 폐기.
-            latest = ""
-            for c in reversed(cur.get("comments") or []):
-                mm = re.search(r"review: (?:approve|request-changes)\s*\n?\s*PR#\d+@([0-9a-f]{8})",
-                               c.get("body") or "")
-                if mm:
-                    latest = mm.group(1)
-                    break
-            if latest and latest != (act.get("head_sha") or "")[:8]:
                 return
             # reviewer만 지우고, lease는 리뷰어 본인 것이 확실할 때만 —
             # 재작업자가 새 lease를 잡은 뒤 오래된 반납 액션이 도착해도 보존(R5).
