@@ -128,12 +128,20 @@ def claim_review(issue_id: str, p: ReviewClaimIn, ctx: Ctx = Depends(get_ctx)):
         if row["state"] != "review":
             raise HTTPException(409, f"claim-review is for review-state cards only (state is {row['state']})")
         if row["reviewer"] and row["reviewer"] != p.agent:
-            raise HTTPException(409, f"already claimed by {row['reviewer']}")
+            # R3: lease가 만료된 점유는 인계 가능 — 리뷰어 교체·장애 인계 차단 방지
+            if (row["lease_expires"] or "") > dbmod.now():
+                raise HTTPException(409, f"already claimed by {row['reviewer']}")
+        held = c.execute("SELECT COUNT(*) n FROM issues WHERE lease_by=? AND lease_expires>?",
+                         (p.agent, dbmod.now())).fetchone()["n"]
+        if held >= config.max_leases():
+            raise HTTPException(409, f"lease limit: active leases={held} (max={config.max_leases()})")
         service.bump(c, issue_id, {"reviewer": p.agent, "lease_by": p.agent,
                                    "lease_expires": dbmod.future(p.safe_hours()),
                                    "heartbeat_at": dbmod.now()}, row["version"])
         row = service.get_issue(c, issue_id)
-    return dbmod.to_dict(row)
+    d = dbmod.to_dict(row)
+    d["work_contract"] = service.REVIEW_CONTRACT  # 리뷰어는 리뷰 계약을 본다(R2)
+    return d
 
 
 @router.post("/issues/{issue_id}/lease")

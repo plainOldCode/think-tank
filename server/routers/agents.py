@@ -102,7 +102,8 @@ def dispatch(issue_id: str, p: DispatchIn, request: Request, ctx: Ctx = Depends(
         "agent": p.agent, "author": p.author, "message": p.message,
         "context": prev["context"] if prev else "", "comments": tail,
         "tt_url": str(request.base_url).rstrip("/"),
-        "work_contract": json.loads(issue["work_contract"]) if issue["work_contract"] else ctx.contract,
+        "work_contract": (p.work_contract if p.work_contract is not None else
+                          (json.loads(issue["work_contract"]) if issue["work_contract"] else ctx.contract)),
         "execution_attempt": issue["execution_attempt"],
     }
     status, detail, dctx = "ok", "", ""

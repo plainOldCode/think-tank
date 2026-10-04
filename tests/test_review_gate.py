@@ -251,3 +251,17 @@ def test_판정기록시_리뷰어_반납_액션(gate_on):
     acts = dispatchd.decide(_snap([i], _pr()))
     rel = [a for a in acts if a["action"] == "release-reviewer"]
     assert len(rel) == 1 and rel[0]["reviewer"] == REV
+
+
+def test_release_reviewer_실행은_빈문자열과_expected_version으로_PATCH한다(gate_on, monkeypatch):
+    # R1 회귀: reviewer=None PATCH는 핸들러가 무시(no-op) — 규약 일치 필수
+    sent = []
+    card = {"id": "X", "reviewer": REV, "assignee": "a@t", "version": 3}
+    monkeypatch.setattr(probe.core, "api",
+                        lambda url, path, method="GET", payload=None:
+                        sent.append((path, method, payload)) or card)
+    dispatchd.execute("http://x", {"issue": "X", "action": "release-reviewer", "reviewer": REV})
+    path, method, payload = sent[-1]
+    assert method == "PATCH" and path == "/issues/X"
+    assert payload["reviewer"] == ""
+    assert payload["expected_version"] == 3  # "version" 키는 모델에 없어 무시된다

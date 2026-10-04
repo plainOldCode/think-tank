@@ -97,6 +97,8 @@ class DispatchIn(BaseModel):
     agent: str
     message: str
     author: str = "board"
+    # M42KC1XR-2DD1 R2: 리뷰 dispatch는 구현 계약 대신 리뷰 계약을 전달
+    work_contract: dict | None = None
 
 
 class DispatchProgress(BaseModel):

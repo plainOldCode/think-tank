@@ -14,6 +14,18 @@ from verification import legacy_result
 
 ISSUE_ID_RE = config.ISSUE_ID_RE
 
+# 리뷰 계약 (M42KC1XR-2DD1 R2): 리뷰 dispatch·claim-review는 구현 계약 대신 이것을 전달 —
+# 판정이 목적임을 명시해 에이전트가 구현을 시도하지 않게 한다.
+REVIEW_CONTRACT = {
+    "version": "review-v1",
+    "role": "reviewer",
+    "purpose": "구현이 아니라 판정이 목적 — PR diff를 검토해 승인 여부만 결정한다. 코드를 고치지 않는다.",
+    "instructions": "리뷰 방식: 변경 파일 통독 + 변경 심볼 grep으로 호출자 확인(공용 모듈은 필수). "
+                    "판정 기준: 계약 준수·시크릿 노출·테스트 적절성·놓친 엣지. "
+                    "결과 게시: GitHub PR 코멘트와 TT 카드 코멘트 양쪽 — 첫 줄 'review: approve' 또는 "
+                    "'review: request-changes', 둘째 줄 'PR#<n>@<sha8>'. TT 코멘트 author는 자기 에이전트명.",
+}
+
 
 class Ctx:
     """앱 인스턴스 컨텍스트: DB 경로 + 스냅샷된 작업 계약."""

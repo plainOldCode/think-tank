@@ -528,3 +528,119 @@ def test_claim_review는_review상태에서만_가능하고_상태를_바꾸지_
     r = client.patch(f"/issues/{claimed['id']}", json={"version": body["version"], "reviewer": ""})
     assert r.status_code == 200
     assert r.json()["reviewer"] is None
+
+
+def test_probe_반납은_실제_핸들러에서_reviewer와_lease를_지우고_assignee를_보존한다(client, monkeypatch):
+    """R1 통합 회귀 — probe execute → 실제 PATCH → reviewer/lease 해제, 작업자 assignee 유지."""
+    import probe.core
+
+    issue = client.post("/issues", json={"title": "반납 통합"}).json()
+    claimed = client.post(f"/issues/{issue['id']}/claim", json={"agent": "worker"}).json()
+    client.patch(f"/issues/{issue['id']}", json={"state": "done", "completion_report": {
+        "contract_version": claimed["work_contract"]["version"], "attempt": 1, "method": "planned",
+        "design": {"criteria": "c", "verification": "v"},
+        "implementation": {"summary": "s", "commands": "cc"},
+        "verification": {"commands": "ccc", "evidence": "e"},
+        "result": "passed", "limitations": ""}})
+    body = client.post(f"/issues/{issue['id']}/claim-review", json={"agent": "codex"}).json()
+    assert body["reviewer"] == "codex" and body["lease_by"] == "codex"
+
+    def fake_api(url, path, method="GET", payload=None):
+        if method == "GET":
+            return client.get(path).json()
+        return client.request(method, path, json=payload).json()
+
+    monkeypatch.setattr(probe.core, "api", fake_api)
+    probe.core.execute("u", {"issue": issue["id"], "action": "release-reviewer",
+                             "reviewer": "codex"})
+    d = client.get(f"/issues/{issue['id']}").json()
+    assert d["reviewer"] is None
+    assert d["lease_by"] == "" and d["lease_expires"] is None
+    assert d["assignee"] == "worker"  # review-fix 대상 보존
+    assert d["state"] == "review" and d["execution_attempt"] == 1
+
+
+def test_리뷰어_lease만료_후_타_리뷰어_인계_가능(client):
+    import sqlite3
+
+    issue = client.post("/issues", json={"title": "인계"}).json()
+    claimed = client.post(f"/issues/{issue['id']}/claim", json={"agent": "worker"}).json()
+    client.patch(f"/issues/{issue['id']}", json={"state": "done", "completion_report": {
+        "contract_version": claimed["work_contract"]["version"], "attempt": 1, "method": "planned",
+        "design": {"criteria": "c", "verification": "v"},
+        "implementation": {"summary": "s", "commands": "cc"},
+        "verification": {"commands": "ccc", "evidence": "e"},
+        "result": "passed", "limitations": ""}})
+    assert client.post(f"/issues/{issue['id']}/claim-review", json={"agent": "codex"}).status_code == 200
+    con = sqlite3.connect(client.app.state.db_path)
+    con.execute("UPDATE issues SET lease_expires='2000-01-01T00:00:00+00:00' WHERE id=?", (issue["id"],))
+    con.commit(); con.close()
+    r = client.post(f"/issues/{issue['id']}/claim-review", json={"agent": "claude"})
+    assert r.status_code == 200
+    assert r.json()["reviewer"] == "claude"
+
+
+def test_리뷰_dispatch는_리뷰_계약을_전달한다(client, monkeypatch):
+    """R2 — 리뷰 dispatch payload의 work_contract가 리뷰 계약이고, claim-review 응답도 리뷰 계약."""
+    import probe.core
+    import service
+
+    monkeypatch.setenv("TT_REVIEW_AGENT", "codex")
+    payloads = []
+
+    class Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def read(self):
+            return b"{}"
+
+    def fake_urlopen(req, timeout=10):
+        payloads.append(json.loads(req.data))
+        return Response()
+
+    monkeypatch_dummy = None
+    issue = client.post("/issues", json={"title": "리뷰 계약"}).json()
+    # dispatch는 등록된 webhook agent 필요 — codex 등록 후 호출
+    client.post("/agents", json={"name": "codex", "base_url": "http://runner.local"})
+    probe_api = probe.core.api
+
+    monkeypatch_urlopen = None
+    # probe execute의 api를 TestClient로 대체해 실제 dispatch 엔드포인트를 태운다
+    def fake_api(url, path, method="GET", payload=None):
+        if method == "GET":
+            return client.get(path).json()
+        return client.request(method, path, json=payload).json()
+
+    import probe.core as pc
+    pc.api = fake_api
+    try:
+        import urllib.request as _ur
+        orig = _ur.urlopen
+        _ur.urlopen = fake_urlopen  # service.deliver가 보내는 실제 webhook 페이로드 관찰
+        pc.execute("u", {"issue": issue["id"], "action": "review-request", "pr": 5,
+                         "repo": "plainOldCode/think-tank", "branch": "tt/x",
+                         "head_sha": "b" * 40, "marker": "[review-req #5/bbbbbbbb]"})
+    finally:
+        _ur.urlopen = orig
+        pc.api = probe_api
+    review_payloads = [p for p in payloads if "[auto review]" in (p.get("message") or "")]
+    assert review_payloads, "리뷰 dispatch가 전송되지 않음"
+    assert review_payloads[0]["work_contract"] == service.REVIEW_CONTRACT
+    assert review_payloads[0]["work_contract"]["role"] == "reviewer"
+
+    # claim-review 응답도 리뷰 계약을 반환 — 작업자 구현 계약과 혼선 방지
+    claimed = client.post(f"/issues/{issue['id']}/claim", json={"agent": "worker"}).json()
+    client.patch(f"/issues/{issue['id']}", json={"state": "done", "completion_report": {
+        "contract_version": claimed["work_contract"]["version"], "attempt": 1, "method": "planned",
+        "design": {"criteria": "c", "verification": "v"},
+        "implementation": {"summary": "s", "commands": "cc"},
+        "verification": {"commands": "ccc", "evidence": "e"},
+        "result": "passed", "limitations": ""}})
+    r = client.post(f"/issues/{issue['id']}/claim-review", json={"agent": "codex"}).json()
+    assert r["work_contract"] == service.REVIEW_CONTRACT

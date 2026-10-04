@@ -12,6 +12,8 @@ import subprocess
 import time
 import urllib.request
 
+from service import REVIEW_CONTRACT
+
 PULL_HINT = "tt claim ID {agent} 후 dispatch — pull(풀) 사용 금지(30KP/W1DP)"
 
 
@@ -436,8 +438,10 @@ def execute(url, act):
     if kind == "release-reviewer":
         cur = api(url, f"/issues/{act['issue']}")
         if cur.get("reviewer") == act.get("reviewer"):
+            # reviewer="" → 서버에서 None+lease 해제. expected_version으로 경합 방어
+            # (t_501e6ec3: 판정-집행 경합 — collect 시점 version과 현재 다르면 409 후 다음 라운드 재시도)
             api(url, f"/issues/{act['issue']}", "PATCH",
-                {"version": cur["version"], "reviewer": None})
+                {"expected_version": cur["version"], "reviewer": ""})
         return
     if kind == "merge":
         repo = act.get("repo") or REPO
@@ -547,7 +551,8 @@ def execute(url, act):
                f"첫 줄 'review: approve' 또는 'review: request-changes', 둘째 줄 'PR#{act['pr']}@{sha8}'. "
                f"TT 코멘트 author는 '{agent}'로 게시.")
         try:
-            api(url, f"/issues/{act['issue']}/dispatch", "POST", {"agent": agent, "message": msg})
+            api(url, f"/issues/{act['issue']}/dispatch", "POST",
+                {"agent": agent, "message": msg, "work_contract": REVIEW_CONTRACT})
         except Exception as e:
             api(url, f"/issues/{act['issue']}/comments", "POST",
                 {"author": "probe", "body": f"{act['marker']} 리뷰 dispatch 실패({str(e)[:80]}) — "
