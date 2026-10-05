@@ -50,7 +50,7 @@ function msgHtml(m, cls) {
     `${renderBody(m)} ` +
     `<button class="glabel" onclick="reply('${abEsc(m.id)}', '${abEsc(m.thread_id || m.id)}')">답글</button>` +
     (viewer && unread ? ` <button class="glabel" onclick="markRead('${abEsc(m.id)}')">읽음</button>` : "") +
-    (m.reads.length ? `<span class="when">읽음: ${m.reads.map(esc).join(", ")}</span>` : "") +
+    (m.reads.length ? `<span class="when">읽음: ${m.reads.map(abEsc).join(", ")}</span>` : "") +
     `</div>`;
 }
 
@@ -83,10 +83,12 @@ async function load() {
       if (root) byThread.get(t).root = root;
     } catch { /* 루트 소실 스레드는 답글만으로라도 렌더 */ }
   }
+  const threadTs = th => (th.root || th.replies[0] || { created_at: "" }).created_at;
   const roots = [...byThread.values()].filter(th => th.root || th.replies.length)
-    .sort((a, b) => b.root.created_at.localeCompare(a.root.created_at));
+    .sort((a, b) => threadTs(b).localeCompare(threadTs(a)));
   document.getElementById("board").innerHTML = roots.length ? roots.map(th =>
-    `<div class="thread"><div class="root">${msgHtml(th.root, "root")}</div>` +
+    `<div class="thread">` +
+    (th.root ? `<div class="root">${msgHtml(th.root, "root")}</div>` : "") +
     (th.replies.length ? `<div class="replies">${th.replies.map(r => msgHtml(r, "reply")).join("")}</div>` : "") +
     `</div>`).join("") : `<div class="empty">메시지가 없습니다 — 첫 공지를 올려보세요.</div>`;
   if (viewer) {
