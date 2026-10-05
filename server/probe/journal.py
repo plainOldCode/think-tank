@@ -9,6 +9,7 @@ state in_progress(영구 스레드), claim/done 대상 아님. 체크인은 pull
   할 일(유휴 체크인이므로 상시 '없음 — 유휴'), 지시사항(책임자가 일지 카드에 남긴 최근 코멘트).
 """
 import os
+import urllib.parse
 from datetime import datetime, timedelta
 
 
@@ -57,16 +58,18 @@ def journal_tick(url, hours=None, now=None):
     now = now or datetime.now().astimezone()
     issues = core.api(url, "/issues?limit=500&with_comments=1")
     agents = core.api(url, "/agents")
+    # codex F2: created_at DESC limit=500은 일지·lease를 누락한다 — 라벨/lease_by 필터로 정확히 조회.
+    journals = core.api(url, "/issues?label=%EC%9D%BC%EC%A7%80&limit=1000&with_comments=1")
     out = []
     for ag in agents:
         if not ag.get("enabled", True):
             continue
         name = ag["name"]
-        if any(i.get("lease_by") == name and (_ts(i.get("lease_expires")) or now) > now
-               for i in issues):
+        if any((_ts(i.get("lease_expires")) or now) > now
+               for i in core.api(url, f"/issues?lease_by={urllib.parse.quote(name)}&limit=10")):
             continue  # 바쁨 — 유휴가 아니면 기록하지 않는다
-        journal = next((i for i in issues if "일지" in (i.get("labels") or [])
-                        and i["title"].strip() == f"일지: {name}"), None)
+        journal = next((i for i in journals
+                        if i["title"].strip() == f"일지: {name}"), None)
         if journal is None:
             j = core.api(url, "/issues", "POST", {
                 "title": f"일지: {name}", "labels": ["일지"],

@@ -41,7 +41,7 @@ def create_issue(p: IssueCreate, ctx: Ctx = Depends(get_ctx)):
 @router.get("/issues")
 def list_issues(state: str | None = None, parent: str | None = None, label: str | None = None,
                 assignee: str | None = None, q: str | None = None, limit: int = 200,
-                archived: str = "no", with_comments: int = 0,
+                archived: str = "no", with_comments: int = 0, lease_by: str | None = None,
                 ctx: Ctx = Depends(get_ctx)):
     sql = "SELECT * FROM issues WHERE 1=1"
     args: list = []
@@ -63,6 +63,9 @@ def list_issues(state: str | None = None, parent: str | None = None, label: str 
     if assignee is not None:
         sql += " AND assignee=?"
         args.append(assignee)
+    if lease_by is not None:  # M4580RJK-C9B0: 일지 틱의 활성 lease 조회용
+        sql += " AND lease_by=?"
+        args.append(lease_by)
     if q:
         sql += " AND (title LIKE ? OR body LIKE ?)"
         args += [f"%{q}%", f"%{q}%"]

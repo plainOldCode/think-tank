@@ -154,7 +154,10 @@ def decide(snap):
     claimed = set()
 
     def idle(name):
+        # 일지 스레드(라벨 일지)는 작업이 아니다(M4580RJK-C9B0 codex F1): in_progress+assignee라도
+        # 유휴 판정에서 제외 — 유휴 규약 = 본인 활성 lease 0개와 정렬. 일지 카드가 자동 배정을 죽이지 않게.
         return not any(i["state"] == "in_progress" and i.get("assignee") == name
+                       and "일지" not in (i.get("labels") or [])
                        and (i.get("lease_expires") or "9999") > now for i in issues)
 
     def pick(cands):

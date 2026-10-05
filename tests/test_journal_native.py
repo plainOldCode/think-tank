@@ -141,3 +141,76 @@ def test_run_once_비드라이에서만_저널_틱(monkeypatch):
     assert not calls, "dry-run에서는 기록하지 않는다"
     core.run_once("http://self")
     assert calls == ["http://self"]
+
+
+def _seed_auto_card(client):
+    return client.post("/issues", json={"title": "자동작업", "labels": ["auto"]}).json()["id"]
+
+
+def _decide_snap(client):
+    import db as dbmod
+    issues = client.get("/issues?limit=500&with_comments=1").json()
+    for i in issues:
+        i.setdefault("dispatches", 0)
+    return {"auto": True, "now": dbmod.now(),
+            "agents": client.get("/agents").json(), "issues": issues}
+
+
+def test_issues_lease_by_필터(client):
+    iid = client.post("/issues", json={"title": "x"}).json()["id"]
+    assert client.post(f"/issues/{iid}/claim", json={"agent": "codex"}).status_code in (200, 201)
+    assert [r["id"] for r in client.get("/issues?lease_by=codex").json()] == [iid]
+    assert client.get("/issues?lease_by=없는에이전트").json() == []
+
+
+def test_일지_카드가_자동배정_막지_않음(client, monkeypatch):
+    """codex F1 회귀: 일지 카드(in_progress+assignee, lease 없음)는 유휴 판정에서 제외.
+
+    유휴 규약 = 본인 활성 lease 0개 — 일지 스레드는 작업이 아니다(decide.idle과 규약 정렬).
+    """
+    _mk_agent(client, "codex")
+    _seed_auto_card(client)
+    _patch_api(client, monkeypatch)
+    core.journal_tick("http://self")
+    acts = core.decide(_decide_snap(client))
+    assert any(a["action"] == "work" for a in acts), "일지 카드가 자동 배정을 죽이면 안 됨"
+
+
+def _deterministic_clock(monkeypatch):
+    """created_at 초 단위 동률 제거 — 삽입마다 1초씩 증가한 시각을 부여."""
+    import db as dbmod
+    import itertools
+    tick = itertools.count()
+
+    def fake_now():
+        n = next(tick)
+        return f"2030-01-01T00:{n // 60:02d}:{n % 60:02d}+0900"
+
+    monkeypatch.setattr(dbmod, "now", fake_now)
+
+
+def test_500건_경계_밖_기존_일지_중복_신설_방지(client, monkeypatch):
+    """codex F2 회귀: created_at DESC limit=500 밖의 기존 일지를 재신설하지 않는다."""
+    _deterministic_clock(monkeypatch)
+    _mk_agent(client, "codex")
+    _patch_api(client, monkeypatch)
+    core.journal_tick("http://self")
+    for n in range(500):
+        client.post("/issues", json={"title": f"채움{n}"})
+    acts = core.journal_tick("http://self")
+    journals = [i for i in client.get("/issues?limit=1000").json() if "일지" in i["labels"]]
+    assert len(journals) == 1, "일지 카드 중복 신설 금지"
+    assert not any(a["action"] == "journal-new" for a in acts)
+
+
+def test_500건_경계_밖_활성_lease_바쁨_인정(client, monkeypatch):
+    """codex F2 회귀: 목록 밖의 활성 lease도 바쁨으로 인정 — 체크인 스킵."""
+    _deterministic_clock(monkeypatch)
+    _mk_agent(client, "codex")
+    iid = client.post("/issues", json={"title": "작업"}).json()["id"]
+    client.post(f"/issues/{iid}/claim", json={"agent": "codex"})
+    for n in range(500):
+        client.post("/issues", json={"title": f"채움{n}"})
+    _patch_api(client, monkeypatch)
+    acts = core.journal_tick("http://self")
+    assert not any(a["action"] in ("journal-new", "journal-checkin") for a in acts)
