@@ -41,7 +41,9 @@ def create_issue(p: IssueCreate, ctx: Ctx = Depends(get_ctx)):
 @router.get("/issues")
 def list_issues(state: str | None = None, parent: str | None = None, label: str | None = None,
                 assignee: str | None = None, q: str | None = None, limit: int = 200,
-                archived: str = "no", ctx: Ctx = Depends(get_ctx)):
+                archived: str = "no", with_comments: int = 0, lease_by: str | None = None,
+                active_lease: int = 0,
+                ctx: Ctx = Depends(get_ctx)):
     sql = "SELECT * FROM issues WHERE 1=1"
     args: list = []
     if archived == "no":
@@ -62,6 +64,12 @@ def list_issues(state: str | None = None, parent: str | None = None, label: str 
     if assignee is not None:
         sql += " AND assignee=?"
         args.append(assignee)
+    if lease_by is not None:  # M4580RJK-C9B0: 일지 틱의 활성 lease 조회용
+        sql += " AND lease_by=?"
+        args.append(lease_by)
+    if active_lease:  # codex F2·F3: LIMIT 전에 서버가 활성(만료 전) 판정 — 소유자 조건과 독립
+        sql += " AND lease_expires IS NOT NULL AND lease_expires > ?"
+        args.append(dbmod.now())
     if q:
         sql += " AND (title LIKE ? OR body LIKE ?)"
         args += [f"%{q}%", f"%{q}%"]
@@ -69,7 +77,11 @@ def list_issues(state: str | None = None, parent: str | None = None, label: str 
     args.append(max(1, min(limit, 1000)))
     with ctx.con() as c:
         rows = c.execute(sql, args).fetchall()
-        return [service.enrich_blocked(c, dbmod.to_dict(r)) for r in rows]
+        out = [service.enrich_blocked(c, dbmod.to_dict(r)) for r in rows]
+        if with_comments:  # M4580RJK-C9B0: 일지 체크인이 코멘트 스캔에 사용 (opt-in)
+            for o in out:
+                o["comments"] = dbmod.comments_of(c, o["id"])
+        return out
 
 
 @router.get("/issues/{issue_id}")
