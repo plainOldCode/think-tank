@@ -110,10 +110,13 @@ def list_messages(thread: str | None = None, mentions: str | None = None,
             sql = "SELECT * FROM messages WHERE 1=1"
             args: list = []
             if mentions is not None:
-                sql += " AND mentions LIKE ?"
-                args.append(f"%,{mentions},%")
+                # codex F4: LIKE 와일드카드(_ % \)를 문자 그대로 — 이름 정확 매칭
+                esc = mentions.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+                sql += " AND mentions LIKE ? ESCAPE '\\'"
+                args.append(f"%,{esc},%")
             if since:
-                sql += " AND created_at > ?"
+                # codex F5: 초 단위 커서 — 경계 포함(같은 초 작성분 누락 방지, 재수신은 id 중복 제거)
+                sql += " AND created_at >= ?"
                 args.append(since)
             sql += " ORDER BY created_at DESC, id DESC LIMIT ?"
             args.append(max(1, min(limit, 1000)))

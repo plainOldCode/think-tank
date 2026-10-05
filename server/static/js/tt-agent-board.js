@@ -1,4 +1,5 @@
-/* agent board — 에이전트 간 메시지 (M4580A48-573W). tt-util.js의 esc 사용. */
+/* agent board — 에이전트 간 메시지 (M4580A48-573W). 자기완결 — tt-util에 의존하지 않는다. */
+const abEsc = s => (s === null || s === undefined ? "" : String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;"));
 const AB = {
   api: (p, method, body) => fetch(p, {
     method: method || "GET",
@@ -21,19 +22,19 @@ async function loadAgents() {
     AB.agents = await AB.api("/agents");
   } catch { AB.agents = []; }
   const names = [...AB.agents.map(a => a.name), "skshim", "scott"];
-  const opts = names.map(n => `<option value="${esc(n)}">${esc(n)}</option>`).join("");
+  const opts = names.map(n => `<option value="${abEsc(n)}">${abEsc(n)}</option>`).join("");
   document.getElementById("author").innerHTML = opts;
   const viewer = document.getElementById("viewer");
   viewer.innerHTML = `<option value="">(시점 없음)</option>` +
-    names.map(n => `<option${AB.viewer === n ? " selected" : ""} value="${esc(n)}">${esc(n)}</option>`).join("");
+    names.map(n => `<option${AB.viewer === n ? " selected" : ""} value="${abEsc(n)}">${abEsc(n)}</option>`).join("");
 }
 
 function renderBody(m) {
   const viewer = viewerName();
-  let html = esc(m.body).replace(/@([^\s@,]+)/g, (s, name) => {
+  let html = abEsc(m.body).replace(/@([^\s@,]+)/g, (s, name) => {
     const known = AB.agents.some(a => a.name === name);
     const hit = viewer && m.mentions.includes(`,${name},`);
-    return `<span class="${known ? "mention" : ""}${hit && viewer === name ? " mine" : ""}">@${esc(name)}</span>`;
+    return `<span class="${known ? "mention" : ""}${hit && viewer === name ? " mine" : ""}">@${abEsc(name)}</span>`;
   }).replace(/\n/g, "<br>");
   return html;
 }
@@ -41,14 +42,14 @@ function renderBody(m) {
 function msgHtml(m, cls) {
   const viewer = viewerName();
   const unread = viewer && m.author !== viewer && !m.reads.includes(viewer);
-  return `<div class="msg ${cls}" data-id="${esc(m.id)}">` +
-    `<span class="who">${esc(m.author)}</span>` +
+  return `<div class="msg ${cls}" data-id="${abEsc(m.id)}">` +
+    `<span class="who">${abEsc(m.author)}</span>` +
     (viewer && m.mentions.includes(`,${viewer},`) ? `<span class="badge">멘션</span>` : "") +
     (unread ? `<span class="badge">안읽음</span>` : "") +
-    `<span class="when">${esc((m.created_at || "").slice(5, 16))}</span><br>` +
+    `<span class="when">${abEsc((m.created_at || "").slice(5, 16))}</span><br>` +
     `${renderBody(m)} ` +
-    `<button class="glabel" onclick="reply('${esc(m.id)}', '${esc(m.thread_id || m.id)}')">답글</button>` +
-    (viewer && unread ? ` <button class="glabel" onclick="markRead('${esc(m.id)}')">읽음</button>` : "") +
+    `<button class="glabel" onclick="reply('${abEsc(m.id)}', '${abEsc(m.thread_id || m.id)}')">답글</button>` +
+    (viewer && unread ? ` <button class="glabel" onclick="markRead('${abEsc(m.id)}')">읽음</button>` : "") +
     (m.reads.length ? `<span class="when">읽음: ${m.reads.map(esc).join(", ")}</span>` : "") +
     `</div>`;
 }
@@ -61,7 +62,7 @@ async function load() {
   if (mentionOnly) url += `&mentions=${encodeURIComponent(viewer)}`;
   let ms;
   try { ms = await AB.api(url); } catch (e) {
-    document.getElementById("board").innerHTML = `<div class="empty">${esc(String(e))}</div>`;
+    document.getElementById("board").innerHTML = `<div class="empty">${abEsc(String(e))}</div>`;
     return;
   }
   if (ms.length) AB.lastTs = ms[0].created_at;
@@ -73,7 +74,16 @@ async function load() {
     if (m.thread_id) th.replies.push(m);
     else th.root = m;
   }
-  const roots = [...byThread.values()].filter(th => th.root)
+  // codex F2: 목록 창(멘션 필터·limit) 밖의 루트 보완 — 답글만 있는 스레드가 사라지지 않게.
+  const missing = [...byThread.entries()].filter(([, th]) => !th.root && th.replies.length).map(([t]) => t).slice(0, 20);
+  for (const t of missing) {
+    try {
+      const full = await AB.api(`/messages?thread=${encodeURIComponent(t)}`);
+      const root = full.find(m => !m.thread_id);
+      if (root) byThread.get(t).root = root;
+    } catch { /* 루트 소실 스레드는 답글만으로라도 렌더 */ }
+  }
+  const roots = [...byThread.values()].filter(th => th.root || th.replies.length)
     .sort((a, b) => b.root.created_at.localeCompare(a.root.created_at));
   document.getElementById("board").innerHTML = roots.length ? roots.map(th =>
     `<div class="thread"><div class="root">${msgHtml(th.root, "root")}</div>` +

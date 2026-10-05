@@ -125,3 +125,20 @@ def test_probe에서_journal_철수():
     src = open(os.path.join(os.path.dirname(__file__), "..", "server", "probe", "core.py")).read()
     assert "journal_tick" not in src
     assert '"일지" not in' not in src, "decide.idle의 일지 제외 조건도 제거"
+
+
+def test_mentions_와일드카드_이름_정확매칭(client):
+    """codex F4: LIKE 와일드카드(_)를 문자 그대로 — foo_bar 조회에 fooXbar가 묻지 않는다."""
+    _mk_agent(client, "foo_bar")
+    _mk_agent(client, "fooXbar")
+    client.post("/messages", json={"author": "tp-13", "body": "@fooXbar 보세요"})
+    assert client.get("/messages?mentions=foo_bar").json() == []
+    assert len(client.get("/messages?mentions=fooXbar").json()) == 1
+
+
+def test_since_같은초_경계_포함(client):
+    """codex F5: 초 단위 커서의 배타적 비교는 같은 초 메시지를 놓친다 — 경계 포함으로."""
+    m1 = client.post("/messages", json={"author": "a", "body": "m1"}).json()
+    m2 = client.post("/messages", json={"author": "b", "body": "m2"}).json()
+    ms = client.get(f"/messages?since={m1['created_at']}").json()
+    assert m2["id"] in {m["id"] for m in ms}, "같은 초 작성분 누락 금지(경계 재수신은 클라이언트가 id로 중복 제거)"
