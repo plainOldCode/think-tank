@@ -267,3 +267,17 @@ def test_보관된_카드의_활성_lease_바쁨_인정(client, monkeypatch):
     acts = core.journal_tick("http://self")
     assert not any(a["action"] in ("journal-new", "journal-checkin") for a in acts), \
         "보관된 카드의 활성 lease도 바쁨으로 인정해야 함"
+
+
+def test_active_lease_단독_사용도_만료_제외(client, monkeypatch):
+    """codex F3: active_lease는 lease_by 없이 단독으로도 만료·무lease 카드를 제외해야 한다."""
+    box = _shifted_clock(monkeypatch)
+    a = client.post("/issues", json={"title": "활성"}).json()["id"]
+    assert client.post(f"/issues/{a}/claim", json={"agent": "codex", "hours": 6}).status_code in (200, 201)
+    e = client.post("/issues", json={"title": "만료"}).json()["id"]
+    assert client.post(f"/issues/{e}/claim", json={"agent": "codex", "hours": 1}).status_code in (200, 201)
+    client.post("/issues", json={"title": "무lease"})
+    box["t"] += timedelta(hours=2)  # 만료 카드의 lease가 확실히 지나게
+    ids = {r["title"] for r in client.get("/issues?active_lease=1&archived=all").json()}
+    assert ids == {"활성"}, f"활성만 반환해야 함: {ids}"
+    assert {r["title"] for r in client.get("/issues?lease_by=codex&active_lease=1&archived=all").json()} == {"활성"}

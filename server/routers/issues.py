@@ -67,9 +67,9 @@ def list_issues(state: str | None = None, parent: str | None = None, label: str 
     if lease_by is not None:  # M4580RJK-C9B0: 일지 틱의 활성 lease 조회용
         sql += " AND lease_by=?"
         args.append(lease_by)
-        if active_lease:  # codex F2: LIMIT 전에 서버가 활성(만료 전) 판정 — 만료 lease가 슬롯을 채우면 누락됨
-            sql += " AND lease_expires IS NOT NULL AND lease_expires > ?"
-            args.append(dbmod.now())
+    if active_lease:  # codex F2·F3: LIMIT 전에 서버가 활성(만료 전) 판정 — 소유자 조건과 독립
+        sql += " AND lease_expires IS NOT NULL AND lease_expires > ?"
+        args.append(dbmod.now())
     if q:
         sql += " AND (title LIKE ? OR body LIKE ?)"
         args += [f"%{q}%", f"%{q}%"]
