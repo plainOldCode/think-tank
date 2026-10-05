@@ -42,6 +42,7 @@ def create_issue(p: IssueCreate, ctx: Ctx = Depends(get_ctx)):
 def list_issues(state: str | None = None, parent: str | None = None, label: str | None = None,
                 assignee: str | None = None, q: str | None = None, limit: int = 200,
                 archived: str = "no", with_comments: int = 0, lease_by: str | None = None,
+                active_lease: int = 0,
                 ctx: Ctx = Depends(get_ctx)):
     sql = "SELECT * FROM issues WHERE 1=1"
     args: list = []
@@ -66,6 +67,9 @@ def list_issues(state: str | None = None, parent: str | None = None, label: str 
     if lease_by is not None:  # M4580RJK-C9B0: 일지 틱의 활성 lease 조회용
         sql += " AND lease_by=?"
         args.append(lease_by)
+        if active_lease:  # codex F2: LIMIT 전에 서버가 활성(만료 전) 판정 — 만료 lease가 슬롯을 채우면 누락됨
+            sql += " AND lease_expires IS NOT NULL AND lease_expires > ?"
+            args.append(dbmod.now())
     if q:
         sql += " AND (title LIKE ? OR body LIKE ?)"
         args += [f"%{q}%", f"%{q}%"]

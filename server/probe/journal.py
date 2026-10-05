@@ -65,8 +65,10 @@ def journal_tick(url, hours=None, now=None):
         if not ag.get("enabled", True):
             continue
         name = ag["name"]
+        # active_lease=1: 만료를 LIMIT 전에 걸러냄. archived=all: 보관 카드의 lease도 활성다(codex F2).
         if any((_ts(i.get("lease_expires")) or now) > now
-               for i in core.api(url, f"/issues?lease_by={urllib.parse.quote(name)}&limit=10")):
+               for i in core.api(url, f"/issues?lease_by={urllib.parse.quote(name)}"
+                                        f"&active_lease=1&archived=all&limit=10")):
             continue  # 바쁨 — 유휴가 아니면 기록하지 않는다
         journal = next((i for i in journals
                         if i["title"].strip() == f"일지: {name}"), None)

@@ -186,7 +186,12 @@ def _deterministic_clock(monkeypatch):
         n = next(tick)
         return f"2030-01-01T00:{n // 60:02d}:{n % 60:02d}+0900"
 
+    def fake_future(hours):
+        # created_at 카운터와 독립 — 2030-06-01 기준(00:xx created_at 범위보다 확실히 미래)
+        return f"2030-06-01T{hours:02d}:00:00+0900"
+
     monkeypatch.setattr(dbmod, "now", fake_now)
+    monkeypatch.setattr(dbmod, "future", fake_future)
 
 
 def test_500건_경계_밖_기존_일지_중복_신설_방지(client, monkeypatch):
@@ -214,3 +219,51 @@ def test_500건_경계_밖_활성_lease_바쁨_인정(client, monkeypatch):
     _patch_api(client, monkeypatch)
     acts = core.journal_tick("http://self")
     assert not any(a["action"] in ("journal-new", "journal-checkin") for a in acts)
+
+
+def _shifted_clock(monkeypatch):
+    """제어 가능한 서버 시계 — db.now/db.future를 테스트가 임의로 전진."""
+    import db as dbmod
+    box = {"t": datetime.now().astimezone().replace(microsecond=0)}
+
+    def fake_now():
+        return box["t"].strftime("%Y-%m-%dT%H:%M:%S%z")
+
+    def fake_future(hours):
+        return (box["t"] + timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M:%S%z")
+
+    monkeypatch.setattr(dbmod, "now", fake_now)
+    monkeypatch.setattr(dbmod, "future", fake_future)
+    return box
+
+
+def test_만료_lease_10건_경계에서_활성_lease_인정(client, monkeypatch):
+    """codex F2 잔여: LIMIT 전에 만료를 걸러야 한다 — 만료 lease로 슬롯을 채우면
+    구형 활성 lease가 목록 밖으로 밀려나 유휴 오판했다(개정 전)."""
+    box = _shifted_clock(monkeypatch)
+    _patch_api(client, monkeypatch)
+    _mk_agent(client, "codex")
+    active = client.post("/issues", json={"title": "활성작업"}).json()["id"]
+    assert client.post(f"/issues/{active}/claim", json={"agent": "codex", "hours": 6}).status_code in (200, 201)
+    for n in range(10):
+        box["t"] += timedelta(hours=2)  # 직전 filler의 lease가 만료되게
+        f = client.post("/issues", json={"title": f"만료{n}"}).json()["id"]
+        assert client.post(f"/issues/{f}/claim", json={"agent": "codex", "hours": 1}).status_code in (200, 201)
+        client.post(f"/issues/{active}/lease", json={"agent": "codex", "hours": 6})  # 활성 유지
+    box["t"] += timedelta(hours=2)
+    acts = core.journal_tick("http://self", now=box["t"])  # 틱 시계도 테스트 시계와 맞춘다
+    assert not any(a["action"] in ("journal-new", "journal-checkin") for a in acts), \
+        "활성 lease가 목록 밖으로 밀려도 바쁨으로 인정해야 함"
+
+
+def test_보관된_카드의_활성_lease_바쁨_인정(client, monkeypatch):
+    """codex F2 잔여: archived 카드의 lease도 활성다 — 기본 archived=no 조회로는 누락."""
+    _shifted_clock(monkeypatch)
+    _patch_api(client, monkeypatch)
+    _mk_agent(client, "codex")
+    iid = client.post("/issues", json={"title": "보관작업"}).json()["id"]
+    assert client.post(f"/issues/{iid}/claim", json={"agent": "codex", "hours": 6}).status_code in (200, 201)
+    assert client.patch(f"/issues/{iid}", json={"archived": True, "version": None}).status_code in (200, 409)
+    acts = core.journal_tick("http://self")
+    assert not any(a["action"] in ("journal-new", "journal-checkin") for a in acts), \
+        "보관된 카드의 활성 lease도 바쁨으로 인정해야 함"
