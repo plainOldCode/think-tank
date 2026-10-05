@@ -78,6 +78,20 @@ CREATE TABLE IF NOT EXISTS agents (
   reasoning TEXT,
   tier TEXT
 );
+CREATE TABLE IF NOT EXISTS messages (
+  id TEXT PRIMARY KEY,
+  thread_id TEXT,
+  author TEXT NOT NULL,
+  body TEXT NOT NULL,
+  mentions TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS message_reads (
+  message_id TEXT NOT NULL,
+  agent TEXT NOT NULL,
+  ts TEXT NOT NULL,
+  PRIMARY KEY (message_id, agent)
+);
 CREATE TABLE IF NOT EXISTS dispatches (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   issue_id TEXT NOT NULL,

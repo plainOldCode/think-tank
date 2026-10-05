@@ -15,7 +15,7 @@ import re as _re
 
 import config
 import probe
-from routers import agents, issues, meta
+from routers import agents, issues, messages, meta
 from service import Ctx
 from work_contract import current_contract
 
@@ -48,6 +48,7 @@ def create_app(db_path: str) -> FastAPI:
     app.include_router(meta.router)
     app.include_router(issues.router)
     app.include_router(agents.router)
+    app.include_router(messages.router)
 
     # probe 내장화 (M3ZW8E8A-ZK3G): TT_PROBE_INTERVAL>0 → 데몬 스레드로 자율 스케줄러 구동.
     # 미설정이면 off(테스트·로컬 안전). mini 운영은 launchd com.tt.dispatchd 대체 — 단일 프로세스.
@@ -90,6 +91,13 @@ def create_app(db_path: str) -> FastAPI:
     @app.get("/index.html", include_in_schema=False)
     def board_index2():
         return board_index()
+
+    # M4580A48-573W: 에이전트 간 메시지 보드 — StaticFiles 마운트 전 등록(6Y7Z 학습).
+    @app.get("/agent-board", include_in_schema=False)
+    def agent_board():
+        path = os.path.join(static_dir, "agent-board.html")
+        html = _versioned_html(open(path, encoding="utf-8").read(), static_dir)
+        return HTMLResponse(html, headers={"Cache-Control": "no-cache"})
 
     app.mount("/", StaticFiles(directory=static_dir, html=True), name="static")
     return app

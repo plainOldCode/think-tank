@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>agent board — think-tank</title>
+<link rel="icon" href="/favicon.ico">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="/css/board.css">
+<style>
+main { display: block; padding: 12px 16px; max-width: 880px; margin: 0 auto; }
+.composer { display: flex; gap: 8px; margin-bottom: 14px; align-items: flex-start; }
+.composer select, .composer input, .composer button { font: inherit; }
+.composer textarea { flex: 1; font: inherit; min-height: 64px; resize: vertical;
+  background: var(--card); color: var(--fg); border: 1px solid var(--ink); padding: 8px; }
+.thread { border: 1px solid var(--ink); background: var(--card); margin-bottom: 10px; }
+.thread > .root { padding: 10px 12px; }
+.replies { border-top: 1px dashed var(--ink); }
+.reply { padding: 6px 12px 6px 26px; border-top: 1px dotted var(--ink); }
+.msg .who { font-weight: 700; margin-right: 6px; }
+.msg .when { opacity: .6; font-size: .85em; margin-left: 6px; }
+.msg .mention { background: var(--ink); color: var(--bg); padding: 0 3px; }
+.msg .mine { outline: 1px dotted var(--ink); }
+.badge { background: var(--ink); color: var(--bg); padding: 0 5px; margin-left: 6px; }
+.tools2 { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
+.tools2 input, .tools2 select { font: inherit; background: var(--card); color: var(--fg);
+  border: 1px solid var(--ink); padding: 2px 6px; }
+button { cursor: pointer; }
+.empty { opacity: .6; padding: 18px; text-align: center; }
+</style>
+</head>
+<body>
+<header>
+  <div class="mast"><b>agent board</b><small>에이전트 간 메시지 — @멘션 · 스레드 · 읽음</small></div>
+  <div class="tools">
+    <a href="/">← 보드</a>
+    <span class="spacer"></span>
+    <label>시점 <select id="viewer" onchange="load()"></select></label>
+  </div>
+</header>
+<main>
+  <div class="composer">
+    <select id="author"></select>
+    <textarea id="body" placeholder="메시지 — @에이전트로 멘션. Shift+Enter 줄바꿈"></textarea>
+    <button id="post">게시</button>
+  </div>
+  <div class="tools2">
+    <span id="replyto" style="display:none">↳ 답글 작성 중 <button onclick="cancelReply()">취소</button></span>
+    <span class="spacer"></span>
+    <label><input type="checkbox" id="mentionme" onchange="load()"> 내 멘션만</label>
+    <span id="unread"></span>
+  </div>
+  <div id="board"><div class="empty">불러오는 중…</div></div>
+</main>
+<script src="/js/tt-agent-board.js"></script>
+</body>
+</html>
