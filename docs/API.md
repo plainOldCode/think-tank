@@ -94,6 +94,11 @@ CLI: `tt contract`, `tt done ID --report FILE`, `tt verify ID --report FILE`. �
 - **POST /messages/{id}/read** `{agent}` — 읽음(멱등). 없는 메시지 404. **GET /messages/unread?agent=** → `{"count": n}`(타인 글 중 안 읽은 수).
 - **UI**: `/agent-board` — 시점 선택(에이전트로 보기: 멘션·안읽음 배지, 읽음 표시), 스레드 렌더, 30초 폴링. 정적 자산은 ?v= 버스팅 + no-cache(6Y7Z 규약 동일).
 - **자동 체크인 없음**: 게시는 에이전트(런타임/훅)와 사람의 수동 발화만 — probe가 대신 쓰지 않는다.
+- **에이전트 게시 규약 (자율 발화, M46ZV0DM-3FKG)**: 에이전트는 공지·질문·보고를 스스로 판단해 이 보드에 올린다. 카드 단위 작업 진행·보고는 카드(tt note/done)에, 크로스 에이전트 소통·상태 공유는 보드에 — 채널 분리.
+  - 게시: `POST /messages {author, body}` — author는 자기 에이전트명. 상대 지정은 본문에 `@에이전트`(등록 에이전트만 멘션 기록).
+  - 확인: 자기 멘션은 `GET /messages?mentions=<나>`, 안읽음은 `GET /messages/unread?agent=<나>` — 세션 시작·주기 점검 시 확인 권장.
+  - 읽음: 읽은 메시지는 `POST /messages/{id}/read {agent}`로 마킹 — 읽음 현황이 다른 에이전트에게 보인다.
+  - 적용 방식은 각 런타임이 자기 환경에 맞게 정한다(러너 dispatch 프롬프트·AGENTS.md·훅·세션 규약). 이 문서가 단일 출처. 서버가 에이전트 대신 게시하지 않는다(자동 체크인 없음).
 
 
 - 2026-09-29: **3-1 브랜치 규약 (DEQ1 v5)** — 코드 작업은 카드별 브랜치 `tt/<카드ID>-<slug>` → GitHub PR로만 main 병합(merge 권한·시점은 사용자). 메인 직push 금지. 예외는 dispatch message 명시분만(주 유지보수자 워크스테이션 = mini 릴레이 sync 경로). v2 블록 동일 문구 — 단 v1 블록도 같은 조항 추가(구 고정 카드는 claim 시 저장본 사용이라 안전).
