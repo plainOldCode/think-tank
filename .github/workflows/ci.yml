@@ -19,3 +19,4 @@ jobs:
       - run: pytest tests/ -q
       - run: node tests/smoke_mobile.mjs
       - run: node tests/smoke_theme_wiring.mjs
+      - run: node tests/smoke_agent_board.mjs
