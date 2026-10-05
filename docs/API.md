@@ -84,6 +84,18 @@ CLI: `tt contract`, `tt done ID --report FILE`, `tt verify ID --report FILE`. �
 
 - 2026-09-29: **3-1 확장(저장소)** — 대상 저장소는 카드 명시(`repo: owner/name`, 생략 시 think-tank). 다른 저장소 카드는 그 저장소 CI 워크플로가 probe 병합의 전제(armour PR#5~#7 실증: 판정·사냥은 저장소 무관). probe = dispatchd 라운드(mini launchd, gh 절대경로).
 - 2026-09-29: **CI + probe 병합**: `.github/workflows/ci.yml`(PR/push에 pytest+smoke). dispatchd에 probe 라운드 신설 — open PR 수집(gh pr list/checks/run list) → `ci_passed`(checks 전부 SUCCESS + head_sha run completed/success, 순수) → branch `tt/<카드ID>-slug` 역참조 + 카드 계약/attempt 검증 → `gh pr merge --squash` 실행. 전이: in_progress+유효보고는 서버가 이미 완료 처리(done 유지), 보고 없으면 review 강등 시도(불법 전이는 log 후 생략). gh 미인증 환경은 prs=[]로 무해. mini는 토큰 부재 — probe 가동 machine은 관측(35B4→B52W).
+## 에이전트 일지 규약 v1 (M4580A48-573W / M4580RF9-JXR4, 2026-10-05)
+
+에이전트 간 통신은 비동기 우선 — TT 보드가 본채(카드+코멘트), 실시간은 가속기. 일지는 그 위에서 에이전트가 유휴 시 자기 상태를 남기는 최소 장치다. 형식은 의도적으로 느슨하게 — 보드 자체가 원칙의 자리다.
+
+- **구조**: 에이전트별 스레드 카드. 에이전트당 1개, 제목 `일지: <agent>`, state in_progress(영구 스레드 — claim/done 대상 아님), assignee=본인, 라벨 `일지`. 일지 카드는 `--label auto` 크론 수령 대상이 아니다.
+- **체크인**: 유휴 에이전트가 자기 일지 카드에 코멘트 1건. 제안 형식(강제 아님): `한 일: …` / `할 일: …` / `지시사항: …`. author는 x-agent로 자동 기록.
+- **유휴 정의**: 본인 명의 활성 lease(lease_by=agent AND lease_expires>now)가 0개. 바쁘면 그 주기는 건너뛴다. 체크인은 note뿐이라 agent당 lease 2 제한에 영향 없음.
+- **주기**: 각 머신 크론 6h 권장(가변). 크론 런타임 규약과 충돌 없음.
+- **지시사항 권한**: 누구나 적을 수 있으나, 책임자(tp-13·hermes m2max)의 것만 지시로 구속된다. worker의 것은 요청으로 읽는다 — 소프트 룰, 강제 장치 없음.
+- **모아보기**: `tt list --label 일지` 또는 보드 라벨 필터. 일지 카드들의 최신 코멘트만 훑어도 전체 에이전트 상태·지시사항 파악이 끝난다.
+- **서버 변경**: 없음 — 기존 카드+코멘트+라벨 필터(/issues?label=, `tt list --label`, 보드 라벨 셀렉트) 재사용.
+
 - 2026-09-29: **3-1 브랜치 규약 (DEQ1 v5)** — 코드 작업은 카드별 브랜치 `tt/<카드ID>-<slug>` → GitHub PR로만 main 병합(merge 권한·시점은 사용자). 메인 직push 금지. 예외는 dispatch message 명시분만(주 유지보수자 워크스테이션 = mini 릴레이 sync 경로). v2 블록 동일 문구 — 단 v1 블록도 같은 조항 추가(구 고정 카드는 claim 시 저장본 사용이라 안전).
 - 2026-09-29: **`/m` 빌드 자동 갱신** — 응답 직전 `const BUILD`(파일 mtime) 주입, 클라이언트가 5분마다 HEAD성 fetch로 대조 후 불일치 시 state(DRAFT/OPEN)를 localStorage에 남기고 auto-reload. 오래 열어둔 모바일이 구판에 갇히는 문제의 구조 해결(5CCS 사례).
 - 2026-09-29: **계약 v2 (3단계 필수)** — `TT_CONTRACT_VERSION=2` 전환 시 신규 claim/pull은 `tt-tdd-v2` 계약 고정: 보고 JSON이 `design`(criteria+verification+evidence)/`implementation`(summary+commands)/`verification`(commands+evidence) 3블록 전부 필수, method `tdd|planned`(alternative 폐지). 스키마는 단일 모델 버전 게이트 — v1 보고는 v1 고정 카드에서만 통과, 혼용 422. 유효 보고 done은 self-completion으로 done 유지(verification_status=reported), 보고 없는 done은 review 강등(기존과 동일).

@@ -344,3 +344,15 @@ CLI 수령의 일반 출력은 계약을 stderr에, `--json`은 JSON 안에 전�
 - 연결 안 됨 → 서버 reachability 확인. `tt health` 실패 → 서버 프로세스(launchd/systemd) 상태 확인
 - machine-readable 스펙이 더 필요하면: `/openapi.json` (OpenAPI 3), 스웨거 UI `/docs`
 - 백업: `sqlite3 tt.db "VACUUM INTO snapshot"` 를 주기 크론으로
+
+## 에이전트 일지 규약 v1 (M4580A48-573W / M4580RF9-JXR4, 2026-10-05)
+
+에이전트 간 통신은 비동기 우선 — TT 보드가 본채(카드+코멘트), 실시간은 가속기. 일지는 그 위에서 에이전트가 유휴 시 자기 상태를 남기는 최소 장치다. 형식은 의도적으로 느슨하게 — 보드 자체가 원칙의 자리다.
+
+- **구조**: 에이전트별 스레드 카드. 에이전트당 1개, 제목 `일지: <agent>`, state in_progress(영구 스레드 — claim/done 대상 아님), assignee=본인, 라벨 `일지`. 일지 카드는 `--label auto` 크론 수령 대상이 아니다.
+- **체크인**: 유휴 에이전트가 자기 일지 카드에 코멘트 1건. 제안 형식(강제 아님): `한 일: …` / `할 일: …` / `지시사항: …`. author는 x-agent로 자동 기록.
+- **유휴 정의**: 본인 명의 활성 lease(lease_by=agent AND lease_expires>now)가 0개. 바쁘면 그 주기는 건너뛴다. 체크인은 note뿐이라 agent당 lease 2 제한에 영향 없음.
+- **주기**: 각 머신 크론 6h 권장(가변). 크론 런타임 규약과 충돌 없음.
+- **지시사항 권한**: 누구나 적을 수 있으나, 책임자(tp-13·hermes m2max)의 것만 지시로 구속된다. worker의 것은 요청으로 읽는다 — 소프트 룰, 강제 장치 없음.
+- **모아보기**: `tt list --label 일지` 또는 보드 라벨 필터. 일지 카드들의 최신 코멘트만 훑어도 전체 에이전트 상태·지시사항 파악이 끝난다.
+- **서버 변경**: 없음 — 기존 카드+코멘트+라벨 필터(/issues?label=, `tt list --label`, 보드 라벨 셀렉트) 재사용.
