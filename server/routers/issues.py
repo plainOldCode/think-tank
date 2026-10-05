@@ -41,7 +41,8 @@ def create_issue(p: IssueCreate, ctx: Ctx = Depends(get_ctx)):
 @router.get("/issues")
 def list_issues(state: str | None = None, parent: str | None = None, label: str | None = None,
                 assignee: str | None = None, q: str | None = None, limit: int = 200,
-                archived: str = "no", ctx: Ctx = Depends(get_ctx)):
+                archived: str = "no", with_comments: int = 0,
+                ctx: Ctx = Depends(get_ctx)):
     sql = "SELECT * FROM issues WHERE 1=1"
     args: list = []
     if archived == "no":
@@ -69,7 +70,11 @@ def list_issues(state: str | None = None, parent: str | None = None, label: str 
     args.append(max(1, min(limit, 1000)))
     with ctx.con() as c:
         rows = c.execute(sql, args).fetchall()
-        return [service.enrich_blocked(c, dbmod.to_dict(r)) for r in rows]
+        out = [service.enrich_blocked(c, dbmod.to_dict(r)) for r in rows]
+        if with_comments:  # M4580RJK-C9B0: 일지 체크인이 코멘트 스캔에 사용 (opt-in)
+            for o in out:
+                o["comments"] = dbmod.comments_of(c, o["id"])
+        return out
 
 
 @router.get("/issues/{issue_id}")

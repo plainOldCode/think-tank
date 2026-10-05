@@ -13,6 +13,7 @@ import time
 import urllib.request
 
 from service import REVIEW_CONTRACT
+from probe.journal import journal_tick
 
 PULL_HINT = "tt claim ID {agent} 후 dispatch — pull(풀) 사용 금지(30KP/W1DP)"
 
@@ -684,6 +685,12 @@ def _sleep(seconds, stop=None):
 
 def run_once(url, dry=False):
     """1회 스캔→판정→집행. 내장화(서버 스레드)와 standalone이 공유."""
+    # 일지 체크인 (M4580RJK-C9B0) — 외부 크론 대신 tt native. 실패해도 PR 스캔은 계속.
+    if not dry:
+        try:
+            journal_tick(url)
+        except Exception as e:
+            print(time.strftime("%F %T"), "journal tick error:", e, flush=True)
     snap = snapshot(url)
     repos = list(_repos_default())
     for r in collect_repos(snap.get("issues") or []):
