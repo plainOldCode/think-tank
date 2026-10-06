@@ -86,8 +86,11 @@ dispatch 오버라이드는 message 선두 `#opts {"model":...,"reasoning":...,"
 대상 sha(`PR #n (repo) @ sha8`, harvest 마커 `PR#n@sha8` 호환)가 달라졌으면 **새 회차로
 재실행**한다 — 재검토 체인 정지 결함 수정. 회차 구분:
 
-- 세션명에 sha8 접미(`tt-<agent>-<dispatch>-<sha8>`) — 이전 회차 세션(keep_shell 생존)
-  과 충돌 방지. continue context가 와도 재회차는 새 세션으로 시작한다.
+- 세션명을 회차 고유로(`tt-<agent>-<dispatch>-<sha8>-r<회차>`) — 이전 회차 세션(keep_shell
+  생존)과 충돌 방지 + sha 재방문(A→B→C→B)에서도 과거 회차와 겹치지 않는다(PR#47 리뷰 R2).
+- 재회차 판정은 장부·prepare 반환값·즉시 200 context가 같은 조건(`reround_target`)을
+  쓴다 — 서버가 저장한 context로 오는 후속 dispatch가 이전 회차가 아니라 현재 회차
+  세션에서 계속된다(PR#47 리뷰 R1, 실측 STALL 원인 차단).
 - 이전 회차 런타임 아티팩트(.done/.exit/.out/.log/.msg)를 지운다 — 키를 공유하므로
   잔여 .done이 남으면 watch_once가 새 런을 즉시 finalize해버린다.
 - 장부 엔트리에 `target_sha`(현재 대상)·`prev_sha`(이전 대상)를 남기고, 시작 코멘트에
@@ -98,9 +101,11 @@ DUP-SKIP은 유지되되 사유에 대상 비교가 명시된다(`대상 동일 
 (`mismatch_notified` 플래그). 서버 probe가 회차별 새 dispatch id를 발급하면(제안 B,
 미구현) 이 보상 경로는 평상시 발동하지 않는다.
 
-검증: unittest 35 green(신규 6: 첫 줄 sha 추출, 재실행, 동일 sha 스킵, 무 sha 스킵,
-비done 불일치 가시화 1회, 잔여 아티팩트 제거) + 격리 tmux E2E PASS(1회차 done →
-새 sha 재전송 RE-ROUND 재실행 done, 1회차 출력 비유출, 동일 sha 3회차 스킵).
+검증: unittest 42 green(신규 6: 첫 줄 sha 추출, 재실행, 동일 sha 스킵, 무 sha 스킵,
+비done 불일치 가시화 1회, 잔여 아티팩트 제거 + R1/R2 회귀 3: 재회차 장부·prepare·200
+context 일치, 재회차 뒤 후속 dispatch가 현재 회차 continue, sha 재방문 회차명 유일) +
+격리 tmux E2E PASS(1회차 done → 새 sha 재전송 RE-ROUND 재실행 done, 1회차 출력 비유출,
+동일 sha 3회차 스킵, A→B→C→B 재방문 전 회차 done, 후속 dispatch가 현재 회차 continue).
 
 ## 보안 규칙
 

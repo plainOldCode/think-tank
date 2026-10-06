@@ -360,9 +360,10 @@ def claim_dispatch(p, session):
     """webhook/polling 공통 단일 게이트: 성공 시 True(진입 권한 확보).
 
     think-tank#46: 동일 (issue, dispatch_id) 재전송이라도 기존 런이 done이고 message의
-    리뷰 대상 sha가 달라졌으면 새 회차로 재실행한다(재검토 체인 정지 방지). 이때 세션명에
-    sha8을 덧붙여 이전 회차 세션(keep_shell로 생존 가능)과 충돌을 피하고, 이전 회차
-    런타임 아티팩트를 지운다. 그 외 중복은 DUP-SKIP하되 사유에 대상 불일치 여부를
+    리뷰 대상 sha가 달라졌으면 새 회차로 재실행한다(재검토 체인 정지 방지). 재회차
+    세션명은 <기본명>-<sha8>-r<회차> — 회차 번호까지 붙여 sha 재방문(A→B→C→B)에서도
+    keep_shell로 생존한 과거 세션과 충돌하지 않는다(PR#47 리뷰 R2). 이전 회차
+    런타임 아티팩트는 지운다. 그 외 중복은 DUP-SKIP하되 사유에 대상 불일치 여부를
     명시하고(제안 C), done이 아닌 상태에서 대상 불일치 재전송이 오면 TT 코멘트로 1회
     가시화한다. 서버가 재요청마다 새 dispatch id를 발급하는 방안(제안 B)은 미구현 —
     probe가 회차별 새 id를 쓰면 이 보상 경로는 평상시 발동하지 않는다.
@@ -375,7 +376,11 @@ def claim_dispatch(p, session):
             new_sha = target_sha(p.get("message", ""))
             old_sha = prev.get("target_sha") or target_sha(prev.get("message", ""))
             if prev.get("status") == "done" and new_sha and old_sha and new_sha != old_sha:
-                session = "%s-%s" % (session, new_sha[:8])
+                round_no = (prev.get("round") or 1) + 1
+                # 세션명은 new_session_name 기준으로 회차 고유하게 재계산한다(R2):
+                # 전달된 session은 ctx-alive로 이전 회차 세션일 수 있고, 거기 접미를
+                # 붙이면 회차가 거듭될수록 이름이 길어지고 재방문 시 충돌한다.
+                session = round_session_name(new_session_name(p), new_sha[:8], round_no)
                 log("RE-ROUND dispatch#%s (key=%s) 대상 %s→%s — 재실행"
                     % (p["dispatch_id"], key, old_sha, new_sha))
                 runs[key] = {"status": "queued", "issue_id": str(p["issue_id"]),
@@ -385,7 +390,7 @@ def claim_dispatch(p, session):
                              "execution_attempt": p.get("execution_attempt", 0),
                              "opts": p.get("_opts") or {},
                              "session": session, "ts": time.time(),
-                             "target_sha": new_sha, "prev_sha": old_sha}
+                             "target_sha": new_sha, "prev_sha": old_sha, "round": round_no}
                 save_runs(runs)
                 _clear_round_artifacts(key)
                 return True
@@ -405,7 +410,7 @@ def claim_dispatch(p, session):
                          "execution_attempt": p.get("execution_attempt", 0),
                          "opts": p.get("_opts") or {},
                          "session": session, "ts": time.time(),
-                         "target_sha": target_sha(p.get("message", ""))}
+                         "target_sha": target_sha(p.get("message", "")), "round": 1}
             save_runs(runs)
             return True
     if flagged:
@@ -663,8 +668,48 @@ def continue_session(prof, session, message, key=None):
 
 # ---------- 실행 진입 (execute_once) ----------
 
+def round_session_name(base, sha8, round_no):
+    """재회차 세션명: <base>-<sha8>-r<round>.
+
+    접미가 sha8뿐이면 A→B→C→B처럼 이전 sha로 돌아온 재검토(PR#47 리뷰 R2)에서
+    keep_shell로 생존한 과거 회차 세션과 이름이 겹쳐 tmux new-session이 rc=1로
+    실패하고, failed 런은 다시 DUP-SKIP된다. 단조 증가하는 회차 번호를 함께 붙여
+    sha 재방문에도 이름을 유일하게 유지한다.
+    """
+    return "%s-%s-r%d" % (base, sha8, round_no)
+
+
+def reround_target(p):
+    """done 런에 대한 재회차 판정과 세션명. 재회차가 아니면 None.
+
+    claim_dispatch와 동일 조건(장부 읽기만, side-effect 없음)을 decide_session —
+    즉시 200의 context — 에서도 쓰기 위한 헬퍼(PR#47 리뷰 R1): 접미 세션이 장부에만
+    반영되고 200이 접미 전 세션을 돌려주면 서버가 그 context를 저장해 후속
+    dispatch가 이전 회차 세션으로 continue한다(실측 STALL 원인과 동일).
+    """
+    _, body = parse_overrides(p.get("message", ""))
+    with ledger_lock():
+        prev = load_runs().get(run_key(p))
+    if not prev or prev.get("status") != "done":
+        return None
+    new_sha = target_sha(body)
+    old_sha = prev.get("target_sha") or target_sha(prev.get("message", ""))
+    if not (new_sha and old_sha and new_sha != old_sha):
+        return None
+    return round_session_name(new_session_name(p), new_sha[:8],
+                              (prev.get("round") or 1) + 1)
+
+
 def decide_session(p):
-    """claim 없는 세션 결정(동기 200의 context용). prepare와 동일 규칙."""
+    """claim 없는 세션 결정(동기 200의 context용). prepare·claim과 동일 규칙.
+
+    재회차 판정이 ctx-alive보다 먼저다: done 런의 대상 불일치 재전송은 이전 회차
+    세션이 살아 있어도 그 세션을 돌려주지 않는다 — 새 회차 세션명이 현재 회차의
+    정답이고, ctx 세션은 이전 회차의 것이다.
+    """
+    rr = reround_target(p)
+    if rr:
+        return rr
     ctx_session = parse_ctx(p.get("context"))
     if ctx_session and session_alive(ctx_session):
         return ctx_session
@@ -672,15 +717,20 @@ def decide_session(p):
 
 
 def prepare(p):
-    """백그라운드 전용: dup 판정+장부 선점. (session, fresh) 반환."""
+    """백그라운드 전용: dup 판정+장부 선점. (session, fresh) 반환.
+
+    반환 session은 선점된 장부 엔트리의 세션(재회차 접미 포함)이다 — 이전 구현은
+    접미 전 세션을 돌려줘 서버가 이전 회차 context를 저장했다(PR#47 리뷰 R1).
+    """
     key = run_key(p)
-    session = decide_session(p)
     opts, body = parse_overrides(p.get("message", ""))
-    if not claim_dispatch({**p, "message": body, "_opts": opts}, session):
+    if not claim_dispatch({**p, "message": body, "_opts": opts}, decide_session(p)):
         with ledger_lock():
             ent = load_runs().get(key) or {}
-        return ent.get("session") or session, False
-    return session, True
+        return ent.get("session") or decide_session(p), False
+    with ledger_lock():
+        ent = load_runs().get(key) or {}
+    return ent.get("session") or decide_session(p), True
 
 
 def execute_once(p, session):

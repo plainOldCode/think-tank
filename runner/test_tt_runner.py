@@ -522,5 +522,81 @@ class TestDupSkipReRound(unittest.TestCase):
         self.assertFalse(os.path.exists(base + ".log"))
 
 
+class TestRoundSessionContext(unittest.TestCase):
+    """PR#47 codex 리뷰 R1/R2 보완 (기준 SHA 0b7d1bf5).
+
+    R1: 재회차의 실제 세션과 prepare 반환값·즉시 200 context가 어긋나면 서버가 이전
+    회차 context를 저장해 후속 dispatch가 이전 세션으로 continue한다(STALL 재발).
+    R2: 회차명이 base+sha8뿐이면 sha 재방문(A→B→C→B)에서 keep_shell로 생존한 과거
+    회차 세션과 충돌한다(tmux duplicate rc=1 → failed → DUP-SKIP).
+    """
+
+    DID = 501
+
+    def setUp(self):
+        self.n = str(self.id()).rsplit(".", 1)[-1]
+        self.issue = "RRND-" + self.n
+        self.key = "%s#%d" % (self.issue, self.DID)
+        self.msg_a = "[auto review] PR #3 (r/x) @ 85d6670a — 카드 %s 리뷰" % self.issue
+        self.msg_b = "[auto review] PR #3 (r/x) @ 07bcc393 — 카드 %s 리뷰" % self.issue
+        self.msg_c = "[auto review] PR #3 (r/x) @ c0defeed — 카드 %s 리뷰" % self.issue
+        self.orig_alive = R.session_alive
+
+    def tearDown(self):
+        R.session_alive = self.orig_alive
+
+    def _p(self, message, did=None, context=""):
+        return {"dispatch_id": did or self.DID, "issue_id": self.issue,
+                "agent": "p-read", "message": message, "context": context}
+
+    def _done(self):
+        R.update_run(self.key, status="done", exit=0, ended=time.time())
+
+    # R1: 장부·prepare 반환값·HTTP 200 context가 현재 회차 세션으로 일치
+    def test_reround_session_matches_prepare_and_hook_context(self):
+        s1, _ = R.prepare(self._p(self.msg_a))
+        self._done()
+        R.session_alive = lambda name: True  # keep_shell 생존 시나리오
+        p2 = self._p(self.msg_b)
+        ctx_200 = R.ctx_token(R.decide_session(p2))  # /hook 즉시 200의 context
+        s2, fresh2 = R.prepare(dict(p2, context=ctx_200))
+        self.assertTrue(fresh2)
+        ent = R.get_run(self.key)
+        self.assertEqual(ent["session"], s2)  # 장부 = prepare 반환값
+        self.assertEqual(R.parse_ctx(ctx_200), ent["session"])  # 200 = 현재 회차
+        self.assertNotEqual(s2, s1)  # 이전 회차 세션 회수 금지
+        self.assertIn("07bcc393", s2)
+
+    # R1: 재회차 뒤 후속 dispatch는 현재 회차 세션에서 계속된다(STALL 재발 회귀)
+    def test_followup_dispatch_after_reround_lands_in_round_session(self):
+        R.prepare(self._p(self.msg_a))
+        self._done()
+        R.session_alive = lambda name: True
+        p2 = self._p(self.msg_b)
+        ctx_200 = R.ctx_token(R.decide_session(p2))  # 서버가 저장할 context
+        R.prepare(dict(p2, context=ctx_200))  # 재회차 실행
+        self._done()
+        round_session = R.get_run(self.key)["session"]
+        sf, _ = R.prepare(self._p("후속 지시 — 판정 코멘트 확인", did=self.DID + 1,
+                                  context=ctx_200))
+        self.assertEqual(sf, round_session)
+        self.assertEqual(R.parse_ctx(ctx_200), round_session)  # continue 대상 = 재회차 세션
+
+    # R2: A→B→C→B sha 재방문 — 모든 회차명이 서로 충돌하지 않는다
+    def test_sha_revisit_gets_unique_round_sessions(self):
+        R.session_alive = lambda name: True
+        names = []
+        for i, m in enumerate((self.msg_a, self.msg_b, self.msg_c, self.msg_b)):
+            if i:
+                self._done()
+            s, fresh = R.prepare(self._p(m))
+            self.assertTrue(fresh, "round %d" % (i + 1))
+            ent = R.get_run(self.key)
+            self.assertEqual(ent["session"], s)  # R1 회귀 방지: 반환 = 장부
+            names.append(ent["session"])
+            self.assertEqual(ent.get("round"), i + 1)
+        self.assertEqual(len(set(names)), 4)  # RED: 2·4회차 이름 충돌
+
+
 if __name__ == "__main__":
     unittest.main()
