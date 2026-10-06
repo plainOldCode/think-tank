@@ -703,13 +703,22 @@ def reround_target(p):
 def decide_session(p):
     """claim 없는 세션 결정(동기 200의 context용). prepare·claim과 동일 규칙.
 
-    재회차 판정이 ctx-alive보다 먼저다: done 런의 대상 불일치 재전송은 이전 회차
-    세션이 살아 있어도 그 세션을 돌려주지 않는다 — 새 회차 세션명이 현재 회차의
-    정답이고, ctx 세션은 이전 회차의 것이다.
+    /hook은 백그라운드 선점 스레드를 먼저 시작하고 200을 계산하므로(PR#47 리뷰 R1
+    잔여, 기준 SHA d952f721) 이 함수는 선점 '전'과 '후' 어느 시점에 불려도 같은 답을
+    내야 한다: 장부에 동일 키가 이미 있으면 — done 런의 대상 불일치 재전송은 다음
+    회차 세션명(reround_target), 그 외 queued/running/done·중복 재전송은 이미 선점된
+    장부 세션이 현재 회차의 정답이고 입력 ctx(이전 회차)보다 우선한다. 선점이 먼저
+    반영되면 재회차 조건이 사라져도 장부 세션으로 같은 답이 유지된다. 장부에 없는
+    신규 키만 ctx 계속(살아 있을 때) 또는 새 세션명으로 결정된다.
     """
     rr = reround_target(p)
     if rr:
         return rr
+    with ledger_lock():
+        prev = load_runs().get(run_key(p))
+    if prev:
+        # 동일 키 재전송: 선점된 장부 세션이 응답 기준 — ctx 세션 회수 금지.
+        return prev.get("session") or new_session_name(p)
     ctx_session = parse_ctx(p.get("context"))
     if ctx_session and session_alive(ctx_session):
         return ctx_session
@@ -1151,7 +1160,9 @@ class H(BaseHTTPRequestHandler):
         except Exception as e:
             return self._send(400, {"detail": "bad payload: %s" % e})
         threading.Thread(target=self._safe, args=(p,), daemon=True).start()
-        # 즉시 200: context용 세션 결정은 무결정(side-effect free) — claim은 백그라운드만
+        # 즉시 200: context용 세션 결정은 무결정(side-effect free) — claim은 백그라운드만.
+        # 스레드 선점이 이 계산에 먼저 반영되더라도 decide_session은 장부 세션 기준으로
+        # 같은 답을 낸다(선점 전후·경합 모든 순서에서 200 == 현재 회차 — PR#47 리뷰 R1).
         return self._send(200, {"context": ctx_token(decide_session(p))})
 
     def _safe(self, p):

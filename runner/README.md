@@ -91,6 +91,10 @@ dispatch 오버라이드는 message 선두 `#opts {"model":...,"reasoning":...,"
 - 재회차 판정은 장부·prepare 반환값·즉시 200 context가 같은 조건(`reround_target`)을
   쓴다 — 서버가 저장한 context로 오는 후속 dispatch가 이전 회차가 아니라 현재 회차
   세션에서 계속된다(PR#47 리뷰 R1, 실측 STALL 원인 차단).
+- 동일 키의 즉시 200 context는 **장부에 선점된 세션** 기준이다(`decide_session`) — /hook이
+  백그라운드 선점 스레드를 먼저 시작하고 200을 계산하므로 선점이 먼저 반영돼 재회차
+  조건이 사라져도 같은 답을 내야 하고(PR#47 리뷰 R1 잔여), queued/running/done·중복
+  재전송에서도 입력 ctx의 이전 회차 세션을 회수하지 않는다.
 - 이전 회차 런타임 아티팩트(.done/.exit/.out/.log/.msg)를 지운다 — 키를 공유하므로
   잔여 .done이 남으면 watch_once가 새 런을 즉시 finalize해버린다.
 - 장부 엔트리에 `target_sha`(현재 대상)·`prev_sha`(이전 대상)를 남기고, 시작 코멘트에
@@ -101,9 +105,11 @@ DUP-SKIP은 유지되되 사유에 대상 비교가 명시된다(`대상 동일 
 (`mismatch_notified` 플래그). 서버 probe가 회차별 새 dispatch id를 발급하면(제안 B,
 미구현) 이 보상 경로는 평상시 발동하지 않는다.
 
-검증: unittest 42 green(신규 6: 첫 줄 sha 추출, 재실행, 동일 sha 스킵, 무 sha 스킵,
-비done 불일치 가시화 1회, 잔여 아티팩트 제거 + R1/R2 회귀 3: 재회차 장부·prepare·200
-context 일치, 재회차 뒤 후속 dispatch가 현재 회차 continue, sha 재방문 회차명 유일) +
+검증: unittest 48 green(이전 라운드 신규 6 + R1 잔여 회귀 6: 선점 선행 순서 200 일치,
+스레드 경합 전 순서 일치, done 후 원 요청 재전송 현재 회차, running 중 불일치 재전송,
+선점 선행 후속 continue, 실제 /hook 엔드포인트 200==장부 + R1/R2 회귀 3: 재회차 장부·
+prepare·200 context 일치, 재회차 뒤 후속 dispatch가 현재 회차 continue, sha 재방문 회차명
+유일) + RED 대조(d952f721에서 신규 4건 결정론 실패: 'tt-p-read-601' != '...-07bcc393-r2') +
 격리 tmux E2E PASS(1회차 done → 새 sha 재전송 RE-ROUND 재실행 done, 1회차 출력 비유출,
 동일 sha 3회차 스킵, A→B→C→B 재방문 전 회차 done, 후속 dispatch가 현재 회차 continue).
 

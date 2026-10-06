@@ -4,12 +4,14 @@
 실행: TT_RUNNER_STATE=<tmp> TT_RUNNER_SECRET=<tmpfile> TT_URL=http://127.0.0.1:1 \
      python3 -m unittest discover -s runner -p 'test_*.py' (repo root)
 """
+import http.client
 import importlib.util as _ilu
 import json
 import os
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 
@@ -596,6 +598,152 @@ class TestRoundSessionContext(unittest.TestCase):
             names.append(ent["session"])
             self.assertEqual(ent.get("round"), i + 1)
         self.assertEqual(len(set(names)), 4)  # RED: 2·4회차 이름 충돌
+
+
+class TestHookClaimFirstContext(unittest.TestCase):
+    """PR#47 codex 리뷰 R1 잔여 (기준 SHA d952f721): /hook은 백그라운드 선점 스레드를
+    먼저 시작하고(:1153) 그 직후 200 context를 계산한다(:1155) — 선점이 먼저 반영되면
+    재회차 조건(done+불일치)이 사라져 입력 ctx의 이전 회차 세션이 응답으로 나간다.
+    기존 신규 R1 테스트(:557-582)는 decide_session을 prepare보다 '먼저' 호출하는 순서만
+    검사해 이 경로를 놓쳤다. 회차 선점과 반환 context는 선점 전·후·경합 모든 순서에서,
+    그리고 queued/running/done·중복 재전송에서도 같아야 한다.
+    """
+
+    DID = 601
+
+    def setUp(self):
+        self.n = str(self.id()).rsplit(".", 1)[-1]
+        self.issue = "HOOK-" + self.n
+        self.key = "%s#%d" % (self.issue, self.DID)
+        self.msg_a = "[auto review] PR #3 (r/x) @ 85d6670a — 카드 %s 리뷰" % self.issue
+        self.msg_b = "[auto review] PR #3 (r/x) @ 07bcc393 — 카드 %s 리뷰" % self.issue
+        self.msg_c = "[auto review] PR #3 (r/x) @ c0defeed — 카드 %s 리뷰" % self.issue
+        self.orig_alive = R.session_alive
+        self.orig_comment = R.tt_comment
+        self.comments = []
+        R.tt_comment = lambda issue, body: self.comments.append((issue, body))
+
+    def tearDown(self):
+        R.session_alive = self.orig_alive
+        R.tt_comment = self.orig_comment
+
+    def _p(self, message, did=None, context=""):
+        return {"dispatch_id": did or self.DID, "issue_id": self.issue,
+                "agent": "p-read", "message": message, "context": context}
+
+    def _done(self):
+        R.update_run(self.key, status="done", exit=0, ended=time.time())
+
+    # ① 실제 /hook 선점 선행 순서: claim이 먼저 장부를 바꾼 뒤 200을 계산해도 현재 회차
+    def test_hook_claims_first_context_still_current_round(self):
+        s1, _ = R.prepare(self._p(self.msg_a))
+        self._done()
+        R.session_alive = lambda name: True  # keep_shell로 이전 회차 생존
+        p2 = self._p(self.msg_b, context=R.ctx_token(s1))  # 서버 저장 ctx = 이전 회차
+        s2, fresh = R.prepare(p2)  # 백그라운드 선점이 먼저 — /hook 실제 순서
+        self.assertTrue(fresh)
+        ent = R.get_run(self.key)
+        self.assertEqual(ent["session"], s2)
+        ctx_200 = R.ctx_token(R.decide_session(p2))  # 선점 '후' 계산되는 즉시 200
+        self.assertEqual(R.parse_ctx(ctx_200), ent["session"])  # RED: 이전 회차 회수됨
+
+    # ① 진짜 스레드 경합: 선점과 200 계산이 어느 순서로 겹쳐도 200 == 선점 세션
+    def test_hook_thread_race_context_matches_claimed_round(self):
+        R.prepare(self._p(self.msg_a))
+        self._done()
+        R.session_alive = lambda name: True
+        for m in (self.msg_b, self.msg_c, self.msg_b):  # B→C→B 재방문에서도
+            p = self._p(m, context=R.ctx_token(R.get_run(self.key)["session"]))
+            out = {}
+
+            def hook_seq():
+                out["s"], out["fresh"] = R.prepare(p)
+
+            t = threading.Thread(target=hook_seq, daemon=True)
+            t.start()
+            out["ctx"] = R.decide_session(p)  # 스레드와 경합하며 즉시 계산
+            t.join(timeout=5)
+            self.assertTrue(out["fresh"])
+            self.assertEqual(out["ctx"], out["s"])  # 모든 인터리빙에서 일치
+            self.assertEqual(out["ctx"], R.get_run(self.key)["session"])
+            self._done()
+
+    # ② 완료 후 원래 요청(A ctx 포함) 재전송 — DUP-SKIP 응답도 현재 회차 세션
+    def test_dup_resend_after_done_returns_current_round_session(self):
+        s1, _ = R.prepare(self._p(self.msg_a))
+        self._done()
+        R.session_alive = lambda name: True
+        p_b = self._p(self.msg_b, context=R.ctx_token(s1))
+        R.prepare(p_b)  # B 회차 선점·실행
+        self._done()
+        s2, fresh = R.prepare(p_b)  # 원래 B 요청 재전송 → DUP-SKIP
+        self.assertFalse(fresh)
+        ctx_200 = R.ctx_token(R.decide_session(p_b))
+        self.assertEqual(R.parse_ctx(ctx_200), s2)  # = 장부에 선점된 세션
+        self.assertNotEqual(R.parse_ctx(ctx_200), s1)  # RED: A가 회수됨
+
+    # ② 진행 중 대상 불일치 재전송 — queued/running에서도 장부 세션이 응답 기준
+    def test_mismatch_resend_while_running_returns_claimed_session(self):
+        s1, _ = R.prepare(self._p(self.msg_a))
+        self._done()
+        R.session_alive = lambda name: True
+        p_b = self._p(self.msg_b, context=R.ctx_token(s1))
+        R.prepare(p_b)  # B 선점 → queued
+        R.update_run(self.key, status="running")
+        s2, fresh = R.prepare(p_b)  # 진행 중 재전송 — DUP-SKIP(가시화 1회)
+        self.assertFalse(fresh)
+        self.assertEqual(R.get_run(self.key)["status"], "running")
+        ctx_200 = R.ctx_token(R.decide_session(p_b))
+        self.assertEqual(R.parse_ctx(ctx_200), s2)
+        self.assertNotEqual(R.parse_ctx(ctx_200), s1)  # RED: A가 회수됨
+
+    # ③ 선점 선행 순서의 재회차 뒤 후속 dispatch도 현재 회차에서 계속된다
+    def test_followup_after_claim_first_reround_continues_round(self):
+        s1, _ = R.prepare(self._p(self.msg_a))
+        self._done()
+        R.session_alive = lambda name: True
+        p2 = self._p(self.msg_b, context=R.ctx_token(s1))
+        R.prepare(p2)  # 선점 먼저 — 실제 /hook 순서
+        ctx_200 = R.ctx_token(R.decide_session(p2))  # 서버가 저장할 200 context
+        self._done()
+        sf, fresh_f = R.prepare(self._p("후속 지시 — 판정 코멘트 확인", did=self.DID + 1,
+                                        context=ctx_200))
+        self.assertTrue(fresh_f)
+        self.assertEqual(sf, R.get_run(self.key)["session"])  # RED: 이전 회차로 continue
+        self.assertEqual(R.parse_ctx(ctx_200), sf)
+
+    # 실제 HTTP /hook 엔드포인트: 스레드 선점 → 즉시 200 — 응답 context == 장부 세션
+    def test_real_hook_endpoint_context_matches_claimed_session(self):
+        s1, _ = R.prepare(self._p(self.msg_a))
+        self._done()
+        R.session_alive = lambda name: True
+        executed = threading.Event()
+        orig_exec = R.execute_once
+        R.execute_once = lambda p, s: executed.set()
+        try:
+            srv = R.ThreadingHTTPServer(("127.0.0.1", 0), R.H)
+            th = threading.Thread(target=srv.serve_forever, daemon=True)
+            th.start()
+            try:
+                conn = http.client.HTTPConnection("127.0.0.1", srv.server_address[1],
+                                                  timeout=10)
+                body = json.dumps({"dispatch_id": self.DID, "issue_id": self.issue,
+                                   "agent": "p-read", "message": self.msg_b,
+                                   "context": R.ctx_token(s1)})
+                conn.request("POST", "/hook", body=body, headers={
+                    "Authorization": "Bearer test-secret-value",
+                    "X-Tt-Dispatch": "1", "Content-Type": "application/json"})
+                resp = conn.getresponse()
+                self.assertEqual(resp.status, 200)
+                ctx_200 = json.loads(resp.read()).get("context")
+                conn.close()
+            finally:
+                srv.shutdown()
+                srv.server_close()
+            self.assertTrue(executed.wait(timeout=5), "백그라운드 선점·실행 미완료")
+            self.assertEqual(R.parse_ctx(ctx_200), R.get_run(self.key)["session"])
+        finally:
+            R.execute_once = orig_exec
 
 
 if __name__ == "__main__":
