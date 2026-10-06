@@ -321,5 +321,100 @@ class TestReconcileRelease(unittest.TestCase):
         self.assertEqual(R.get_run(self.key)["status"], "cancelled")
 
 
+class TestDupSkipReRound(unittest.TestCase):
+    """think-tank#46: 동일 (issue, dispatch_id) 재전송 + message의 대상 sha 변경 → 재실행.
+
+    기존 계약: 장부 키 "<issue>#<dispatch>" 단일 실행 게이트. 결함: status=done이면
+    대상 sha가 바뀌어도 영구 DUP-SKIP → 재검토 체인 정지. 수정(제안 A): done이어도
+    대상 sha가 다르면 새 회차로 재실행. 스킵 시 대상 불일치 여부를 명시(제안 C).
+    """
+
+    DID = 401
+
+    def setUp(self):
+        self.n = str(self.id()).rsplit(".", 1)[-1]
+        self.issue = "DUPR-" + self.n
+        # 실측 형식(장부 M45WT02H-CWES#145): 대상 sha는 첫 줄, 본문에 다른 sha도 등장
+        self.msg_a = ("[auto review] PR #3 (plainOldCode/services-page) @ 85d6670a — "
+                      "카드 %s 리뷰 요청(재검토: 브랜치가 main 7aac56d 위로 rebase됨, "
+                      "이전 기준 SHA f177b4f 판정 무효). 먼저 claim-review를 호출하라." % self.issue)
+        self.msg_b = ("[auto review] PR #3 (plainOldCode/services-page) @ 07bcc393 — "
+                      "카드 %s 리뷰 요청(재검토: codex 판정 SEC-1 수정 반영 커밋)." % self.issue)
+        self.p1 = {"dispatch_id": self.DID, "issue_id": self.issue, "agent": "p-read",
+                   "message": self.msg_a, "context": ""}
+        self.key = "%s#%d" % (self.issue, self.DID)
+        R.prepare(self.p1)
+        self.orig_comment = R.tt_comment
+
+    def tearDown(self):
+        R.tt_comment = self.orig_comment
+
+    def _done(self):
+        R.update_run(self.key, status="done", exit=0, ended=time.time())
+
+    def test_target_sha_extracts_first_line_only(self):
+        self.assertEqual(R.target_sha(self.msg_a), "85d6670a")
+        self.assertEqual(R.target_sha(self.msg_b), "07bcc393")
+        # harvest 마커 형식(PR#n@sha8)도 커버
+        self.assertEqual(R.target_sha("PR#12@abcdef12"), "abcdef12")
+        # 대상 아님: sha 없음 / 본문(둘째 줄)의 sha는 인용일 뿐
+        self.assertIsNone(R.target_sha("일반 작업 지시"))
+        self.assertIsNone(R.target_sha("일반 재지시\nPR #3 (r/x) @ deadbeef 본문 인용"))
+
+    def test_same_id_new_sha_reruns_as_new_round(self):
+        self._done()
+        session1 = R.get_run(self.key)["session"]
+        p2 = dict(self.p1, message=self.msg_b)
+        _, fresh = R.prepare(p2)  # RED: 현재 DUP-SKIP으로 False
+        self.assertTrue(fresh)
+        ent = R.get_run(self.key)
+        self.assertEqual(ent["status"], "queued")
+        self.assertEqual(ent["message"], self.msg_b)
+        self.assertEqual(ent["target_sha"], "07bcc393")
+        self.assertEqual(ent["prev_sha"], "85d6670a")
+        # 재회차 세션은 이전 회차 세션명과 충돌하지 않아야 한다(keep_shell 생존 대비)
+        self.assertNotEqual(ent["session"], session1)
+        self.assertTrue(ent["session"].startswith(session1 + "-"))
+        self.assertIn("07bcc393", ent["session"])
+
+    def test_same_id_same_sha_still_dup_skip(self):
+        self._done()
+        _, fresh = R.prepare(dict(self.p1))  # 동일 메시지 재전송
+        self.assertFalse(fresh)
+        self.assertEqual(R.get_run(self.key)["status"], "done")
+
+    def test_no_target_sha_message_still_dup_skip(self):
+        self._done()
+        _, fresh = R.prepare(dict(self.p1, message="일반 재지시 — 대상 sha 없음"))
+        self.assertFalse(fresh)
+        self.assertEqual(R.get_run(self.key)["status"], "done")
+
+    def test_mismatch_while_not_done_flags_visibility_once(self):
+        comments = []
+        R.tt_comment = lambda issue, body: comments.append((issue, body))
+        R.update_run(self.key, status="running")  # done이 아니면 재실행 없음
+        p2 = dict(self.p1, message=self.msg_b)
+        _, fresh = R.prepare(p2)
+        self.assertFalse(fresh)
+        self.assertEqual(R.get_run(self.key)["status"], "running")
+        hits = [b for i, b in comments if i == self.issue and "대상 불일치" in b]
+        self.assertEqual(len(hits), 1)  # 가시화(C): 사유에 대상 불일치 명시
+        R.prepare(p2)  # 같은 재전송 반복 — 코멘트 중복 없음
+        hits = [b for i, b in comments if i == self.issue and "대상 불일치" in b]
+        self.assertEqual(len(hits), 1)
+
+    def test_stale_artifacts_cleared_on_reround(self):
+        self._done()
+        base = os.path.join(R.RUNTIME_DIR, self.key.replace("#", "_"))
+        os.makedirs(R.RUNTIME_DIR, exist_ok=True)
+        open(base + ".done", "w").close()  # 잔여 마커 — 제거 안 되면 즉시 오판정
+        with open(base + ".log", "w") as f:
+            f.write("1회차 로그 — 2회차로 유출되면 안 됨")
+        p2 = dict(self.p1, message=self.msg_b)
+        R.prepare(p2)
+        self.assertFalse(os.path.exists(base + ".done"))
+        self.assertFalse(os.path.exists(base + ".log"))
+
+
 if __name__ == "__main__":
     unittest.main()

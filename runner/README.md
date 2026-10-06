@@ -80,6 +80,28 @@ dispatch 오버라이드는 message 선두 `#opts {"model":...,"reasoning":...,"
   app.py로 확인, 실서버 E2E는 후속), P7EK 파괴적 패턴 목록 원문(초안 목록으로 대용),
   opencode 세션 드라이버(plain 드라이버만 존재), mini/m1 설치(ssh 차단)
 
+## 재검토 재실행 (think-tank#46, 2026-10-06)
+
+동일 (issue_id, dispatch_id) 재전송이라도 기존 런이 **done**이고 message 첫 줄의 리뷰
+대상 sha(`PR #n (repo) @ sha8`, harvest 마커 `PR#n@sha8` 호환)가 달라졌으면 **새 회차로
+재실행**한다 — 재검토 체인 정지 결함 수정. 회차 구분:
+
+- 세션명에 sha8 접미(`tt-<agent>-<dispatch>-<sha8>`) — 이전 회차 세션(keep_shell 생존)
+  과 충돌 방지. continue context가 와도 재회차는 새 세션으로 시작한다.
+- 이전 회차 런타임 아티팩트(.done/.exit/.out/.log/.msg)를 지운다 — 키를 공유하므로
+  잔여 .done이 남으면 watch_once가 새 런을 즉시 finalize해버린다.
+- 장부 엔트리에 `target_sha`(현재 대상)·`prev_sha`(이전 대상)를 남기고, 시작 코멘트에
+  "재검토 재실행: 대상 a→b"를 표기한다.
+
+DUP-SKIP은 유지되되 사유에 대상 비교가 명시된다(`대상 동일 x` / `불일치 a→b` / `대상 sha
+없음`). done이 아닌 상태에서 대상 불일치 재전송이 오면 TT 코멘트로 회차당 1만 가시화한다
+(`mismatch_notified` 플래그). 서버 probe가 회차별 새 dispatch id를 발급하면(제안 B,
+미구현) 이 보상 경로는 평상시 발동하지 않는다.
+
+검증: unittest 35 green(신규 6: 첫 줄 sha 추출, 재실행, 동일 sha 스킵, 무 sha 스킵,
+비done 불일치 가시화 1회, 잔여 아티팩트 제거) + 격리 tmux E2E PASS(1회차 done →
+새 sha 재전송 RE-ROUND 재실행 done, 1회차 출력 비유출, 동일 sha 3회차 스킵).
+
 ## 보안 규칙
 
 secret 값은 파일·plist env·TT 코멘트·git·로그 어디에도 기록하지 않는다.
