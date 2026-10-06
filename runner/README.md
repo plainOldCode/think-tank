@@ -88,13 +88,21 @@ dispatch 오버라이드는 message 선두 `#opts {"model":...,"reasoning":...,"
 
 - 세션명을 회차 고유로(`tt-<agent>-<dispatch>-<sha8>-r<회차>`) — 이전 회차 세션(keep_shell
   생존)과 충돌 방지 + sha 재방문(A→B→C→B)에서도 과거 회차와 겹치지 않는다(PR#47 리뷰 R2).
-- 재회차 판정은 장부·prepare 반환값·즉시 200 context가 같은 조건(`reround_target`)을
-  쓴다 — 서버가 저장한 context로 오는 후속 dispatch가 이전 회차가 아니라 현재 회차
-  세션에서 계속된다(PR#47 리뷰 R1, 실측 STALL 원인 차단).
-- 동일 키의 즉시 200 context는 **장부에 선점된 세션** 기준이다(`decide_session`) — /hook이
-  백그라운드 선점 스레드를 먼저 시작하고 200을 계산하므로 선점이 먼저 반영돼 재회차
-  조건이 사라져도 같은 답을 내야 하고(PR#47 리뷰 R1 잔여), queued/running/done·중복
-  재전송에서도 입력 ctx의 이전 회차 세션을 회수하지 않는다.
+- 재회차 판정은 장부·prepare 반환값·즉시 200 context가 같은 조건을 쓴다 — 서버가 저장한
+  context로 오는 후속 dispatch가 이전 회차가 아니라 현재 회차 세션에서 계속된다(PR#47
+  리뷰 R1, 실측 STALL 원인 차단).
+- **회차 선점은 한 번, 동기로** — /hook이 장부 I/O만 포함된 `preempt_round`를 200 계산
+  전에 실행하고 그 결과(선점 세션)를 200 context와 백그라운드 실행이 공유한다. 응답
+  결정과 claim이 별도 lock·시점에서 각자 판정하면 응답 결정 이후의 완료 전환/claim이
+  남는다(PR#47 리뷰 R1 3차). 네트워크 부수효과(TT 코멘트·흡수 finalize 보고)는 deferred로
+  미뤄 즉시 200 계약(10초)을 유지한다.
+- **완료 감시자 전환 흡수** — `.done` 마커는 이미 있는데 장부가 running(감시자 tick 대기,
+  WATCH_INTERVAL_S 이하 창)이면 선점 결정 전에 done으로 흡수한다. 흡수된 종료는 보고만
+  하고(출력은 지울 전에 포착) 장부를 다시 쓰지 않는다. rc!=0는 blocked/failed 분류가
+  tail 분석을 필요로 하므로 감시자 몫 — finalize와 동일한 조건만 흡수한다.
+- 동일 키의 200 context는 **선점 결과**(장부에 확정된 세션) 기준이다 — 승인 메시지는
+  선점하지 않고(held 해제만), 동기 선점 실패 시에만 무결정 추정(`decide_session`)으로
+  응답한다. queued/running/done·중복 재전송에서 입력 ctx의 이전 회차 세션을 회수하지 않는다.
 - 이전 회차 런타임 아티팩트(.done/.exit/.out/.log/.msg)를 지운다 — 키를 공유하므로
   잔여 .done이 남으면 watch_once가 새 런을 즉시 finalize해버린다.
 - 장부 엔트리에 `target_sha`(현재 대상)·`prev_sha`(이전 대상)를 남기고, 시작 코멘트에
@@ -105,13 +113,12 @@ DUP-SKIP은 유지되되 사유에 대상 비교가 명시된다(`대상 동일 
 (`mismatch_notified` 플래그). 서버 probe가 회차별 새 dispatch id를 발급하면(제안 B,
 미구현) 이 보상 경로는 평상시 발동하지 않는다.
 
-검증: unittest 48 green(이전 라운드 신규 6 + R1 잔여 회귀 6: 선점 선행 순서 200 일치,
-스레드 경합 전 순서 일치, done 후 원 요청 재전송 현재 회차, running 중 불일치 재전송,
-선점 선행 후속 continue, 실제 /hook 엔드포인트 200==장부 + R1/R2 회귀 3: 재회차 장부·
-prepare·200 context 일치, 재회차 뒤 후속 dispatch가 현재 회차 continue, sha 재방문 회차명
-유일) + RED 대조(d952f721에서 신규 4건 결정론 실패: 'tt-p-read-601' != '...-07bcc393-r2') +
-격리 tmux E2E PASS(1회차 done → 새 sha 재전송 RE-ROUND 재실행 done, 1회차 출력 비유출,
-동일 sha 3회차 스킵, A→B→C→B 재방문 전 회차 done, 후속 dispatch가 현재 회차 continue).
+검증: unittest 53 green(이전 라운드 48 + 완료 전환 경합 회귀 5: 마커 pending 선점 흡수 후
+200==실행==재회차, 흡수 finalize 1회 보고·감시자 이중 처리 없음, 감시자 선행 tick 후에도
+일치, 마커 후발 단일 결정 일관, 승인 메시지 무선점) + RED 대조(ac5b7b0f에서 신규 2건
+결정론 실패: 백그라운드 실행 자체가 없음/응답이 옛 세션) + 격리 tmux E2E PASS(1회차
+done → 새 sha 재전송 RE-ROUND 재실행 done, 1회차 출력 비유출, 동일 sha 3회차 스킵,
+A→B→C→B 재방문 전 회차 done, 후속 dispatch가 현재 회차 continue).
 
 ## 보안 규칙
 

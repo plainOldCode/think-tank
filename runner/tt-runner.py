@@ -356,8 +356,14 @@ def _clear_round_artifacts(key):
             pass
 
 
-def claim_dispatch(p, session):
-    """webhook/polling 공통 단일 게이트: 성공 시 True(진입 권한 확보).
+def claim_dispatch(p, ctx_session=None, ctx_alive=False):
+    """webhook/polling 공통 단일 게이트: 성공 시 (True, session, deferred).
+
+    회차 결정(선점)은 이 함수 안에서 '한 번' 수행된다(PR#47 리뷰 R1 3차 — 응답과
+    실행이 동일 선점 결과 공유): lock 안에서 장부를 읽고, 완료 감시자가 아직
+    반영하지 못한 물리적 완료(.done 마커, rc=0)를 흡수한 뒤 재회차·중복을 판정하고,
+    신규 키의 세션명(ctx 계속 여부)도 lock 안에서 확정한다. 반환 session은 선점에
+    성공한 경로에서 확정된 장부 세션(재회차 접미 포함), 중복이면 None.
 
     think-tank#46: 동일 (issue, dispatch_id) 재전송이라도 기존 런이 done이고 message의
     리뷰 대상 sha가 달라졌으면 새 회차로 재실행한다(재검토 체인 정지 방지). 재회차
@@ -367,19 +373,45 @@ def claim_dispatch(p, session):
     명시하고(제안 C), done이 아닌 상태에서 대상 불일치 재전송이 오면 TT 코멘트로 1회
     가시화한다. 서버가 재요청마다 새 dispatch id를 발급하는 방안(제안 B)은 미구현 —
     probe가 회차별 새 id를 쓰면 이 보상 경로는 평상시 발동하지 않는다.
+
+    deferred: 선점 결정이 미룬 네트워크 부수효과 목록(("comment", issue, body) |
+    ("finalize", key, ent, rc)) — /hook 즉시 200 경로에서 TT HTTP 호출을 피하기 위해
+    호출자가 200 이후에 발행한다(run_deferred). lock 점유 중 네트워크 금지.
     """
     key = run_key(p)
+    deferred = []
     with ledger_lock():
         runs = load_runs()
         if key in runs:
             prev = runs[key]
+            # 완료 감시자 전환 흡수: .done 마커는 이미 있으나 장부가 running이면
+            # 결정 전에 done으로 전환한다 — 마커와 장부가 갈라진 창(WATCH_INTERVAL_S
+            # 이하)에서 선점이 옛 상태를 읽어 응답·실행이 갈라지는 경합 제거(PR#47
+            # 리뷰 R1 3차). 실패(rc!=0)는 blocked/failed 분류가 tail 분석을 필요로
+            # 하므로 감시자 몫으로 남긴다 — finalize와 동일한 조건만 흡수한다.
+            if prev.get("status") == "running":
+                base = key.replace("#", "_")
+                if os.path.exists(os.path.join(RUNTIME_DIR, base + ".done")):
+                    try:
+                        with open(os.path.join(RUNTIME_DIR, base + ".exit")) as f:
+                            rc = int(f.read().strip())
+                    except Exception:
+                        rc = 0
+                    if rc == 0:
+                        prev.update(status="done", exit=0, ended=time.time(),
+                                    detail="finalize-absorbed")
+                        save_runs(runs)
+                        log("ABSORB-DONE dispatch#%s (key=%s) 마커 선반영 — 감시자 전환 흡수"
+                            % (p["dispatch_id"], key))
+                        # 요약은 지금 포착 — 재회차 경로가 이전 회차 아티팩트를 지우기 전
+                        deferred.append(("finalize", key, dict(prev), 0, _run_summary(key)))
             new_sha = target_sha(p.get("message", ""))
             old_sha = prev.get("target_sha") or target_sha(prev.get("message", ""))
             if prev.get("status") == "done" and new_sha and old_sha and new_sha != old_sha:
                 round_no = (prev.get("round") or 1) + 1
                 # 세션명은 new_session_name 기준으로 회차 고유하게 재계산한다(R2):
-                # 전달된 session은 ctx-alive로 이전 회차 세션일 수 있고, 거기 접미를
-                # 붙이면 회차가 거듭될수록 이름이 길어지고 재방문 시 충돌한다.
+                # 전달된 ctx 세션은 이전 회차일 수 있고, 거기 접미를 붙이면 회차가
+                # 거듭될수록 이름이 길어지고 재방문 시 충돌한다.
                 session = round_session_name(new_session_name(p), new_sha[:8], round_no)
                 log("RE-ROUND dispatch#%s (key=%s) 대상 %s→%s — 재실행"
                     % (p["dispatch_id"], key, old_sha, new_sha))
@@ -393,16 +425,20 @@ def claim_dispatch(p, session):
                              "target_sha": new_sha, "prev_sha": old_sha, "round": round_no}
                 save_runs(runs)
                 _clear_round_artifacts(key)
-                return True
+                return True, session, deferred
             log("DUP-SKIP dispatch#%s (key=%s status=%s, 대상 %s)"
                 % (p["dispatch_id"], key, prev.get("status"), _target_note(new_sha, old_sha)))
             flagged = bool(new_sha and old_sha and new_sha != old_sha)
             if flagged and not prev.get("mismatch_notified"):
                 prev["mismatch_notified"] = True
                 save_runs(runs)
-            else:
-                flagged = False
+                deferred.append(("comment", str(p["issue_id"]),
+                                 "runner:%s dispatch#%s DUP-SKIP — 재전송 요청이 기존 dispatch와 대상 불일치"
+                                 "(%s→%s). status=%s라 재실행하지 않음; 진행 상태 확인 필요 (장부:%s)"
+                                 % (machine_name(), p["dispatch_id"], old_sha, new_sha,
+                                    prev.get("status"), key)))
         else:
+            session = ctx_session if ctx_alive else new_session_name(p)
             runs[key] = {"status": "queued", "issue_id": str(p["issue_id"]),
                          "dispatch_id": p["dispatch_id"], "agent": str(p.get("agent") or ""),
                          "message": p.get("message", ""), "context_in": p.get("context", ""),
@@ -412,13 +448,23 @@ def claim_dispatch(p, session):
                          "session": session, "ts": time.time(),
                          "target_sha": target_sha(p.get("message", "")), "round": 1}
             save_runs(runs)
-            return True
-    if flagged:
-        tt_comment(str(p["issue_id"]),
-                   "runner:%s dispatch#%s DUP-SKIP — 재전송 요청이 기존 dispatch와 대상 불일치"
-                   "(%s→%s). status=%s라 재실행하지 않음; 진행 상태 확인 필요 (장부:%s)"
-                   % (machine_name(), p["dispatch_id"], old_sha, new_sha, prev.get("status"), key))
-    return False
+            return True, session, deferred
+    return False, None, deferred
+
+
+def run_deferred(deferred):
+    """선점 결정이 200 경로에서 미룬 네트워크 부수효과를 발행한다(오류 격리)."""
+    for item in deferred or []:
+        try:
+            kind = item[0]
+            if kind == "finalize":
+                finalize(None, item[1], item[2], item[3], summary=item[4], write=False)
+            elif kind == "comment":
+                tt_comment(item[1], item[2])
+            else:
+                log("DEFERRED-UNKNOWN %r" % (item,))
+        except Exception as e:
+            log("DEFERRED-FAIL %s: %s: %s" % (item[0], type(e).__name__, e))
 
 
 def update_run(key, **fields):
@@ -701,15 +747,15 @@ def reround_target(p):
 
 
 def decide_session(p):
-    """claim 없는 세션 결정(동기 200의 context용). prepare·claim과 동일 규칙.
+    """선점 없는 세션 추정 — 승인 메시지·동기 선점 실패 시의 200 context용.
 
-    /hook은 백그라운드 선점 스레드를 먼저 시작하고 200을 계산하므로(PR#47 리뷰 R1
-    잔여, 기준 SHA d952f721) 이 함수는 선점 '전'과 '후' 어느 시점에 불려도 같은 답을
-    내야 한다: 장부에 동일 키가 이미 있으면 — done 런의 대상 불일치 재전송은 다음
-    회차 세션명(reround_target), 그 외 queued/running/done·중복 재전송은 이미 선점된
-    장부 세션이 현재 회차의 정답이고 입력 ctx(이전 회차)보다 우선한다. 선점이 먼저
-    반영되면 재회차 조건이 사라져도 장부 세션으로 같은 답이 유지된다. 장부에 없는
-    신규 키만 ctx 계속(살아 있을 때) 또는 새 세션명으로 결정된다.
+    회차 선점은 preempt_round가 '한 번' 수행하고 /hook 응답은 그 결과를 공유한다
+    (PR#47 리뷰 R1 3차). 이 함수는 장부를 바꾸지 않는 추정으로, 선점이 일어나지
+    않는 경로(승인 메시지, 장부 I/O 장애 폴백)에서만 응답 근거가 된다: 장부에
+    동일 키가 있으면 done 런의 대상 불일치 재전송은 다음 회차 세션명(reround_target),
+    그 외 queued/running/done·중복 재전송은 장부에 선점된 세션 — 입력 ctx(이전
+    회차)를 회수하지 않는다. 장부에 없는 신규 키만 ctx 계속(살아 있을 때) 또는
+    새 세션명으로 추정한다.
     """
     rr = reround_target(p)
     if rr:
@@ -725,21 +771,41 @@ def decide_session(p):
     return new_session_name(p)
 
 
-def prepare(p):
-    """백그라운드 전용: dup 판정+장부 선점. (session, fresh) 반환.
+def preempt_round(p):
+    """회차 선점 1회 — /hook 동기 경로. (session, fresh, deferred) 반환.
 
-    반환 session은 선점된 장부 엔트리의 세션(재회차 접미 포함)이다 — 이전 구현은
-    접미 전 세션을 돌려줘 서버가 이전 회차 context를 저장했다(PR#47 리뷰 R1).
+    응답(즉시 200 context)과 백그라운드 실행이 '동일한 선점 결과'를 공유한다
+    (PR#47 리뷰 R1 3차): 완료 감시자의 running→done 전환이 선점과 어떤 순서로
+    겹쳐도 응답은 실제 수락·선점한 회차 세션이다 — 응답 결정 이후 완료 전환/claim
+    경합이 남지 않는다. deferred는 네트워크 부수효과 목록으로 호출자가 200 이후에
+    발행한다(run_deferred); 장부 파일 연산만 동기 실행되므로 즉시 200 계약(10초)을
+    유지한다. ctx 생존 여부(tmux 조회)는 lock 밖에서 미리 계산한다.
     """
     key = run_key(p)
     opts, body = parse_overrides(p.get("message", ""))
-    if not claim_dispatch({**p, "message": body, "_opts": opts}, decide_session(p)):
-        with ledger_lock():
-            ent = load_runs().get(key) or {}
-        return ent.get("session") or decide_session(p), False
+    payload = {**p, "message": body, "_opts": opts}
+    ctx_session = parse_ctx(p.get("context"))
+    ctx_alive = bool(ctx_session and session_alive(ctx_session))
+    claimed, session, deferred = claim_dispatch(payload, ctx_session, ctx_alive)
+    if claimed and session:
+        return session, True, deferred
+    # 중복(DUP-SKIP) — 장부에 선점된 세션이 응답 기준.
     with ledger_lock():
         ent = load_runs().get(key) or {}
-    return ent.get("session") or decide_session(p), True
+    return ent.get("session") or new_session_name(p), bool(claimed), deferred
+
+
+def prepare(p):
+    """백그라운드/polling 전용: dup 판정+장부 선점. (session, fresh) 반환.
+
+    preempt_round의 결과를 그대로 소비하되 네트워크 부수효과는 즉시 발행한다 —
+    이 경로에는 즉시 200 계약이 없다. 반환 session은 선점된 장부 엔트리의 세션
+    (재회차 접미 포함)이다 — 이전 구현은 접미 전 세션을 돌려줘 서버가 이전 회차
+    context를 저장했다(PR#47 리뷰 R1).
+    """
+    session, fresh, deferred = preempt_round(p)
+    run_deferred(deferred)
+    return session, fresh
 
 
 def execute_once(p, session):
@@ -887,11 +953,10 @@ def run_agent(key):
 
 # ---------- 감시자 ----------
 
-def finalize(runs_dir_name, key, ent, exit_code, tail=""):
-    issue, did = ent["issue_id"], ent["dispatch_id"]
-    session = ent.get("session", "?")
-    summary = ""
+def _run_summary(key):
+    """run 산출 파일(.out→.log) 마지막 2000자 — finalize와 흡수 경로 공용."""
     base = key.replace("#", "_")
+    summary = ""
     for suffix in (".out", ".log"):  # codex는 .out, plain 드라이버는 .log가 stdout 수신
         cand = os.path.join(RUNTIME_DIR, base + suffix)
         if os.path.exists(cand):
@@ -902,11 +967,22 @@ def finalize(runs_dir_name, key, ent, exit_code, tail=""):
                 pass
             if suffix == ".out":
                 break
+    return summary
+
+
+def finalize(runs_dir_name, key, ent, exit_code, tail="", summary=None, write=True):
+    """런 종료 보고. write=False면 장부 전환 없이 보고만 — 흡수 경로(선점이 이미
+    전환을 장부에 반영) 전용: 이후 재회차 엔트리를 done으로 되덮지 않게 한다."""
+    issue, did = ent["issue_id"], ent["dispatch_id"]
+    session = ent.get("session", "?")
+    if summary is None:
+        summary = _run_summary(key)
     if exit_code == 0:
         tt_comment(issue, "runner:%s dispatch#%s done exit=0 session=%s\n%s"
                    % (machine_name(), did, session, mask(summary)))
         log("DONE dispatch#%s exit=0 session=%s" % (did, session))
-        update_run(key, status="done", exit=exit_code, ended=time.time())
+        if write:
+            update_run(key, status="done", exit=exit_code, ended=time.time())
         progress_projection(ent, "finished")
         return "done"
     # (M3BZS1G3 ①) 실패 출력에서 입력/승인 요구 시그니처 → crashed가 아니라 BLOCKED.
@@ -1159,20 +1235,36 @@ class H(BaseHTTPRequestHandler):
                     raise ValueError("missing " + k)
         except Exception as e:
             return self._send(400, {"detail": "bad payload: %s" % e})
-        threading.Thread(target=self._safe, args=(p,), daemon=True).start()
-        # 즉시 200: context용 세션 결정은 무결정(side-effect free) — claim은 백그라운드만.
-        # 스레드 선점이 이 계산에 먼저 반영되더라도 decide_session은 장부 세션 기준으로
-        # 같은 답을 낸다(선점 전후·경합 모든 순서에서 200 == 현재 회차 — PR#47 리뷰 R1).
-        return self._send(200, {"context": ctx_token(decide_session(p))})
+        # (PR#47 리뷰 R1 3차) 응답 결정과 선점을 동기화: 회차 결정(claim)을 한 번,
+        # 동기로 수행하고 200과 백그라운드 실행이 '동일한 선점 결과'를 공유한다 —
+        # 완료 감시자의 running→done 전환(.done 마커)이 선점과 어떤 순서로 겹쳐도
+        # 응답 == 실제 수락·선점한 회차. 장부 파일 연산만 동기 실행하고 네트워크
+        # 부수효과(TT 코멘트·흡수 finalize 보고)는 deferred로 미뤄 즉시 200 계약 유지.
+        decided = None
+        if (p.get("message") or "").strip().lower() not in APPROVE_WORDS:
+            try:
+                decided = preempt_round(p)
+            except Exception as e:
+                log("PREEMPT-FAIL dispatch#%s: %s: %s" % (p.get("dispatch_id"), type(e).__name__, e))
+        threading.Thread(target=self._safe, args=(p, decided), daemon=True).start()
+        if decided is None:
+            # 승인 메시지(선점 없음) 또는 동기 선점 실패 — 무결정 추정으로 응답
+            return self._send(200, {"context": ctx_token(decide_session(p))})
+        return self._send(200, {"context": ctx_token(decided[0])})
 
-    def _safe(self, p):
+    def _safe(self, p, decided=None):
         try:
             msg = (p.get("message") or "").strip().lower()
             if msg in APPROVE_WORDS:
                 if not maybe_approve_release(p):
                     log("APPROVE-NOTHING dispatch#%s — 대기 중인 held 런 없음" % p.get("dispatch_id"))
                 return
-            session, fresh = prepare(p)
+            if decided is None:
+                # 동기 선점 실패(장부 I/O 등) — 백그라운드에서 재선점(기존 경로)
+                session, fresh = prepare(p)
+            else:
+                session, fresh, deferred = decided
+                run_deferred(deferred)  # 200 이후 발행 — 흡수 finalize·가시화 코멘트
             if fresh:
                 execute_once(p, session)
         except Exception as e:

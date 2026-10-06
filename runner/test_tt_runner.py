@@ -746,5 +746,161 @@ class TestHookClaimFirstContext(unittest.TestCase):
             R.execute_once = orig_exec
 
 
+class TestCompletionTransitionRace(unittest.TestCase):
+    """PR#47 codex 3차 판정 R1 잔여 (기준 SHA ac5b7b0f): 완료 전환과 겹치는 선점.
+
+    A의 .done 마커는 이미 존재하지만 장부는 running(감시자 finalize 대기)일 때
+    재전송 B가 오면, 응답 결정(장부 running → A 세션)과 백그라운드
+    claim(done+새 SHA → B-r2 선점)이 서로 다른 시점·lock의 장부 읽기를 하므로
+    200 != 실제 회차가 된다. 요구: 응답 결정과 claim을 동기화 — 응답과 실행이
+    '동일한 선점 결과'를 공유하고, 완료 감시자의 running→done 전환은 그 결정에
+    흡수된다. 기존 경합 테스트(TestHookClaimFirstContext)는 기존 회차를 미리
+    done으로 만들고 시작해 이 전환을 놓쳤다.
+    """
+
+    DID = 701
+
+    def setUp(self):
+        self.n = str(self.id()).rsplit(".", 1)[-1]
+        self.issue = "DONE-" + self.n
+        self.key = "%s#%d" % (self.issue, self.DID)
+        self.msg_a = "[auto review] PR #3 (r/x) @ 85d6670a — 카드 %s 리뷰" % self.issue
+        self.msg_b = "[auto review] PR #3 (r/x) @ 07bcc393 — 카드 %s 리뷰" % self.issue
+        self.orig_alive = R.session_alive
+        self.orig_exec = R.execute_once
+        self.orig_comment = R.tt_comment
+        self.comments = []
+        self.executed = []
+        R.tt_comment = lambda issue, body: self.comments.append((issue, body))
+
+    def tearDown(self):
+        R.session_alive = self.orig_alive
+        R.execute_once = self.orig_exec
+        R.tt_comment = self.orig_comment
+
+    def _p(self, message, did=None, context=""):
+        return {"dispatch_id": did or self.DID, "issue_id": self.issue,
+                "agent": "p-read", "message": message, "context": context}
+
+    def _mark_done(self):
+        """감시자가 아직 finalize하지 않은 물리적 완료 — .done/.exit 마커만 기록."""
+        base = os.path.join(R.RUNTIME_DIR, self.key.replace("#", "_"))
+        with open(base + ".exit", "w") as f:
+            f.write("0")
+        open(base + ".done", "w").close()
+
+    def _hook(self, payload):
+        """실제 /hook 호출 — (200 context, 서버 shutdown) 반환."""
+        srv = R.ThreadingHTTPServer(("127.0.0.1", 0), R.H)
+        th = threading.Thread(target=srv.serve_forever, daemon=True)
+        th.start()
+        try:
+            conn = http.client.HTTPConnection("127.0.0.1", srv.server_address[1],
+                                              timeout=10)
+            body = json.dumps(payload)
+            conn.request("POST", "/hook", body=body, headers={
+                "Authorization": "Bearer test-secret-value",
+                "X-Tt-Dispatch": "1", "Content-Type": "application/json"})
+            resp = conn.getresponse()
+            status = resp.status
+            ctx_200 = json.loads(resp.read()).get("context")
+            conn.close()
+            return status, ctx_200
+        finally:
+            srv.shutdown()
+            srv.server_close()
+
+    # ① codex 재현: 마커는 있는데 장부가 running — 선점이 전환을 흡수해 응답==실행==재회차
+    def test_pending_completion_absorbed_response_matches_preempted_round(self):
+        s1, _ = R.prepare(self._p(self.msg_a))
+        R.update_run(self.key, status="running", started=time.time())
+        self._mark_done()  # 물리 완료 — 감시자 finalize 전(장부는 running)
+        R.session_alive = lambda name: True  # keep_shell 생존 이전 회차
+        executed = threading.Event()
+
+        def _exec(p, s):
+            self.executed.append(s)
+            executed.set()
+        R.execute_once = _exec
+        status, ctx_200 = self._hook(self._p(self.msg_b, context=R.ctx_token(s1)))
+        self.assertEqual(status, 200)
+        self.assertTrue(executed.wait(timeout=5), "백그라운드 실행 미완료")
+        ent = R.get_run(self.key)
+        self.assertEqual(ent["status"], "queued")  # 재회차 선점됨
+        self.assertIn("07bcc393", ent["session"])  # RED: 옛 구조는 재회차 자체가 없음
+        self.assertIn("-r2", ent["session"])
+        self.assertEqual(R.parse_ctx(ctx_200), ent["session"])  # RED: 200 == A 세션
+        self.assertEqual(self.executed[-1], ent["session"])  # 실행도 동일 선점 결과
+        self.assertNotEqual(R.parse_ctx(ctx_200), s1)  # 이전 회차 회수 금지
+
+    # ② 흡수된 finalize가 정확히 1회 보고되고 이후 감시자 tick이 이중 처리하지 않는다
+    def test_absorbed_finalize_reports_once_and_watch_does_not_duplicate(self):
+        s1, _ = R.prepare(self._p(self.msg_a))
+        R.update_run(self.key, status="running", started=time.time())
+        self._mark_done()
+        R.session_alive = lambda name: True
+        executed = threading.Event()
+        R.execute_once = lambda p, s: (self.executed.append(s), executed.set())
+        self._hook(self._p(self.msg_b))
+        self.assertTrue(executed.wait(timeout=5))
+        done_comments = [c for c in self.comments if "done exit=0" in c[1]]
+        self.assertEqual(len(done_comments), 1)  # 흡수된 finalize 보고
+        self.assertIn(s1, done_comments[0][1])  # 전환된 회차(A) 기준
+        R.watch_once()  # 감시자 tick — 흡수된 전환을 재처리하지 않는다
+        self.assertEqual(len([c for c in self.comments if "done exit=0" in c[1]]), 1)
+
+    # ③ 감시자가 먼저 tick한 경우(실제 finalize)에도 응답==실행==재회차
+    def test_watcher_ticked_before_preempt_response_matches_round(self):
+        R.prepare(self._p(self.msg_a))
+        R.update_run(self.key, status="running", started=time.time())
+        self._mark_done()
+        R.watch_once()  # 감시자 먼저 — 장부 done 전환
+        self.assertEqual(R.get_run(self.key)["status"], "done")
+        R.session_alive = lambda name: True
+        executed = threading.Event()
+        R.execute_once = lambda p, s: (self.executed.append(s), executed.set())
+        status, ctx_200 = self._hook(self._p(self.msg_b))
+        self.assertEqual(status, 200)
+        self.assertTrue(executed.wait(timeout=5))
+        ent = R.get_run(self.key)
+        self.assertEqual(R.parse_ctx(ctx_200), ent["session"])
+        self.assertEqual(self.executed[-1], ent["session"])
+        self.assertIn("-r2", ent["session"])
+
+    # ④ 선점 시점에 마커가 없으면(진짜 running) 단일 결정은 DUP-SKIP — 응답·실행·
+    #    이후 전환·후속 dispatch가 모두 그 결정에 일관된다
+    def test_completion_after_preempt_keeps_single_decision_consistent(self):
+        s1, _ = R.prepare(self._p(self.msg_a))
+        R.update_run(self.key, status="running", started=time.time())
+        R.session_alive = lambda name: True
+        executed = threading.Event()
+        R.execute_once = lambda p, s: (self.executed.append(s), executed.set())
+        status, ctx_200 = self._hook(self._p(self.msg_b))
+        self.assertEqual(status, 200)
+        self.assertEqual(R.parse_ctx(ctx_200), s1)  # 진행 중 — 현재 회차 유지
+        self.assertFalse(executed.wait(timeout=0.5))  # DUP-SKIP — 실행 없음
+        self._mark_done()
+        R.watch_once()  # 전환은 선점 이후 — 정상 finalize
+        self.assertEqual(R.get_run(self.key)["status"], "done")
+        # 응답 context를 쓰는 후속 dispatch: 응답이 가리킨 세션으로 일관 continue
+        sf, _ = R.prepare(self._p("후속 지시 — 판정 코멘트 확인", did=self.DID + 1,
+                                  context=ctx_200))
+        self.assertEqual(sf, s1)
+
+    # ⑤ 승인 메시지는 선점하지 않는다 — held 런 해제만, 장부 오염 금지
+    def test_approve_message_does_not_claim_ledger(self):
+        s1, _ = R.prepare(self._p(self.msg_a))
+        R.update_run(self.key, status="held", gate="rm -rf")
+        executed = threading.Event()
+        R.execute_once = lambda p, s: (self.executed.append(s), executed.set())
+        approve_key = "%s#%d" % (self.issue, self.DID + 9)
+        status, ctx_200 = self._hook(self._p("승인", did=self.DID + 9,
+                                             context=R.ctx_token(s1)))
+        self.assertEqual(status, 200)
+        self.assertTrue(executed.wait(timeout=5))  # 원 메시지 실행
+        self.assertIsNone(R.get_run(approve_key))  # 승인 dispatch로 선점 생성 금지
+        self.assertEqual(R.get_run(self.key)["session"], s1)  # held 런 그대로 실행
+
+
 if __name__ == "__main__":
     unittest.main()
