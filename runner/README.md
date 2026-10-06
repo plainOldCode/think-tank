@@ -100,6 +100,14 @@ dispatch 오버라이드는 message 선두 `#opts {"model":...,"reasoning":...,"
   WATCH_INTERVAL_S 이하 창)이면 선점 결정 전에 done으로 흡수한다. 흡수된 종료는 보고만
   하고(출력은 지울 전에 포착) 장부를 다시 쓰지 않는다. rc!=0는 blocked/failed 분류가
   tail 분석을 필요로 하므로 감시자 몫 — finalize와 동일한 조건만 흡수한다.
+- **완료 전환·보고 소유권은 하나의 원자적 게이트** — 이전 회차 감시자가 finalize의
+  보고 네트워크 호출에서 대기하는 동안 다음 회차로 선점되면, 늦은 반환은 현재 회차
+  엔트리를 done/failed로 덮거나(세션 미생성·보고 0건) 감시자+흡수 경로가 같은 완료를
+  2건 보고한다(PR#47 리뷰 R3). 그래서 보고 직전 `claim_report()`가 lock 안에서 관찰
+  session/round를 재확인하고 보고 소유를 check-and-set한다(엔트리 `claimed_report`).
+  엔트리가 이미 다음 회차로 교체됐으면 rc=0 완료 보고는 흡수 경로 소유(감시자 skip),
+  실패 보고는 감시자 몫. 장부 전환은 `update_run_if_round` — 관찰 회차가 현재
+  회차·running일 때만 쓴다. 네트워크 호출(TT 코멘트·투영)은 lock 밖.
 - 동일 키의 200 context는 **선점 결과**(장부에 확정된 세션) 기준이다 — 승인 메시지는
   선점하지 않고(held 해제만), 동기 선점 실패 시에만 무결정 추정(`decide_session`)으로
   응답한다. queued/running/done·중복 재전송에서 입력 ctx의 이전 회차 세션을 회수하지 않는다.
@@ -113,10 +121,10 @@ DUP-SKIP은 유지되되 사유에 대상 비교가 명시된다(`대상 동일 
 (`mismatch_notified` 플래그). 서버 probe가 회차별 새 dispatch id를 발급하면(제안 B,
 미구현) 이 보상 경로는 평상시 발동하지 않는다.
 
-검증: unittest 53 green(이전 라운드 48 + 완료 전환 경합 회귀 5: 마커 pending 선점 흡수 후
-200==실행==재회차, 흡수 finalize 1회 보고·감시자 이중 처리 없음, 감시자 선행 tick 후에도
-일치, 마커 후발 단일 결정 일관, 승인 메시지 무선점) + RED 대조(ac5b7b0f에서 신규 2건
-결정론 실패: 백그라운드 실행 자체가 없음/응답이 옛 세션) + 격리 tmux E2E PASS(1회차
+검증: unittest 57 green(이전 라운드 53 + 소유권 게이트 회귀 4: finalize 내부 대기 중
+선점→늦은 반환 무덮기·보고 1건·재시도 응답 유지·B 완료 보고, B 실행 후 반환 무덮기,
+흡수 소유 시 늦은 finalize skip, 게이트 단위 계약) + RED 대조(8e2e43f5에서 신규 3건 실패:
+B queued/running이 done으로 덮임, 늦은 finalize 재보고) + 격리 tmux E2E SMOKE PASS(1회차
 done → 새 sha 재전송 RE-ROUND 재실행 done, 1회차 출력 비유출, 동일 sha 3회차 스킵,
 A→B→C→B 재방문 전 회차 done, 후속 dispatch가 현재 회차 continue).
 

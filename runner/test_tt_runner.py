@@ -350,11 +350,14 @@ class TestProgressProjection(unittest.TestCase):
         self.assertEqual(self._states(), ["finished"])
         self.calls.clear()
         # 입력 요구 시그니처 BLOCKED: 세션 종료 → failed 투영 (코멘트는 현행 그대로)
-        with open(os.path.join(R.RUNTIME_DIR, "P-1_501.log"), "w") as f:
+        # (보고 소유권 게이트 — 회차당 보고 1회이므로 판정은 별도 런으로, PR#47 R3)
+        R.save_runs({"P-5#505": {"status": "running", "issue_id": "P-5",
+                                 "dispatch_id": 505, "session": "tt-p-505"}})
+        with open(os.path.join(R.RUNTIME_DIR, "P-5_505.log"), "w") as f:
             f.write("ERROR: approval required before proceeding\n")
-        R.finalize(None, "P-1#501", dict(ent), 1)
+        R.finalize(None, "P-5#505", R.get_run("P-5#505"), 1)
         self.assertEqual(self._states(), ["failed"])
-        self.assertEqual(self.comments[-1][0], "P-1")
+        self.assertEqual(self.comments[-1][0], "P-5")
 
     def test_stall_check_projects_stalled_once_and_kill_failed(self):
         ent = R.get_run("P-1#301") if R.get_run("P-1#301") else None
@@ -900,6 +903,198 @@ class TestCompletionTransitionRace(unittest.TestCase):
         self.assertTrue(executed.wait(timeout=5))  # 원 메시지 실행
         self.assertIsNone(R.get_run(approve_key))  # 승인 dispatch로 선점 생성 금지
         self.assertEqual(R.get_run(self.key)["session"], s1)  # held 런 그대로 실행
+
+
+class TestFinalizeOwnershipGate(unittest.TestCase):
+    """PR#47 codex 4차 판정 R3 (기준 SHA 8e2e43f5): 이전 회차 감시자가 현재 회차를 덮어씀.
+
+    watch_once가 A 스냅샷으로 finalize에 들어가 TT 보고(네트워크)에서 대기하는 동안
+    B /hook이 흡수+선점하면, finalize의 update_run(done)이 회차 확인 없이 현재 B
+    엔트리를 덮는다 — ① B 세션 미생성 + 동일 B 재전송 영구 DUP-SKIP, ② B 실행 후
+    반환이면 .done 마커 없이 running→done 되덮어 B 완료 보고 0건, 그리고 A 완료
+    코멘트는 감시자+흡수 경로가 각각 보고해 2건 중복. 요구(codex): 완료 전환·보고
+    소유권을 감시자와 흡수 경로가 같은 원자적 게이트에서 결정 — finalize는 관찰한
+    session/round를 lock 안에서 확인하고 네트워크 호출은 lock 밖에 둔다. 기존 신규
+    테스트(TestCompletionTransitionRace)는 watch_once를 hook 후 또는 완전 종료 뒤에
+    실행해 finalize 내부 대기(중첩)를 재현하지 못했다.
+    """
+
+    DID = 801
+
+    def setUp(self):
+        self.n = str(self.id()).rsplit(".", 1)[-1]
+        self.issue = "OWN-" + self.n
+        self.key = "%s#%d" % (self.issue, self.DID)
+        self.msg_a = "[auto review] PR #3 (r/x) @ 85d6670a — 카드 %s 리뷰" % self.issue
+        self.msg_b = "[auto review] PR #3 (r/x) @ 07bcc393 — 카드 %s 리뷰" % self.issue
+        self.orig_alive = R.session_alive
+        self.orig_exec = R.execute_once
+        self.orig_comment = R.tt_comment
+        self.comments = []  # 전달(반환)된 코멘트만 기록
+        self.executed = []
+        self.gate_entered = threading.Event()
+        self.gate_release = threading.Event()
+        R.session_alive = lambda name: True
+        R.execute_once = lambda p, s: self.executed.append(s)
+
+    def tearDown(self):
+        R.session_alive = self.orig_alive
+        R.execute_once = self.orig_exec
+        R.tt_comment = self.orig_comment
+
+    def _p(self, message, did=None, context=""):
+        return {"dispatch_id": did or self.DID, "issue_id": self.issue,
+                "agent": "p-read", "message": message, "context": context}
+
+    def _prepare_running_a(self):
+        """A 회차 running + 물리 완료 마커 — 감시자가 아직 finalize하지 않은 상태."""
+        s1, _ = R.prepare(self._p(self.msg_a))
+        R.update_run(self.key, status="running", started=time.time())
+        base = os.path.join(R.RUNTIME_DIR, self.key.replace("#", "_"))
+        with open(base + ".exit", "w") as f:
+            f.write("0")
+        open(base + ".done", "w").close()
+        return s1
+
+    def _gate_comment(self, issue, body):
+        """finalize 내부 대기 재현: 이 카드의 보고 네트워크 호출에서 블록."""
+        if "dispatch#%d" % self.DID in body:
+            self.gate_entered.set()
+            self.gate_release.wait(timeout=10)
+        self.comments.append((issue, body))
+
+    def _recorder_comment(self, issue, body):
+        self.comments.append((issue, body))
+
+    def _hook(self, payload):
+        """실제 /hook 엔드포인트 호출 — (status, 200 context) 반환."""
+        srv = R.ThreadingHTTPServer(("127.0.0.1", 0), R.H)
+        th = threading.Thread(target=srv.serve_forever, daemon=True)
+        th.start()
+        try:
+            conn = http.client.HTTPConnection("127.0.0.1", srv.server_address[1],
+                                              timeout=10)
+            body = json.dumps(payload)
+            conn.request("POST", "/hook", body=body, headers={
+                "Authorization": "Bearer test-secret-value",
+                "X-Tt-Dispatch": "1", "Content-Type": "application/json"})
+            resp = conn.getresponse()
+            status = resp.status
+            ctx_200 = json.loads(resp.read()).get("context")
+            conn.close()
+            return status, ctx_200
+        finally:
+            srv.shutdown()
+            srv.server_close()
+
+    def _mark_b_done(self):
+        base = os.path.join(R.RUNTIME_DIR, self.key.replace("#", "_"))
+        with open(base + ".exit", "w") as f:
+            f.write("0")
+        open(base + ".done", "w").close()
+
+    def _done_of(self, session):
+        return [b for _, b in self.comments
+                if "done exit=0" in b and ("session=%s\n" % session) in b]
+
+    # ① codex 재현 경로 1: 감시자가 보고 호출에서 대기 중 B 선점 → 늦은 반환
+    def test_late_watcher_return_does_not_clobber_preempted_round(self):
+        s1 = self._prepare_running_a()
+        R.tt_comment = self._gate_comment
+        wt = threading.Thread(target=R.watch_once, daemon=True)
+        wt.start()
+        self.assertTrue(self.gate_entered.wait(timeout=5),
+                        "감시자가 finalize의 TT 보고 호출에 진입하지 못함")
+        status, ctx_200 = self._hook(self._p(self.msg_b, context=R.ctx_token(s1)))
+        self.assertEqual(status, 200)  # B 선점 정상 — 200 context는 r2
+        self.gate_release.set()
+        wt.join(timeout=10)
+        self.assertFalse(wt.is_alive(), "감시자 반환 지연")
+        ent = R.get_run(self.key)
+        # RED: 구조는 finalize의 update_run(done)이 B(queued)를 덮어 세션 미생성
+        self.assertEqual(ent["status"], "queued")
+        self.assertEqual(ent["round"], 2)
+        self.assertIn("-r2", ent["session"])
+        self.assertEqual(R.parse_ctx(ctx_200), ent["session"])
+        # A 완료 보고 정확 1건 — 감시자 소유, 흡수 경로 중복 없음 (RED: 구조는 2건)
+        self.assertEqual(len(self._done_of(s1)), 1)
+        # 동일 요청 재시도 — 여전히 현재 회차(B) 응답, 상태 훼손 없음
+        status2, ctx2 = self._hook(self._p(self.msg_b, context=R.ctx_token(s1)))
+        self.assertEqual(status2, 200)
+        self.assertEqual(R.parse_ctx(ctx2), ent["session"])
+        self.assertEqual(R.get_run(self.key)["status"], "queued")
+        # B 실행+완료 → 완료 보고 1건 (RED: 구조는 B가 done으로 덮인 뒤라 보고 0건)
+        R.tt_comment = self._recorder_comment
+        R.update_run(self.key, status="running", started=time.time())
+        self._mark_b_done()
+        R.watch_once()
+        self.assertEqual(len(self._done_of(ent["session"])), 1)
+        self.assertEqual(R.get_run(self.key)["status"], "done")
+
+    # ② codex 재현 경로 2: B 실행 중에 감시자 반환 — running 되덮기 금지 + B 보고 생존
+    def test_late_watcher_return_after_b_started_keeps_round_and_report(self):
+        s1 = self._prepare_running_a()
+        R.tt_comment = self._gate_comment
+        wt = threading.Thread(target=R.watch_once, daemon=True)
+        wt.start()
+        self.assertTrue(self.gate_entered.wait(timeout=5),
+                        "감시자가 finalize의 TT 보고 호출에 진입하지 못함")
+        status, _ = self._hook(self._p(self.msg_b, context=R.ctx_token(s1)))
+        self.assertEqual(status, 200)
+        # B 실제 실행 개시 (execute_once의 queued→running 전환과 동일)
+        R.update_run(self.key, status="running", started=time.time())
+        self.gate_release.set()
+        wt.join(timeout=10)
+        self.assertFalse(wt.is_alive())
+        # RED: 구조는 update_run(done)이 .done 마커 없이 실행 중인 B를 되덮는다
+        ent = R.get_run(self.key)
+        self.assertEqual(ent["status"], "running")
+        self.assertEqual(ent["round"], 2)
+        # A 완료 보고 1건 — 중복 없음 (RED: 구조는 감시자+흡수 2건)
+        self.assertEqual(len(self._done_of(s1)), 1)
+        # B 정상 종료 → 완료 보고 1건 (RED: 구조는 감시자가 건너뛰어 0건)
+        R.tt_comment = self._recorder_comment
+        self._mark_b_done()
+        R.watch_once()
+        self.assertEqual(len(self._done_of(ent["session"])), 1)
+        self.assertEqual(R.get_run(self.key)["status"], "done")
+
+    # ③ 흡수 경로가 보고 소유 — 이후 진입한 늦은 감시자는 중복 보고·덮기 없음
+    def test_absorb_path_owns_report_late_finalize_skipped(self):
+        s1 = self._prepare_running_a()
+        stale_snap = R.get_run(self.key)  # 선점 이전 A 회차 스냅샷 (중첩 감시자 보유분)
+        R.tt_comment = self._recorder_comment
+        executed = threading.Event()
+        R.execute_once = lambda p, s: (self.executed.append(s), executed.set())
+        status, _ = self._hook(self._p(self.msg_b, context=R.ctx_token(s1)))
+        self.assertEqual(status, 200)
+        self.assertTrue(executed.wait(timeout=5))  # 백그라운드 _safe: run_deferred 선행
+        # 흡수 경로 보고 1건 (write=False)
+        self.assertEqual(len(self._done_of(s1)), 1)
+        # 늦은 감시자 — 이전 회차 스냅샷으로 finalize 재진입 (RED: 구조는 재보고+되덮기)
+        outcome = R.finalize(None, self.key, stale_snap, 0)
+        self.assertEqual(outcome, "skipped")
+        self.assertEqual(len(self._done_of(s1)), 1)
+        self.assertEqual(R.get_run(self.key)["status"], "queued")  # B 무훼손
+
+    # ④ 게이트 단위 계약: 보고 소유 단일화 + 관찰 회차 불일치 전환 거부
+    def test_ownership_gate_unit_semantics(self):
+        s1, _ = R.prepare(self._p(self.msg_a))
+        R.update_run(self.key, status="running", started=time.time())
+        snap = R.get_run(self.key)
+        self.assertTrue(R.claim_report(self.key, snap, 0))   # 선점 — 단일 소유
+        self.assertFalse(R.claim_report(self.key, snap, 0))  # 중복 claim 거부
+        self.assertTrue(R.update_run_if_round(self.key, snap, status="done", exit=0))
+        self.assertEqual(R.get_run(self.key)["status"], "done")
+        # 다음 회차 교체 후 — 이전 회차의 전환·완료 claim은 거부, 엔트리 무훼손
+        R.update_run(self.key, status="running", round=2,
+                     session=s1 + "-07bcc393-r2", claimed_report=None)
+        self.assertFalse(R.update_run_if_round(self.key, snap, status="failed", exit=1))
+        ent = R.get_run(self.key)
+        self.assertEqual(ent["status"], "running")
+        self.assertEqual(ent["round"], 2)
+        self.assertFalse(R.claim_report(self.key, snap, 0))  # 완료 보고는 흡수 경로 소유
+        self.assertTrue(R.claim_report(self.key, snap, 1))   # 실패 보고는 감시자 몫
 
 
 if __name__ == "__main__":

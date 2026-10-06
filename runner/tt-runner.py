@@ -398,13 +398,23 @@ def claim_dispatch(p, ctx_session=None, ctx_alive=False):
                     except Exception:
                         rc = 0
                     if rc == 0:
+                        # 보고 소유권 claim (PR#47 리뷰 R3): 감시자가 finalize 안에서
+                        # 이미 소유했다면 흡수는 전환만 하고 보고를 중복 실행하지 않는다
+                        # — 같은 lock 안의 check-and-set이 유일한 결정 지점이다.
+                        rid = _round_id(prev)
+                        owns_report = not (rid is not None
+                                           and prev.get("claimed_report") == rid)
                         prev.update(status="done", exit=0, ended=time.time(),
                                     detail="finalize-absorbed")
+                        if owns_report and rid is not None:
+                            prev["claimed_report"] = rid
                         save_runs(runs)
-                        log("ABSORB-DONE dispatch#%s (key=%s) 마커 선반영 — 감시자 전환 흡수"
-                            % (p["dispatch_id"], key))
-                        # 요약은 지금 포착 — 재회차 경로가 이전 회차 아티팩트를 지우기 전
-                        deferred.append(("finalize", key, dict(prev), 0, _run_summary(key)))
+                        log("ABSORB-DONE dispatch#%s (key=%s) 마커 선반영 — 감시자 전환 흡수%s"
+                            % (p["dispatch_id"], key,
+                               "" if owns_report else " (보고는 감시자 소유)"))
+                        if owns_report:
+                            # 요약은 지금 포착 — 재회차 경로가 이전 회차 아티팩트를 지우기 전
+                            deferred.append(("finalize", key, dict(prev), 0, _run_summary(key)))
             new_sha = target_sha(p.get("message", ""))
             old_sha = prev.get("target_sha") or target_sha(prev.get("message", ""))
             if prev.get("status") == "done" and new_sha and old_sha and new_sha != old_sha:
@@ -458,7 +468,8 @@ def run_deferred(deferred):
         try:
             kind = item[0]
             if kind == "finalize":
-                finalize(None, item[1], item[2], item[3], summary=item[4], write=False)
+                finalize(None, item[1], item[2], item[3], summary=item[4], write=False,
+                         owns_report=True)
             elif kind == "comment":
                 tt_comment(item[1], item[2])
             else:
@@ -478,6 +489,64 @@ def update_run(key, **fields):
 def get_run(key):
     with ledger_lock():
         return load_runs().get(key)
+
+
+def _round_id(ent):
+    """회차 식별자 — round 우선, round 없는 구형 장부 엔트리는 session으로 대체."""
+    r = ent.get("round")
+    return r if r is not None else ent.get("session")
+
+
+def _observes_round(cur, snap):
+    """장부 현재 엔트리(cur)가 관찰 스냅샷(snap)과 같은 회차인지 (PR#47 리뷰 R3).
+
+    finalize는 보고 네트워크 호출을 lock 밖에서 하므로 반환 시점이 늦을 수 있다 —
+    그 사이 재회차 선점이 같은 키의 엔트리를 다음 회차로 교체했는지 판별한다.
+    """
+    if snap.get("round") is not None and cur.get("round") is not None:
+        return cur.get("round") == snap.get("round")
+    return (cur.get("session") or "") == (snap.get("session") or "")
+
+
+def claim_report(key, snap, exit_code):
+    """완료 보고 소유권 게이트 — 감시자(finalize)와 흡수 경로(claim_dispatch)가 같은
+    원자적 게이트에서 소유를 결정한다 (PR#47 리뷰 R3).
+
+    lock 안에서 관찰 회차를 재확인하고 보고 claim을 check-and-set한다. 반환 True면
+    호출자만이 그 회차의 종료 보고를 낸다. 엔트리가 이미 다음 회차로 교체됐으면
+    완료(rc=0) 보고는 흡수 경로가 소유(감시자 보고 스킵), 실패 보고는 감시자 몫으로
+    남는다(흡수는 rc!=0를 claim하지 않는다 — tail 분석 필요). 네트워크 호출은 이
+    함수 밖에서 실행된다.
+    """
+    with ledger_lock():
+        runs = load_runs()
+        cur = runs.get(key)
+        if cur is None:
+            return True
+        if not _observes_round(cur, snap):
+            return exit_code != 0
+        rid = _round_id(snap)
+        if rid is not None and cur.get("claimed_report") == rid:
+            return False
+        if rid is not None:
+            cur["claimed_report"] = rid
+            save_runs(runs)
+        return True
+
+
+def update_run_if_round(key, snap, **fields):
+    """finalize 전환용 조건부 갱신 — 관찰 회차가 아직 현재 회차이고 상태가 running일
+    때만 쓴다 (PR#47 리뷰 R3). 이전 회차 감시자의 늦은 반환(finalize는 보고를 lock
+    밖 네트워크 호출로 하므로 반환 시점이 늦다)이 재회차 엔트리(queued/running)를
+    done/failed로 덮지 않게 한다. 반환: 실제로 썼으면 True."""
+    with ledger_lock():
+        runs = load_runs()
+        cur = runs.get(key)
+        if cur is None or cur.get("status") != "running" or not _observes_round(cur, snap):
+            return False
+        cur.update(fields)
+        save_runs(runs)
+        return True
 
 
 def latest_held(issue_id):
@@ -970,19 +1039,36 @@ def _run_summary(key):
     return summary
 
 
-def finalize(runs_dir_name, key, ent, exit_code, tail="", summary=None, write=True):
+def finalize(runs_dir_name, key, ent, exit_code, tail="", summary=None, write=True,
+             owns_report=None):
     """런 종료 보고. write=False면 장부 전환 없이 보고만 — 흡수 경로(선점이 이미
-    전환을 장부에 반영) 전용: 이후 재회차 엔트리를 done으로 되덮지 않게 한다."""
+    전환을 장부에 반영) 전용: 이후 재회차 엔트리를 done으로 되덮지 않게 한다.
+
+    소유권 게이트 (PR#47 리뷰 R3): 완료 전환·보고의 소유권을 감시자와 흡수 경로가
+    같은 원자적 게이트에서 결정한다 — 보고 직전 claim_report()가 lock 안에서 관찰한
+    session/round가 여전히 현재 회차인지 확인하고 보고 소유를 check-and-set한다.
+    finalize 내부(보고 네트워크 호출)에서 대기 중인 이전 회차 감시자의 늦은 반환은
+    다음 회차 엔트리의 queued/running 상태·감시를 바꾸지 못한다. 네트워크 호출(TT
+    코멘트·진행 투영)은 lock 밖에서 실행된다. owns_report=True는 소유권을 이미 가진
+    흡수 경로 호출(흡수 시점 claim 승계)이다. 전환은 update_run_if_round — 관찰
+    회차가 현재 회차·running일 때만 장부에 반영된다.
+    """
     issue, did = ent["issue_id"], ent["dispatch_id"]
     session = ent.get("session", "?")
     if summary is None:
         summary = _run_summary(key)
+    if owns_report is None:
+        owns_report = claim_report(key, ent, exit_code)
+    if not owns_report:
+        log("FINALIZE-SKIP dispatch#%s session=%s — 보고 소유권 없음 (다음 회차 선점, 흡수 경로 보고)"
+            % (did, session))
+        return "skipped"
     if exit_code == 0:
         tt_comment(issue, "runner:%s dispatch#%s done exit=0 session=%s\n%s"
                    % (machine_name(), did, session, mask(summary)))
         log("DONE dispatch#%s exit=0 session=%s" % (did, session))
         if write:
-            update_run(key, status="done", exit=exit_code, ended=time.time())
+            update_run_if_round(key, ent, status="done", exit=exit_code, ended=time.time())
         progress_projection(ent, "finished")
         return "done"
     # (M3BZS1G3 ①) 실패 출력에서 입력/승인 요구 시그니처 → crashed가 아니라 BLOCKED.
@@ -994,14 +1080,17 @@ def finalize(runs_dir_name, key, ent, exit_code, tail="", summary=None, write=Tr
                    "waiting_for=human. 재지시('승인' 또는 지시)를 기다림; 자동 재시도 없음.\n%s"
                    % (machine_name(), did, sig, exit_code, session, mask(combined[-1500:])))
         log("BLOCKED dispatch#%s signature=%s exit=%s session=%s" % (did, sig, exit_code, session))
-        update_run(key, status="blocked", exit=exit_code, blocked_on=sig, ended=time.time())
+        if write:
+            update_run_if_round(key, ent, status="blocked", exit=exit_code,
+                                blocked_on=sig, ended=time.time())
         progress_projection(ent, "failed")  # 세션은 종료 — 사람 대기 = 실행 미활성
         return "blocked"
     detail = tail or summary
     tt_comment(issue, "runner:%s dispatch#%s failed exit=%s session=%s\n%s"
                % (machine_name(), did, exit_code, session, mask(detail)))
     log("FAILED dispatch#%s exit=%s" % (did, exit_code))
-    update_run(key, status="failed", exit=exit_code, ended=time.time())
+    if write:
+        update_run_if_round(key, ent, status="failed", exit=exit_code, ended=time.time())
     progress_projection(ent, "failed")
     return "failed"
 
