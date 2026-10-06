@@ -4,12 +4,14 @@
 실행: TT_RUNNER_STATE=<tmp> TT_RUNNER_SECRET=<tmpfile> TT_URL=http://127.0.0.1:1 \
      python3 -m unittest discover -s runner -p 'test_*.py' (repo root)
 """
+import http.client
 import importlib.util as _ilu
 import json
 import os
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 
@@ -348,11 +350,14 @@ class TestProgressProjection(unittest.TestCase):
         self.assertEqual(self._states(), ["finished"])
         self.calls.clear()
         # 입력 요구 시그니처 BLOCKED: 세션 종료 → failed 투영 (코멘트는 현행 그대로)
-        with open(os.path.join(R.RUNTIME_DIR, "P-1_501.log"), "w") as f:
+        # (보고 소유권 게이트 — 회차당 보고 1회이므로 판정은 별도 런으로, PR#47 R3)
+        R.save_runs({"P-5#505": {"status": "running", "issue_id": "P-5",
+                                 "dispatch_id": 505, "session": "tt-p-505"}})
+        with open(os.path.join(R.RUNTIME_DIR, "P-5_505.log"), "w") as f:
             f.write("ERROR: approval required before proceeding\n")
-        R.finalize(None, "P-1#501", dict(ent), 1)
+        R.finalize(None, "P-5#505", R.get_run("P-5#505"), 1)
         self.assertEqual(self._states(), ["failed"])
-        self.assertEqual(self.comments[-1][0], "P-1")
+        self.assertEqual(self.comments[-1][0], "P-5")
 
     def test_stall_check_projects_stalled_once_and_kill_failed(self):
         ent = R.get_run("P-1#301") if R.get_run("P-1#301") else None
@@ -425,6 +430,671 @@ class TestProgressProjection(unittest.TestCase):
         finally:
             R.pane_fingerprint = orig_cap
             R.session_tail = orig_tail
+
+
+class TestDupSkipReRound(unittest.TestCase):
+    """think-tank#46: 동일 (issue, dispatch_id) 재전송 + message의 대상 sha 변경 → 재실행.
+
+    기존 계약: 장부 키 "<issue>#<dispatch>" 단일 실행 게이트. 결함: status=done이면
+    대상 sha가 바뀌어도 영구 DUP-SKIP → 재검토 체인 정지. 수정(제안 A): done이어도
+    대상 sha가 다르면 새 회차로 재실행. 스킵 시 대상 불일치 여부를 명시(제안 C).
+    """
+
+    DID = 401
+
+    def setUp(self):
+        self.n = str(self.id()).rsplit(".", 1)[-1]
+        self.issue = "DUPR-" + self.n
+        # 실측 형식(장부 M45WT02H-CWES#145): 대상 sha는 첫 줄, 본문에 다른 sha도 등장
+        self.msg_a = ("[auto review] PR #3 (plainOldCode/services-page) @ 85d6670a — "
+                      "카드 %s 리뷰 요청(재검토: 브랜치가 main 7aac56d 위로 rebase됨, "
+                      "이전 기준 SHA f177b4f 판정 무효). 먼저 claim-review를 호출하라." % self.issue)
+        self.msg_b = ("[auto review] PR #3 (plainOldCode/services-page) @ 07bcc393 — "
+                      "카드 %s 리뷰 요청(재검토: codex 판정 SEC-1 수정 반영 커밋)." % self.issue)
+        self.p1 = {"dispatch_id": self.DID, "issue_id": self.issue, "agent": "p-read",
+                   "message": self.msg_a, "context": ""}
+        self.key = "%s#%d" % (self.issue, self.DID)
+        R.prepare(self.p1)
+        self.orig_comment = R.tt_comment
+
+    def tearDown(self):
+        R.tt_comment = self.orig_comment
+
+    def _done(self):
+        R.update_run(self.key, status="done", exit=0, ended=time.time())
+
+    def test_target_sha_extracts_first_line_only(self):
+        self.assertEqual(R.target_sha(self.msg_a), "85d6670a")
+        self.assertEqual(R.target_sha(self.msg_b), "07bcc393")
+        # harvest 마커 형식(PR#n@sha8)도 커버
+        self.assertEqual(R.target_sha("PR#12@abcdef12"), "abcdef12")
+        # 대상 아님: sha 없음 / 본문(둘째 줄)의 sha는 인용일 뿐
+        self.assertIsNone(R.target_sha("일반 작업 지시"))
+        self.assertIsNone(R.target_sha("일반 재지시\nPR #3 (r/x) @ deadbeef 본문 인용"))
+
+    def test_same_id_new_sha_reruns_as_new_round(self):
+        self._done()
+        session1 = R.get_run(self.key)["session"]
+        p2 = dict(self.p1, message=self.msg_b)
+        _, fresh = R.prepare(p2)  # RED: 현재 DUP-SKIP으로 False
+        self.assertTrue(fresh)
+        ent = R.get_run(self.key)
+        self.assertEqual(ent["status"], "queued")
+        self.assertEqual(ent["message"], self.msg_b)
+        self.assertEqual(ent["target_sha"], "07bcc393")
+        self.assertEqual(ent["prev_sha"], "85d6670a")
+        # 재회차 세션은 이전 회차 세션명과 충돌하지 않아야 한다(keep_shell 생존 대비)
+        self.assertNotEqual(ent["session"], session1)
+        self.assertTrue(ent["session"].startswith(session1 + "-"))
+        self.assertIn("07bcc393", ent["session"])
+
+    def test_same_id_same_sha_still_dup_skip(self):
+        self._done()
+        _, fresh = R.prepare(dict(self.p1))  # 동일 메시지 재전송
+        self.assertFalse(fresh)
+        self.assertEqual(R.get_run(self.key)["status"], "done")
+
+    def test_no_target_sha_message_still_dup_skip(self):
+        self._done()
+        _, fresh = R.prepare(dict(self.p1, message="일반 재지시 — 대상 sha 없음"))
+        self.assertFalse(fresh)
+        self.assertEqual(R.get_run(self.key)["status"], "done")
+
+    def test_mismatch_while_not_done_flags_visibility_once(self):
+        comments = []
+        R.tt_comment = lambda issue, body: comments.append((issue, body))
+        R.update_run(self.key, status="running")  # done이 아니면 재실행 없음
+        p2 = dict(self.p1, message=self.msg_b)
+        _, fresh = R.prepare(p2)
+        self.assertFalse(fresh)
+        self.assertEqual(R.get_run(self.key)["status"], "running")
+        hits = [b for i, b in comments if i == self.issue and "대상 불일치" in b]
+        self.assertEqual(len(hits), 1)  # 가시화(C): 사유에 대상 불일치 명시
+        R.prepare(p2)  # 같은 재전송 반복 — 코멘트 중복 없음
+        hits = [b for i, b in comments if i == self.issue and "대상 불일치" in b]
+        self.assertEqual(len(hits), 1)
+
+    def test_stale_artifacts_cleared_on_reround(self):
+        self._done()
+        base = os.path.join(R.RUNTIME_DIR, self.key.replace("#", "_"))
+        os.makedirs(R.RUNTIME_DIR, exist_ok=True)
+        open(base + ".done", "w").close()  # 잔여 마커 — 제거 안 되면 즉시 오판정
+        with open(base + ".log", "w") as f:
+            f.write("1회차 로그 — 2회차로 유출되면 안 됨")
+        p2 = dict(self.p1, message=self.msg_b)
+        R.prepare(p2)
+        self.assertFalse(os.path.exists(base + ".done"))
+        self.assertFalse(os.path.exists(base + ".log"))
+
+
+class TestRoundSessionContext(unittest.TestCase):
+    """PR#47 codex 리뷰 R1/R2 보완 (기준 SHA 0b7d1bf5).
+
+    R1: 재회차의 실제 세션과 prepare 반환값·즉시 200 context가 어긋나면 서버가 이전
+    회차 context를 저장해 후속 dispatch가 이전 세션으로 continue한다(STALL 재발).
+    R2: 회차명이 base+sha8뿐이면 sha 재방문(A→B→C→B)에서 keep_shell로 생존한 과거
+    회차 세션과 충돌한다(tmux duplicate rc=1 → failed → DUP-SKIP).
+    """
+
+    DID = 501
+
+    def setUp(self):
+        self.n = str(self.id()).rsplit(".", 1)[-1]
+        self.issue = "RRND-" + self.n
+        self.key = "%s#%d" % (self.issue, self.DID)
+        self.msg_a = "[auto review] PR #3 (r/x) @ 85d6670a — 카드 %s 리뷰" % self.issue
+        self.msg_b = "[auto review] PR #3 (r/x) @ 07bcc393 — 카드 %s 리뷰" % self.issue
+        self.msg_c = "[auto review] PR #3 (r/x) @ c0defeed — 카드 %s 리뷰" % self.issue
+        self.orig_alive = R.session_alive
+
+    def tearDown(self):
+        R.session_alive = self.orig_alive
+
+    def _p(self, message, did=None, context=""):
+        return {"dispatch_id": did or self.DID, "issue_id": self.issue,
+                "agent": "p-read", "message": message, "context": context}
+
+    def _done(self):
+        R.update_run(self.key, status="done", exit=0, ended=time.time())
+
+    # R1: 장부·prepare 반환값·HTTP 200 context가 현재 회차 세션으로 일치
+    def test_reround_session_matches_prepare_and_hook_context(self):
+        s1, _ = R.prepare(self._p(self.msg_a))
+        self._done()
+        R.session_alive = lambda name: True  # keep_shell 생존 시나리오
+        p2 = self._p(self.msg_b)
+        ctx_200 = R.ctx_token(R.decide_session(p2))  # /hook 즉시 200의 context
+        s2, fresh2 = R.prepare(dict(p2, context=ctx_200))
+        self.assertTrue(fresh2)
+        ent = R.get_run(self.key)
+        self.assertEqual(ent["session"], s2)  # 장부 = prepare 반환값
+        self.assertEqual(R.parse_ctx(ctx_200), ent["session"])  # 200 = 현재 회차
+        self.assertNotEqual(s2, s1)  # 이전 회차 세션 회수 금지
+        self.assertIn("07bcc393", s2)
+
+    # R1: 재회차 뒤 후속 dispatch는 현재 회차 세션에서 계속된다(STALL 재발 회귀)
+    def test_followup_dispatch_after_reround_lands_in_round_session(self):
+        R.prepare(self._p(self.msg_a))
+        self._done()
+        R.session_alive = lambda name: True
+        p2 = self._p(self.msg_b)
+        ctx_200 = R.ctx_token(R.decide_session(p2))  # 서버가 저장할 context
+        R.prepare(dict(p2, context=ctx_200))  # 재회차 실행
+        self._done()
+        round_session = R.get_run(self.key)["session"]
+        sf, _ = R.prepare(self._p("후속 지시 — 판정 코멘트 확인", did=self.DID + 1,
+                                  context=ctx_200))
+        self.assertEqual(sf, round_session)
+        self.assertEqual(R.parse_ctx(ctx_200), round_session)  # continue 대상 = 재회차 세션
+
+    # R2: A→B→C→B sha 재방문 — 모든 회차명이 서로 충돌하지 않는다
+    def test_sha_revisit_gets_unique_round_sessions(self):
+        R.session_alive = lambda name: True
+        names = []
+        for i, m in enumerate((self.msg_a, self.msg_b, self.msg_c, self.msg_b)):
+            if i:
+                self._done()
+            s, fresh = R.prepare(self._p(m))
+            self.assertTrue(fresh, "round %d" % (i + 1))
+            ent = R.get_run(self.key)
+            self.assertEqual(ent["session"], s)  # R1 회귀 방지: 반환 = 장부
+            names.append(ent["session"])
+            self.assertEqual(ent.get("round"), i + 1)
+        self.assertEqual(len(set(names)), 4)  # RED: 2·4회차 이름 충돌
+
+
+class TestHookClaimFirstContext(unittest.TestCase):
+    """PR#47 codex 리뷰 R1 잔여 (기준 SHA d952f721): /hook은 백그라운드 선점 스레드를
+    먼저 시작하고(:1153) 그 직후 200 context를 계산한다(:1155) — 선점이 먼저 반영되면
+    재회차 조건(done+불일치)이 사라져 입력 ctx의 이전 회차 세션이 응답으로 나간다.
+    기존 신규 R1 테스트(:557-582)는 decide_session을 prepare보다 '먼저' 호출하는 순서만
+    검사해 이 경로를 놓쳤다. 회차 선점과 반환 context는 선점 전·후·경합 모든 순서에서,
+    그리고 queued/running/done·중복 재전송에서도 같아야 한다.
+    """
+
+    DID = 601
+
+    def setUp(self):
+        self.n = str(self.id()).rsplit(".", 1)[-1]
+        self.issue = "HOOK-" + self.n
+        self.key = "%s#%d" % (self.issue, self.DID)
+        self.msg_a = "[auto review] PR #3 (r/x) @ 85d6670a — 카드 %s 리뷰" % self.issue
+        self.msg_b = "[auto review] PR #3 (r/x) @ 07bcc393 — 카드 %s 리뷰" % self.issue
+        self.msg_c = "[auto review] PR #3 (r/x) @ c0defeed — 카드 %s 리뷰" % self.issue
+        self.orig_alive = R.session_alive
+        self.orig_comment = R.tt_comment
+        self.comments = []
+        R.tt_comment = lambda issue, body: self.comments.append((issue, body))
+
+    def tearDown(self):
+        R.session_alive = self.orig_alive
+        R.tt_comment = self.orig_comment
+
+    def _p(self, message, did=None, context=""):
+        return {"dispatch_id": did or self.DID, "issue_id": self.issue,
+                "agent": "p-read", "message": message, "context": context}
+
+    def _done(self):
+        R.update_run(self.key, status="done", exit=0, ended=time.time())
+
+    # ① 실제 /hook 선점 선행 순서: claim이 먼저 장부를 바꾼 뒤 200을 계산해도 현재 회차
+    def test_hook_claims_first_context_still_current_round(self):
+        s1, _ = R.prepare(self._p(self.msg_a))
+        self._done()
+        R.session_alive = lambda name: True  # keep_shell로 이전 회차 생존
+        p2 = self._p(self.msg_b, context=R.ctx_token(s1))  # 서버 저장 ctx = 이전 회차
+        s2, fresh = R.prepare(p2)  # 백그라운드 선점이 먼저 — /hook 실제 순서
+        self.assertTrue(fresh)
+        ent = R.get_run(self.key)
+        self.assertEqual(ent["session"], s2)
+        ctx_200 = R.ctx_token(R.decide_session(p2))  # 선점 '후' 계산되는 즉시 200
+        self.assertEqual(R.parse_ctx(ctx_200), ent["session"])  # RED: 이전 회차 회수됨
+
+    # ① 진짜 스레드 경합: 선점과 200 계산이 어느 순서로 겹쳐도 200 == 선점 세션
+    def test_hook_thread_race_context_matches_claimed_round(self):
+        R.prepare(self._p(self.msg_a))
+        self._done()
+        R.session_alive = lambda name: True
+        for m in (self.msg_b, self.msg_c, self.msg_b):  # B→C→B 재방문에서도
+            p = self._p(m, context=R.ctx_token(R.get_run(self.key)["session"]))
+            out = {}
+
+            def hook_seq():
+                out["s"], out["fresh"] = R.prepare(p)
+
+            t = threading.Thread(target=hook_seq, daemon=True)
+            t.start()
+            out["ctx"] = R.decide_session(p)  # 스레드와 경합하며 즉시 계산
+            t.join(timeout=5)
+            self.assertTrue(out["fresh"])
+            self.assertEqual(out["ctx"], out["s"])  # 모든 인터리빙에서 일치
+            self.assertEqual(out["ctx"], R.get_run(self.key)["session"])
+            self._done()
+
+    # ② 완료 후 원래 요청(A ctx 포함) 재전송 — DUP-SKIP 응답도 현재 회차 세션
+    def test_dup_resend_after_done_returns_current_round_session(self):
+        s1, _ = R.prepare(self._p(self.msg_a))
+        self._done()
+        R.session_alive = lambda name: True
+        p_b = self._p(self.msg_b, context=R.ctx_token(s1))
+        R.prepare(p_b)  # B 회차 선점·실행
+        self._done()
+        s2, fresh = R.prepare(p_b)  # 원래 B 요청 재전송 → DUP-SKIP
+        self.assertFalse(fresh)
+        ctx_200 = R.ctx_token(R.decide_session(p_b))
+        self.assertEqual(R.parse_ctx(ctx_200), s2)  # = 장부에 선점된 세션
+        self.assertNotEqual(R.parse_ctx(ctx_200), s1)  # RED: A가 회수됨
+
+    # ② 진행 중 대상 불일치 재전송 — queued/running에서도 장부 세션이 응답 기준
+    def test_mismatch_resend_while_running_returns_claimed_session(self):
+        s1, _ = R.prepare(self._p(self.msg_a))
+        self._done()
+        R.session_alive = lambda name: True
+        p_b = self._p(self.msg_b, context=R.ctx_token(s1))
+        R.prepare(p_b)  # B 선점 → queued
+        R.update_run(self.key, status="running")
+        s2, fresh = R.prepare(p_b)  # 진행 중 재전송 — DUP-SKIP(가시화 1회)
+        self.assertFalse(fresh)
+        self.assertEqual(R.get_run(self.key)["status"], "running")
+        ctx_200 = R.ctx_token(R.decide_session(p_b))
+        self.assertEqual(R.parse_ctx(ctx_200), s2)
+        self.assertNotEqual(R.parse_ctx(ctx_200), s1)  # RED: A가 회수됨
+
+    # ③ 선점 선행 순서의 재회차 뒤 후속 dispatch도 현재 회차에서 계속된다
+    def test_followup_after_claim_first_reround_continues_round(self):
+        s1, _ = R.prepare(self._p(self.msg_a))
+        self._done()
+        R.session_alive = lambda name: True
+        p2 = self._p(self.msg_b, context=R.ctx_token(s1))
+        R.prepare(p2)  # 선점 먼저 — 실제 /hook 순서
+        ctx_200 = R.ctx_token(R.decide_session(p2))  # 서버가 저장할 200 context
+        self._done()
+        sf, fresh_f = R.prepare(self._p("후속 지시 — 판정 코멘트 확인", did=self.DID + 1,
+                                        context=ctx_200))
+        self.assertTrue(fresh_f)
+        self.assertEqual(sf, R.get_run(self.key)["session"])  # RED: 이전 회차로 continue
+        self.assertEqual(R.parse_ctx(ctx_200), sf)
+
+    # 실제 HTTP /hook 엔드포인트: 스레드 선점 → 즉시 200 — 응답 context == 장부 세션
+    def test_real_hook_endpoint_context_matches_claimed_session(self):
+        s1, _ = R.prepare(self._p(self.msg_a))
+        self._done()
+        R.session_alive = lambda name: True
+        executed = threading.Event()
+        orig_exec = R.execute_once
+        R.execute_once = lambda p, s: executed.set()
+        try:
+            srv = R.ThreadingHTTPServer(("127.0.0.1", 0), R.H)
+            th = threading.Thread(target=srv.serve_forever, daemon=True)
+            th.start()
+            try:
+                conn = http.client.HTTPConnection("127.0.0.1", srv.server_address[1],
+                                                  timeout=10)
+                body = json.dumps({"dispatch_id": self.DID, "issue_id": self.issue,
+                                   "agent": "p-read", "message": self.msg_b,
+                                   "context": R.ctx_token(s1)})
+                conn.request("POST", "/hook", body=body, headers={
+                    "Authorization": "Bearer test-secret-value",
+                    "X-Tt-Dispatch": "1", "Content-Type": "application/json"})
+                resp = conn.getresponse()
+                self.assertEqual(resp.status, 200)
+                ctx_200 = json.loads(resp.read()).get("context")
+                conn.close()
+            finally:
+                srv.shutdown()
+                srv.server_close()
+            self.assertTrue(executed.wait(timeout=5), "백그라운드 선점·실행 미완료")
+            self.assertEqual(R.parse_ctx(ctx_200), R.get_run(self.key)["session"])
+        finally:
+            R.execute_once = orig_exec
+
+
+class TestCompletionTransitionRace(unittest.TestCase):
+    """PR#47 codex 3차 판정 R1 잔여 (기준 SHA ac5b7b0f): 완료 전환과 겹치는 선점.
+
+    A의 .done 마커는 이미 존재하지만 장부는 running(감시자 finalize 대기)일 때
+    재전송 B가 오면, 응답 결정(장부 running → A 세션)과 백그라운드
+    claim(done+새 SHA → B-r2 선점)이 서로 다른 시점·lock의 장부 읽기를 하므로
+    200 != 실제 회차가 된다. 요구: 응답 결정과 claim을 동기화 — 응답과 실행이
+    '동일한 선점 결과'를 공유하고, 완료 감시자의 running→done 전환은 그 결정에
+    흡수된다. 기존 경합 테스트(TestHookClaimFirstContext)는 기존 회차를 미리
+    done으로 만들고 시작해 이 전환을 놓쳤다.
+    """
+
+    DID = 701
+
+    def setUp(self):
+        self.n = str(self.id()).rsplit(".", 1)[-1]
+        self.issue = "DONE-" + self.n
+        self.key = "%s#%d" % (self.issue, self.DID)
+        self.msg_a = "[auto review] PR #3 (r/x) @ 85d6670a — 카드 %s 리뷰" % self.issue
+        self.msg_b = "[auto review] PR #3 (r/x) @ 07bcc393 — 카드 %s 리뷰" % self.issue
+        self.orig_alive = R.session_alive
+        self.orig_exec = R.execute_once
+        self.orig_comment = R.tt_comment
+        self.comments = []
+        self.executed = []
+        R.tt_comment = lambda issue, body: self.comments.append((issue, body))
+
+    def tearDown(self):
+        R.session_alive = self.orig_alive
+        R.execute_once = self.orig_exec
+        R.tt_comment = self.orig_comment
+
+    def _p(self, message, did=None, context=""):
+        return {"dispatch_id": did or self.DID, "issue_id": self.issue,
+                "agent": "p-read", "message": message, "context": context}
+
+    def _mark_done(self):
+        """감시자가 아직 finalize하지 않은 물리적 완료 — .done/.exit 마커만 기록."""
+        base = os.path.join(R.RUNTIME_DIR, self.key.replace("#", "_"))
+        with open(base + ".exit", "w") as f:
+            f.write("0")
+        open(base + ".done", "w").close()
+
+    def _hook(self, payload):
+        """실제 /hook 호출 — (200 context, 서버 shutdown) 반환."""
+        srv = R.ThreadingHTTPServer(("127.0.0.1", 0), R.H)
+        th = threading.Thread(target=srv.serve_forever, daemon=True)
+        th.start()
+        try:
+            conn = http.client.HTTPConnection("127.0.0.1", srv.server_address[1],
+                                              timeout=10)
+            body = json.dumps(payload)
+            conn.request("POST", "/hook", body=body, headers={
+                "Authorization": "Bearer test-secret-value",
+                "X-Tt-Dispatch": "1", "Content-Type": "application/json"})
+            resp = conn.getresponse()
+            status = resp.status
+            ctx_200 = json.loads(resp.read()).get("context")
+            conn.close()
+            return status, ctx_200
+        finally:
+            srv.shutdown()
+            srv.server_close()
+
+    # ① codex 재현: 마커는 있는데 장부가 running — 선점이 전환을 흡수해 응답==실행==재회차
+    def test_pending_completion_absorbed_response_matches_preempted_round(self):
+        s1, _ = R.prepare(self._p(self.msg_a))
+        R.update_run(self.key, status="running", started=time.time())
+        self._mark_done()  # 물리 완료 — 감시자 finalize 전(장부는 running)
+        R.session_alive = lambda name: True  # keep_shell 생존 이전 회차
+        executed = threading.Event()
+
+        def _exec(p, s):
+            self.executed.append(s)
+            executed.set()
+        R.execute_once = _exec
+        status, ctx_200 = self._hook(self._p(self.msg_b, context=R.ctx_token(s1)))
+        self.assertEqual(status, 200)
+        self.assertTrue(executed.wait(timeout=5), "백그라운드 실행 미완료")
+        ent = R.get_run(self.key)
+        self.assertEqual(ent["status"], "queued")  # 재회차 선점됨
+        self.assertIn("07bcc393", ent["session"])  # RED: 옛 구조는 재회차 자체가 없음
+        self.assertIn("-r2", ent["session"])
+        self.assertEqual(R.parse_ctx(ctx_200), ent["session"])  # RED: 200 == A 세션
+        self.assertEqual(self.executed[-1], ent["session"])  # 실행도 동일 선점 결과
+        self.assertNotEqual(R.parse_ctx(ctx_200), s1)  # 이전 회차 회수 금지
+
+    # ② 흡수된 finalize가 정확히 1회 보고되고 이후 감시자 tick이 이중 처리하지 않는다
+    def test_absorbed_finalize_reports_once_and_watch_does_not_duplicate(self):
+        s1, _ = R.prepare(self._p(self.msg_a))
+        R.update_run(self.key, status="running", started=time.time())
+        self._mark_done()
+        R.session_alive = lambda name: True
+        executed = threading.Event()
+        R.execute_once = lambda p, s: (self.executed.append(s), executed.set())
+        self._hook(self._p(self.msg_b))
+        self.assertTrue(executed.wait(timeout=5))
+        done_comments = [c for c in self.comments if "done exit=0" in c[1]]
+        self.assertEqual(len(done_comments), 1)  # 흡수된 finalize 보고
+        self.assertIn(s1, done_comments[0][1])  # 전환된 회차(A) 기준
+        R.watch_once()  # 감시자 tick — 흡수된 전환을 재처리하지 않는다
+        self.assertEqual(len([c for c in self.comments if "done exit=0" in c[1]]), 1)
+
+    # ③ 감시자가 먼저 tick한 경우(실제 finalize)에도 응답==실행==재회차
+    def test_watcher_ticked_before_preempt_response_matches_round(self):
+        R.prepare(self._p(self.msg_a))
+        R.update_run(self.key, status="running", started=time.time())
+        self._mark_done()
+        R.watch_once()  # 감시자 먼저 — 장부 done 전환
+        self.assertEqual(R.get_run(self.key)["status"], "done")
+        R.session_alive = lambda name: True
+        executed = threading.Event()
+        R.execute_once = lambda p, s: (self.executed.append(s), executed.set())
+        status, ctx_200 = self._hook(self._p(self.msg_b))
+        self.assertEqual(status, 200)
+        self.assertTrue(executed.wait(timeout=5))
+        ent = R.get_run(self.key)
+        self.assertEqual(R.parse_ctx(ctx_200), ent["session"])
+        self.assertEqual(self.executed[-1], ent["session"])
+        self.assertIn("-r2", ent["session"])
+
+    # ④ 선점 시점에 마커가 없으면(진짜 running) 단일 결정은 DUP-SKIP — 응답·실행·
+    #    이후 전환·후속 dispatch가 모두 그 결정에 일관된다
+    def test_completion_after_preempt_keeps_single_decision_consistent(self):
+        s1, _ = R.prepare(self._p(self.msg_a))
+        R.update_run(self.key, status="running", started=time.time())
+        R.session_alive = lambda name: True
+        executed = threading.Event()
+        R.execute_once = lambda p, s: (self.executed.append(s), executed.set())
+        status, ctx_200 = self._hook(self._p(self.msg_b))
+        self.assertEqual(status, 200)
+        self.assertEqual(R.parse_ctx(ctx_200), s1)  # 진행 중 — 현재 회차 유지
+        self.assertFalse(executed.wait(timeout=0.5))  # DUP-SKIP — 실행 없음
+        self._mark_done()
+        R.watch_once()  # 전환은 선점 이후 — 정상 finalize
+        self.assertEqual(R.get_run(self.key)["status"], "done")
+        # 응답 context를 쓰는 후속 dispatch: 응답이 가리킨 세션으로 일관 continue
+        sf, _ = R.prepare(self._p("후속 지시 — 판정 코멘트 확인", did=self.DID + 1,
+                                  context=ctx_200))
+        self.assertEqual(sf, s1)
+
+    # ⑤ 승인 메시지는 선점하지 않는다 — held 런 해제만, 장부 오염 금지
+    def test_approve_message_does_not_claim_ledger(self):
+        s1, _ = R.prepare(self._p(self.msg_a))
+        R.update_run(self.key, status="held", gate="rm -rf")
+        executed = threading.Event()
+        R.execute_once = lambda p, s: (self.executed.append(s), executed.set())
+        approve_key = "%s#%d" % (self.issue, self.DID + 9)
+        status, ctx_200 = self._hook(self._p("승인", did=self.DID + 9,
+                                             context=R.ctx_token(s1)))
+        self.assertEqual(status, 200)
+        self.assertTrue(executed.wait(timeout=5))  # 원 메시지 실행
+        self.assertIsNone(R.get_run(approve_key))  # 승인 dispatch로 선점 생성 금지
+        self.assertEqual(R.get_run(self.key)["session"], s1)  # held 런 그대로 실행
+
+
+class TestFinalizeOwnershipGate(unittest.TestCase):
+    """PR#47 codex 4차 판정 R3 (기준 SHA 8e2e43f5): 이전 회차 감시자가 현재 회차를 덮어씀.
+
+    watch_once가 A 스냅샷으로 finalize에 들어가 TT 보고(네트워크)에서 대기하는 동안
+    B /hook이 흡수+선점하면, finalize의 update_run(done)이 회차 확인 없이 현재 B
+    엔트리를 덮는다 — ① B 세션 미생성 + 동일 B 재전송 영구 DUP-SKIP, ② B 실행 후
+    반환이면 .done 마커 없이 running→done 되덮어 B 완료 보고 0건, 그리고 A 완료
+    코멘트는 감시자+흡수 경로가 각각 보고해 2건 중복. 요구(codex): 완료 전환·보고
+    소유권을 감시자와 흡수 경로가 같은 원자적 게이트에서 결정 — finalize는 관찰한
+    session/round를 lock 안에서 확인하고 네트워크 호출은 lock 밖에 둔다. 기존 신규
+    테스트(TestCompletionTransitionRace)는 watch_once를 hook 후 또는 완전 종료 뒤에
+    실행해 finalize 내부 대기(중첩)를 재현하지 못했다.
+    """
+
+    DID = 801
+
+    def setUp(self):
+        self.n = str(self.id()).rsplit(".", 1)[-1]
+        self.issue = "OWN-" + self.n
+        self.key = "%s#%d" % (self.issue, self.DID)
+        self.msg_a = "[auto review] PR #3 (r/x) @ 85d6670a — 카드 %s 리뷰" % self.issue
+        self.msg_b = "[auto review] PR #3 (r/x) @ 07bcc393 — 카드 %s 리뷰" % self.issue
+        self.orig_alive = R.session_alive
+        self.orig_exec = R.execute_once
+        self.orig_comment = R.tt_comment
+        self.comments = []  # 전달(반환)된 코멘트만 기록
+        self.executed = []
+        self.gate_entered = threading.Event()
+        self.gate_release = threading.Event()
+        R.session_alive = lambda name: True
+        R.execute_once = lambda p, s: self.executed.append(s)
+
+    def tearDown(self):
+        R.session_alive = self.orig_alive
+        R.execute_once = self.orig_exec
+        R.tt_comment = self.orig_comment
+
+    def _p(self, message, did=None, context=""):
+        return {"dispatch_id": did or self.DID, "issue_id": self.issue,
+                "agent": "p-read", "message": message, "context": context}
+
+    def _prepare_running_a(self):
+        """A 회차 running + 물리 완료 마커 — 감시자가 아직 finalize하지 않은 상태."""
+        s1, _ = R.prepare(self._p(self.msg_a))
+        R.update_run(self.key, status="running", started=time.time())
+        base = os.path.join(R.RUNTIME_DIR, self.key.replace("#", "_"))
+        with open(base + ".exit", "w") as f:
+            f.write("0")
+        open(base + ".done", "w").close()
+        return s1
+
+    def _gate_comment(self, issue, body):
+        """finalize 내부 대기 재현: 이 카드의 보고 네트워크 호출에서 블록."""
+        if "dispatch#%d" % self.DID in body:
+            self.gate_entered.set()
+            self.gate_release.wait(timeout=10)
+        self.comments.append((issue, body))
+
+    def _recorder_comment(self, issue, body):
+        self.comments.append((issue, body))
+
+    def _hook(self, payload):
+        """실제 /hook 엔드포인트 호출 — (status, 200 context) 반환."""
+        srv = R.ThreadingHTTPServer(("127.0.0.1", 0), R.H)
+        th = threading.Thread(target=srv.serve_forever, daemon=True)
+        th.start()
+        try:
+            conn = http.client.HTTPConnection("127.0.0.1", srv.server_address[1],
+                                              timeout=10)
+            body = json.dumps(payload)
+            conn.request("POST", "/hook", body=body, headers={
+                "Authorization": "Bearer test-secret-value",
+                "X-Tt-Dispatch": "1", "Content-Type": "application/json"})
+            resp = conn.getresponse()
+            status = resp.status
+            ctx_200 = json.loads(resp.read()).get("context")
+            conn.close()
+            return status, ctx_200
+        finally:
+            srv.shutdown()
+            srv.server_close()
+
+    def _mark_b_done(self):
+        base = os.path.join(R.RUNTIME_DIR, self.key.replace("#", "_"))
+        with open(base + ".exit", "w") as f:
+            f.write("0")
+        open(base + ".done", "w").close()
+
+    def _done_of(self, session):
+        return [b for _, b in self.comments
+                if "done exit=0" in b and ("session=%s\n" % session) in b]
+
+    # ① codex 재현 경로 1: 감시자가 보고 호출에서 대기 중 B 선점 → 늦은 반환
+    def test_late_watcher_return_does_not_clobber_preempted_round(self):
+        s1 = self._prepare_running_a()
+        R.tt_comment = self._gate_comment
+        wt = threading.Thread(target=R.watch_once, daemon=True)
+        wt.start()
+        self.assertTrue(self.gate_entered.wait(timeout=5),
+                        "감시자가 finalize의 TT 보고 호출에 진입하지 못함")
+        status, ctx_200 = self._hook(self._p(self.msg_b, context=R.ctx_token(s1)))
+        self.assertEqual(status, 200)  # B 선점 정상 — 200 context는 r2
+        self.gate_release.set()
+        wt.join(timeout=10)
+        self.assertFalse(wt.is_alive(), "감시자 반환 지연")
+        ent = R.get_run(self.key)
+        # RED: 구조는 finalize의 update_run(done)이 B(queued)를 덮어 세션 미생성
+        self.assertEqual(ent["status"], "queued")
+        self.assertEqual(ent["round"], 2)
+        self.assertIn("-r2", ent["session"])
+        self.assertEqual(R.parse_ctx(ctx_200), ent["session"])
+        # A 완료 보고 정확 1건 — 감시자 소유, 흡수 경로 중복 없음 (RED: 구조는 2건)
+        self.assertEqual(len(self._done_of(s1)), 1)
+        # 동일 요청 재시도 — 여전히 현재 회차(B) 응답, 상태 훼손 없음
+        status2, ctx2 = self._hook(self._p(self.msg_b, context=R.ctx_token(s1)))
+        self.assertEqual(status2, 200)
+        self.assertEqual(R.parse_ctx(ctx2), ent["session"])
+        self.assertEqual(R.get_run(self.key)["status"], "queued")
+        # B 실행+완료 → 완료 보고 1건 (RED: 구조는 B가 done으로 덮인 뒤라 보고 0건)
+        R.tt_comment = self._recorder_comment
+        R.update_run(self.key, status="running", started=time.time())
+        self._mark_b_done()
+        R.watch_once()
+        self.assertEqual(len(self._done_of(ent["session"])), 1)
+        self.assertEqual(R.get_run(self.key)["status"], "done")
+
+    # ② codex 재현 경로 2: B 실행 중에 감시자 반환 — running 되덮기 금지 + B 보고 생존
+    def test_late_watcher_return_after_b_started_keeps_round_and_report(self):
+        s1 = self._prepare_running_a()
+        R.tt_comment = self._gate_comment
+        wt = threading.Thread(target=R.watch_once, daemon=True)
+        wt.start()
+        self.assertTrue(self.gate_entered.wait(timeout=5),
+                        "감시자가 finalize의 TT 보고 호출에 진입하지 못함")
+        status, _ = self._hook(self._p(self.msg_b, context=R.ctx_token(s1)))
+        self.assertEqual(status, 200)
+        # B 실제 실행 개시 (execute_once의 queued→running 전환과 동일)
+        R.update_run(self.key, status="running", started=time.time())
+        self.gate_release.set()
+        wt.join(timeout=10)
+        self.assertFalse(wt.is_alive())
+        # RED: 구조는 update_run(done)이 .done 마커 없이 실행 중인 B를 되덮는다
+        ent = R.get_run(self.key)
+        self.assertEqual(ent["status"], "running")
+        self.assertEqual(ent["round"], 2)
+        # A 완료 보고 1건 — 중복 없음 (RED: 구조는 감시자+흡수 2건)
+        self.assertEqual(len(self._done_of(s1)), 1)
+        # B 정상 종료 → 완료 보고 1건 (RED: 구조는 감시자가 건너뛰어 0건)
+        R.tt_comment = self._recorder_comment
+        self._mark_b_done()
+        R.watch_once()
+        self.assertEqual(len(self._done_of(ent["session"])), 1)
+        self.assertEqual(R.get_run(self.key)["status"], "done")
+
+    # ③ 흡수 경로가 보고 소유 — 이후 진입한 늦은 감시자는 중복 보고·덮기 없음
+    def test_absorb_path_owns_report_late_finalize_skipped(self):
+        s1 = self._prepare_running_a()
+        stale_snap = R.get_run(self.key)  # 선점 이전 A 회차 스냅샷 (중첩 감시자 보유분)
+        R.tt_comment = self._recorder_comment
+        executed = threading.Event()
+        R.execute_once = lambda p, s: (self.executed.append(s), executed.set())
+        status, _ = self._hook(self._p(self.msg_b, context=R.ctx_token(s1)))
+        self.assertEqual(status, 200)
+        self.assertTrue(executed.wait(timeout=5))  # 백그라운드 _safe: run_deferred 선행
+        # 흡수 경로 보고 1건 (write=False)
+        self.assertEqual(len(self._done_of(s1)), 1)
+        # 늦은 감시자 — 이전 회차 스냅샷으로 finalize 재진입 (RED: 구조는 재보고+되덮기)
+        outcome = R.finalize(None, self.key, stale_snap, 0)
+        self.assertEqual(outcome, "skipped")
+        self.assertEqual(len(self._done_of(s1)), 1)
+        self.assertEqual(R.get_run(self.key)["status"], "queued")  # B 무훼손
+
+    # ④ 게이트 단위 계약: 보고 소유 단일화 + 관찰 회차 불일치 전환 거부
+    def test_ownership_gate_unit_semantics(self):
+        s1, _ = R.prepare(self._p(self.msg_a))
+        R.update_run(self.key, status="running", started=time.time())
+        snap = R.get_run(self.key)
+        self.assertTrue(R.claim_report(self.key, snap, 0))   # 선점 — 단일 소유
+        self.assertFalse(R.claim_report(self.key, snap, 0))  # 중복 claim 거부
+        self.assertTrue(R.update_run_if_round(self.key, snap, status="done", exit=0))
+        self.assertEqual(R.get_run(self.key)["status"], "done")
+        # 다음 회차 교체 후 — 이전 회차의 전환·완료 claim은 거부, 엔트리 무훼손
+        R.update_run(self.key, status="running", round=2,
+                     session=s1 + "-07bcc393-r2", claimed_report=None)
+        self.assertFalse(R.update_run_if_round(self.key, snap, status="failed", exit=1))
+        ent = R.get_run(self.key)
+        self.assertEqual(ent["status"], "running")
+        self.assertEqual(ent["round"], 2)
+        self.assertFalse(R.claim_report(self.key, snap, 0))  # 완료 보고는 흡수 경로 소유
+        self.assertTrue(R.claim_report(self.key, snap, 1))   # 실패 보고는 감시자 몫
 
 
 if __name__ == "__main__":

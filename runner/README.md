@@ -80,6 +80,54 @@ dispatch 오버라이드는 message 선두 `#opts {"model":...,"reasoning":...,"
   app.py로 확인, 실서버 E2E는 후속), 파괴적 패턴 목록 원문(초안 목록으로 대용),
   opencode 세션 드라이버(plain 드라이버만 존재), mini/m1 설치(ssh 차단)
 
+## 재검토 재실행 (think-tank#46, 2026-10-06)
+
+동일 (issue_id, dispatch_id) 재전송이라도 기존 런이 **done**이고 message 첫 줄의 리뷰
+대상 sha(`PR #n (repo) @ sha8`, harvest 마커 `PR#n@sha8` 호환)가 달라졌으면 **새 회차로
+재실행**한다 — 재검토 체인 정지 결함 수정. 회차 구분:
+
+- 세션명을 회차 고유로(`tt-<agent>-<dispatch>-<sha8>-r<회차>`) — 이전 회차 세션(keep_shell
+  생존)과 충돌 방지 + sha 재방문(A→B→C→B)에서도 과거 회차와 겹치지 않는다(PR#47 리뷰 R2).
+- 재회차 판정은 장부·prepare 반환값·즉시 200 context가 같은 조건을 쓴다 — 서버가 저장한
+  context로 오는 후속 dispatch가 이전 회차가 아니라 현재 회차 세션에서 계속된다(PR#47
+  리뷰 R1, 실측 STALL 원인 차단).
+- **회차 선점은 한 번, 동기로** — /hook이 장부 I/O만 포함된 `preempt_round`를 200 계산
+  전에 실행하고 그 결과(선점 세션)를 200 context와 백그라운드 실행이 공유한다. 응답
+  결정과 claim이 별도 lock·시점에서 각자 판정하면 응답 결정 이후의 완료 전환/claim이
+  남는다(PR#47 리뷰 R1 3차). 네트워크 부수효과(TT 코멘트·흡수 finalize 보고)는 deferred로
+  미뤄 즉시 200 계약(10초)을 유지한다.
+- **완료 감시자 전환 흡수** — `.done` 마커는 이미 있는데 장부가 running(감시자 tick 대기,
+  WATCH_INTERVAL_S 이하 창)이면 선점 결정 전에 done으로 흡수한다. 흡수된 종료는 보고만
+  하고(출력은 지울 전에 포착) 장부를 다시 쓰지 않는다. rc!=0는 blocked/failed 분류가
+  tail 분석을 필요로 하므로 감시자 몫 — finalize와 동일한 조건만 흡수한다.
+- **완료 전환·보고 소유권은 하나의 원자적 게이트** — 이전 회차 감시자가 finalize의
+  보고 네트워크 호출에서 대기하는 동안 다음 회차로 선점되면, 늦은 반환은 현재 회차
+  엔트리를 done/failed로 덮거나(세션 미생성·보고 0건) 감시자+흡수 경로가 같은 완료를
+  2건 보고한다(PR#47 리뷰 R3). 그래서 보고 직전 `claim_report()`가 lock 안에서 관찰
+  session/round를 재확인하고 보고 소유를 check-and-set한다(엔트리 `claimed_report`).
+  엔트리가 이미 다음 회차로 교체됐으면 rc=0 완료 보고는 흡수 경로 소유(감시자 skip),
+  실패 보고는 감시자 몫. 장부 전환은 `update_run_if_round` — 관찰 회차가 현재
+  회차·running일 때만 쓴다. 네트워크 호출(TT 코멘트·투영)은 lock 밖.
+- 동일 키의 200 context는 **선점 결과**(장부에 확정된 세션) 기준이다 — 승인 메시지는
+  선점하지 않고(held 해제만), 동기 선점 실패 시에만 무결정 추정(`decide_session`)으로
+  응답한다. queued/running/done·중복 재전송에서 입력 ctx의 이전 회차 세션을 회수하지 않는다.
+- 이전 회차 런타임 아티팩트(.done/.exit/.out/.log/.msg)를 지운다 — 키를 공유하므로
+  잔여 .done이 남으면 watch_once가 새 런을 즉시 finalize해버린다.
+- 장부 엔트리에 `target_sha`(현재 대상)·`prev_sha`(이전 대상)를 남기고, 시작 코멘트에
+  "재검토 재실행: 대상 a→b"를 표기한다.
+
+DUP-SKIP은 유지되되 사유에 대상 비교가 명시된다(`대상 동일 x` / `불일치 a→b` / `대상 sha
+없음`). done이 아닌 상태에서 대상 불일치 재전송이 오면 TT 코멘트로 회차당 1만 가시화한다
+(`mismatch_notified` 플래그). 서버 probe가 회차별 새 dispatch id를 발급하면(제안 B,
+미구현) 이 보상 경로는 평상시 발동하지 않는다.
+
+검증: unittest 57 green(이전 라운드 53 + 소유권 게이트 회귀 4: finalize 내부 대기 중
+선점→늦은 반환 무덮기·보고 1건·재시도 응답 유지·B 완료 보고, B 실행 후 반환 무덮기,
+흡수 소유 시 늦은 finalize skip, 게이트 단위 계약) + RED 대조(8e2e43f5에서 신규 3건 실패:
+B queued/running이 done으로 덮임, 늦은 finalize 재보고) + 격리 tmux E2E SMOKE PASS(1회차
+done → 새 sha 재전송 RE-ROUND 재실행 done, 1회차 출력 비유출, 동일 sha 3회차 스킵,
+A→B→C→B 재방문 전 회차 done, 후속 dispatch가 현재 회차 continue).
+
 ## 보안 규칙
 
 secret 값은 파일·plist env·TT 코멘트·git·로그 어디에도 기록하지 않는다.

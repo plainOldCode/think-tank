@@ -9,7 +9,8 @@ tmux agent 실행으로 바꾼 단일 파일 러너다. 표준 라이브러리�
 - secret 파일(~/.hermes/tt-runner.secret) 부재 = 기동 실패 (fail-closed, 어댑터와 다르게).
 - 바인딩: tailnet IP 또는 127.0.0.1만. 0.0.0.0 거부.
 - 장부 키 "<issue_id>#<dispatch_id>" 단일 실행 게이트 — webhook/polling 공통 진입점,
-  선점 실패는 DUP-SKIP.
+  선점 실패는 DUP-SKIP. 단 done 런에 동일 키 재전송이 오면 message 첫 줄의 리뷰 대상
+  sha(PR #n @ sha8)를 비교해 달라졌을 때만 새 회차로 재실행한다(think-tank#46).
 - message는 셸 인자로 절대 interpolate하지 않는다: 첫 실행은 stdin 파일, 계속 재지시는
   메시지 파일을 쓰고 Pane 안에서 "$(cat 파일)" 형태로만 읽는다.
 - 파괴적 패턴이면 실행 보류(held) + TT 승인 요청 코멘트, '승인' 응답까지 시작하지 않는다.
@@ -317,23 +318,164 @@ def run_key(p):
     return "%s#%s" % (p["issue_id"], p["dispatch_id"])
 
 
-def claim_dispatch(p, session):
-    """webhook/polling 공통 단일 게이트: 성공 시 True(진입 권한 확보)."""
+# think-tank#46 제안 A: 리뷰 대상 sha는 message 첫 줄의 'PR #n (repo) @ sha8' 계약 형식.
+# harvest 마커 'PR#n@sha8'도 커버. 본문 어디든 대상이 아닌 sha(베이스·이전 판정 등)가
+# 섞이므로 첫 줄로 한정한다.
+TARGET_SHA_RE = re.compile(r"PR\s*#\d+[^@\n]*@\s*([0-9a-f]{7,40})(?![0-9a-f])")
+
+
+def target_sha(message):
+    """dispatch message의 리뷰 대상 sha. 없으면 None — 비리뷰 재전송은 기존 동작 유지."""
+    first = (message or "").split("\n", 1)[0]
+    m = TARGET_SHA_RE.search(first)
+    return m.group(1) if m else None
+
+
+def _target_note(new_sha, old_sha):
+    """DUP-SKIP 사유용 대상 비교 요약 (제안 C 가시화)."""
+    if new_sha and old_sha:
+        return ("동일 %s" % new_sha) if new_sha == old_sha else ("불일치 %s→%s" % (old_sha, new_sha))
+    if new_sha:
+        return "신규 %s (기존 기록 없음)" % new_sha
+    if old_sha:
+        return "메시지에 대상 없음 (기존 %s)" % old_sha
+    return "메시지에 대상 sha 없음"
+
+
+def _clear_round_artifacts(key):
+    """재검토 회차 시작 전 이전 회차 아티팩트 제거 (think-tank#46).
+
+    장부 키를 회차 간 공유하므로 잔여 .done/.exit가 남으면 watch_once가 새 런을
+    즉시 finalize해버리고 .log/.out은 회차 출력을 섞는다.
+    """
+    base = os.path.join(RUNTIME_DIR, key.replace("#", "_"))
+    for suffix in (".done", ".exit", ".out", ".log", ".msg"):
+        try:
+            os.remove(base + suffix)
+        except OSError:
+            pass
+
+
+def claim_dispatch(p, ctx_session=None, ctx_alive=False):
+    """webhook/polling 공통 단일 게이트: 성공 시 (True, session, deferred).
+
+    회차 결정(선점)은 이 함수 안에서 '한 번' 수행된다(PR#47 리뷰 R1 3차 — 응답과
+    실행이 동일 선점 결과 공유): lock 안에서 장부를 읽고, 완료 감시자가 아직
+    반영하지 못한 물리적 완료(.done 마커, rc=0)를 흡수한 뒤 재회차·중복을 판정하고,
+    신규 키의 세션명(ctx 계속 여부)도 lock 안에서 확정한다. 반환 session은 선점에
+    성공한 경로에서 확정된 장부 세션(재회차 접미 포함), 중복이면 None.
+
+    think-tank#46: 동일 (issue, dispatch_id) 재전송이라도 기존 런이 done이고 message의
+    리뷰 대상 sha가 달라졌으면 새 회차로 재실행한다(재검토 체인 정지 방지). 재회차
+    세션명은 <기본명>-<sha8>-r<회차> — 회차 번호까지 붙여 sha 재방문(A→B→C→B)에서도
+    keep_shell로 생존한 과거 세션과 충돌하지 않는다(PR#47 리뷰 R2). 이전 회차
+    런타임 아티팩트는 지운다. 그 외 중복은 DUP-SKIP하되 사유에 대상 불일치 여부를
+    명시하고(제안 C), done이 아닌 상태에서 대상 불일치 재전송이 오면 TT 코멘트로 1회
+    가시화한다. 서버가 재요청마다 새 dispatch id를 발급하는 방안(제안 B)은 미구현 —
+    probe가 회차별 새 id를 쓰면 이 보상 경로는 평상시 발동하지 않는다.
+
+    deferred: 선점 결정이 미룬 네트워크 부수효과 목록(("comment", issue, body) |
+    ("finalize", key, ent, rc)) — /hook 즉시 200 경로에서 TT HTTP 호출을 피하기 위해
+    호출자가 200 이후에 발행한다(run_deferred). lock 점유 중 네트워크 금지.
+    """
     key = run_key(p)
+    deferred = []
     with ledger_lock():
         runs = load_runs()
         if key in runs:
-            log("DUP-SKIP dispatch#%s (key=%s status=%s)" % (p["dispatch_id"], key, runs[key].get("status")))
-            return False
-        runs[key] = {"status": "queued", "issue_id": str(p["issue_id"]),
-                     "dispatch_id": p["dispatch_id"], "agent": str(p.get("agent") or ""),
-                     "message": p.get("message", ""), "context_in": p.get("context", ""),
-                     "work_contract": p.get("work_contract"),
-                     "execution_attempt": p.get("execution_attempt", 0),
-                     "opts": p.get("_opts") or {},
-                     "session": session, "ts": time.time()}
-        save_runs(runs)
-    return True
+            prev = runs[key]
+            # 완료 감시자 전환 흡수: .done 마커는 이미 있으나 장부가 running이면
+            # 결정 전에 done으로 전환한다 — 마커와 장부가 갈라진 창(WATCH_INTERVAL_S
+            # 이하)에서 선점이 옛 상태를 읽어 응답·실행이 갈라지는 경합 제거(PR#47
+            # 리뷰 R1 3차). 실패(rc!=0)는 blocked/failed 분류가 tail 분석을 필요로
+            # 하므로 감시자 몫으로 남긴다 — finalize와 동일한 조건만 흡수한다.
+            if prev.get("status") == "running":
+                base = key.replace("#", "_")
+                if os.path.exists(os.path.join(RUNTIME_DIR, base + ".done")):
+                    try:
+                        with open(os.path.join(RUNTIME_DIR, base + ".exit")) as f:
+                            rc = int(f.read().strip())
+                    except Exception:
+                        rc = 0
+                    if rc == 0:
+                        # 보고 소유권 claim (PR#47 리뷰 R3): 감시자가 finalize 안에서
+                        # 이미 소유했다면 흡수는 전환만 하고 보고를 중복 실행하지 않는다
+                        # — 같은 lock 안의 check-and-set이 유일한 결정 지점이다.
+                        rid = _round_id(prev)
+                        owns_report = not (rid is not None
+                                           and prev.get("claimed_report") == rid)
+                        prev.update(status="done", exit=0, ended=time.time(),
+                                    detail="finalize-absorbed")
+                        if owns_report and rid is not None:
+                            prev["claimed_report"] = rid
+                        save_runs(runs)
+                        log("ABSORB-DONE dispatch#%s (key=%s) 마커 선반영 — 감시자 전환 흡수%s"
+                            % (p["dispatch_id"], key,
+                               "" if owns_report else " (보고는 감시자 소유)"))
+                        if owns_report:
+                            # 요약은 지금 포착 — 재회차 경로가 이전 회차 아티팩트를 지우기 전
+                            deferred.append(("finalize", key, dict(prev), 0, _run_summary(key)))
+            new_sha = target_sha(p.get("message", ""))
+            old_sha = prev.get("target_sha") or target_sha(prev.get("message", ""))
+            if prev.get("status") == "done" and new_sha and old_sha and new_sha != old_sha:
+                round_no = (prev.get("round") or 1) + 1
+                # 세션명은 new_session_name 기준으로 회차 고유하게 재계산한다(R2):
+                # 전달된 ctx 세션은 이전 회차일 수 있고, 거기 접미를 붙이면 회차가
+                # 거듭될수록 이름이 길어지고 재방문 시 충돌한다.
+                session = round_session_name(new_session_name(p), new_sha[:8], round_no)
+                log("RE-ROUND dispatch#%s (key=%s) 대상 %s→%s — 재실행"
+                    % (p["dispatch_id"], key, old_sha, new_sha))
+                runs[key] = {"status": "queued", "issue_id": str(p["issue_id"]),
+                             "dispatch_id": p["dispatch_id"], "agent": str(p.get("agent") or ""),
+                             "message": p.get("message", ""), "context_in": p.get("context", ""),
+                             "work_contract": p.get("work_contract"),
+                             "execution_attempt": p.get("execution_attempt", 0),
+                             "opts": p.get("_opts") or {},
+                             "session": session, "ts": time.time(),
+                             "target_sha": new_sha, "prev_sha": old_sha, "round": round_no}
+                save_runs(runs)
+                _clear_round_artifacts(key)
+                return True, session, deferred
+            log("DUP-SKIP dispatch#%s (key=%s status=%s, 대상 %s)"
+                % (p["dispatch_id"], key, prev.get("status"), _target_note(new_sha, old_sha)))
+            flagged = bool(new_sha and old_sha and new_sha != old_sha)
+            if flagged and not prev.get("mismatch_notified"):
+                prev["mismatch_notified"] = True
+                save_runs(runs)
+                deferred.append(("comment", str(p["issue_id"]),
+                                 "runner:%s dispatch#%s DUP-SKIP — 재전송 요청이 기존 dispatch와 대상 불일치"
+                                 "(%s→%s). status=%s라 재실행하지 않음; 진행 상태 확인 필요 (장부:%s)"
+                                 % (machine_name(), p["dispatch_id"], old_sha, new_sha,
+                                    prev.get("status"), key)))
+        else:
+            session = ctx_session if ctx_alive else new_session_name(p)
+            runs[key] = {"status": "queued", "issue_id": str(p["issue_id"]),
+                         "dispatch_id": p["dispatch_id"], "agent": str(p.get("agent") or ""),
+                         "message": p.get("message", ""), "context_in": p.get("context", ""),
+                         "work_contract": p.get("work_contract"),
+                         "execution_attempt": p.get("execution_attempt", 0),
+                         "opts": p.get("_opts") or {},
+                         "session": session, "ts": time.time(),
+                         "target_sha": target_sha(p.get("message", "")), "round": 1}
+            save_runs(runs)
+            return True, session, deferred
+    return False, None, deferred
+
+
+def run_deferred(deferred):
+    """선점 결정이 200 경로에서 미룬 네트워크 부수효과를 발행한다(오류 격리)."""
+    for item in deferred or []:
+        try:
+            kind = item[0]
+            if kind == "finalize":
+                finalize(None, item[1], item[2], item[3], summary=item[4], write=False,
+                         owns_report=True)
+            elif kind == "comment":
+                tt_comment(item[1], item[2])
+            else:
+                log("DEFERRED-UNKNOWN %r" % (item,))
+        except Exception as e:
+            log("DEFERRED-FAIL %s: %s: %s" % (item[0], type(e).__name__, e))
 
 
 def update_run(key, **fields):
@@ -347,6 +489,64 @@ def update_run(key, **fields):
 def get_run(key):
     with ledger_lock():
         return load_runs().get(key)
+
+
+def _round_id(ent):
+    """회차 식별자 — round 우선, round 없는 구형 장부 엔트리는 session으로 대체."""
+    r = ent.get("round")
+    return r if r is not None else ent.get("session")
+
+
+def _observes_round(cur, snap):
+    """장부 현재 엔트리(cur)가 관찰 스냅샷(snap)과 같은 회차인지 (PR#47 리뷰 R3).
+
+    finalize는 보고 네트워크 호출을 lock 밖에서 하므로 반환 시점이 늦을 수 있다 —
+    그 사이 재회차 선점이 같은 키의 엔트리를 다음 회차로 교체했는지 판별한다.
+    """
+    if snap.get("round") is not None and cur.get("round") is not None:
+        return cur.get("round") == snap.get("round")
+    return (cur.get("session") or "") == (snap.get("session") or "")
+
+
+def claim_report(key, snap, exit_code):
+    """완료 보고 소유권 게이트 — 감시자(finalize)와 흡수 경로(claim_dispatch)가 같은
+    원자적 게이트에서 소유를 결정한다 (PR#47 리뷰 R3).
+
+    lock 안에서 관찰 회차를 재확인하고 보고 claim을 check-and-set한다. 반환 True면
+    호출자만이 그 회차의 종료 보고를 낸다. 엔트리가 이미 다음 회차로 교체됐으면
+    완료(rc=0) 보고는 흡수 경로가 소유(감시자 보고 스킵), 실패 보고는 감시자 몫으로
+    남는다(흡수는 rc!=0를 claim하지 않는다 — tail 분석 필요). 네트워크 호출은 이
+    함수 밖에서 실행된다.
+    """
+    with ledger_lock():
+        runs = load_runs()
+        cur = runs.get(key)
+        if cur is None:
+            return True
+        if not _observes_round(cur, snap):
+            return exit_code != 0
+        rid = _round_id(snap)
+        if rid is not None and cur.get("claimed_report") == rid:
+            return False
+        if rid is not None:
+            cur["claimed_report"] = rid
+            save_runs(runs)
+        return True
+
+
+def update_run_if_round(key, snap, **fields):
+    """finalize 전환용 조건부 갱신 — 관찰 회차가 아직 현재 회차이고 상태가 running일
+    때만 쓴다 (PR#47 리뷰 R3). 이전 회차 감시자의 늦은 반환(finalize는 보고를 lock
+    밖 네트워크 호출로 하므로 반환 시점이 늦다)이 재회차 엔트리(queued/running)를
+    done/failed로 덮지 않게 한다. 반환: 실제로 썼으면 True."""
+    with ledger_lock():
+        runs = load_runs()
+        cur = runs.get(key)
+        if cur is None or cur.get("status") != "running" or not _observes_round(cur, snap):
+            return False
+        cur.update(fields)
+        save_runs(runs)
+        return True
 
 
 def latest_held(issue_id):
@@ -583,24 +783,98 @@ def continue_session(prof, session, message, key=None):
 
 # ---------- 실행 진입 (execute_once) ----------
 
+def round_session_name(base, sha8, round_no):
+    """재회차 세션명: <base>-<sha8>-r<round>.
+
+    접미가 sha8뿐이면 A→B→C→B처럼 이전 sha로 돌아온 재검토(PR#47 리뷰 R2)에서
+    keep_shell로 생존한 과거 회차 세션과 이름이 겹쳐 tmux new-session이 rc=1로
+    실패하고, failed 런은 다시 DUP-SKIP된다. 단조 증가하는 회차 번호를 함께 붙여
+    sha 재방문에도 이름을 유일하게 유지한다.
+    """
+    return "%s-%s-r%d" % (base, sha8, round_no)
+
+
+def reround_target(p):
+    """done 런에 대한 재회차 판정과 세션명. 재회차가 아니면 None.
+
+    claim_dispatch와 동일 조건(장부 읽기만, side-effect 없음)을 decide_session —
+    즉시 200의 context — 에서도 쓰기 위한 헬퍼(PR#47 리뷰 R1): 접미 세션이 장부에만
+    반영되고 200이 접미 전 세션을 돌려주면 서버가 그 context를 저장해 후속
+    dispatch가 이전 회차 세션으로 continue한다(실측 STALL 원인과 동일).
+    """
+    _, body = parse_overrides(p.get("message", ""))
+    with ledger_lock():
+        prev = load_runs().get(run_key(p))
+    if not prev or prev.get("status") != "done":
+        return None
+    new_sha = target_sha(body)
+    old_sha = prev.get("target_sha") or target_sha(prev.get("message", ""))
+    if not (new_sha and old_sha and new_sha != old_sha):
+        return None
+    return round_session_name(new_session_name(p), new_sha[:8],
+                              (prev.get("round") or 1) + 1)
+
+
 def decide_session(p):
-    """claim 없는 세션 결정(동기 200의 context용). prepare와 동일 규칙."""
+    """선점 없는 세션 추정 — 승인 메시지·동기 선점 실패 시의 200 context용.
+
+    회차 선점은 preempt_round가 '한 번' 수행하고 /hook 응답은 그 결과를 공유한다
+    (PR#47 리뷰 R1 3차). 이 함수는 장부를 바꾸지 않는 추정으로, 선점이 일어나지
+    않는 경로(승인 메시지, 장부 I/O 장애 폴백)에서만 응답 근거가 된다: 장부에
+    동일 키가 있으면 done 런의 대상 불일치 재전송은 다음 회차 세션명(reround_target),
+    그 외 queued/running/done·중복 재전송은 장부에 선점된 세션 — 입력 ctx(이전
+    회차)를 회수하지 않는다. 장부에 없는 신규 키만 ctx 계속(살아 있을 때) 또는
+    새 세션명으로 추정한다.
+    """
+    rr = reround_target(p)
+    if rr:
+        return rr
+    with ledger_lock():
+        prev = load_runs().get(run_key(p))
+    if prev:
+        # 동일 키 재전송: 선점된 장부 세션이 응답 기준 — ctx 세션 회수 금지.
+        return prev.get("session") or new_session_name(p)
     ctx_session = parse_ctx(p.get("context"))
     if ctx_session and session_alive(ctx_session):
         return ctx_session
     return new_session_name(p)
 
 
-def prepare(p):
-    """백그라운드 전용: dup 판정+장부 선점. (session, fresh) 반환."""
+def preempt_round(p):
+    """회차 선점 1회 — /hook 동기 경로. (session, fresh, deferred) 반환.
+
+    응답(즉시 200 context)과 백그라운드 실행이 '동일한 선점 결과'를 공유한다
+    (PR#47 리뷰 R1 3차): 완료 감시자의 running→done 전환이 선점과 어떤 순서로
+    겹쳐도 응답은 실제 수락·선점한 회차 세션이다 — 응답 결정 이후 완료 전환/claim
+    경합이 남지 않는다. deferred는 네트워크 부수효과 목록으로 호출자가 200 이후에
+    발행한다(run_deferred); 장부 파일 연산만 동기 실행되므로 즉시 200 계약(10초)을
+    유지한다. ctx 생존 여부(tmux 조회)는 lock 밖에서 미리 계산한다.
+    """
     key = run_key(p)
-    session = decide_session(p)
     opts, body = parse_overrides(p.get("message", ""))
-    if not claim_dispatch({**p, "message": body, "_opts": opts}, session):
-        with ledger_lock():
-            ent = load_runs().get(key) or {}
-        return ent.get("session") or session, False
-    return session, True
+    payload = {**p, "message": body, "_opts": opts}
+    ctx_session = parse_ctx(p.get("context"))
+    ctx_alive = bool(ctx_session and session_alive(ctx_session))
+    claimed, session, deferred = claim_dispatch(payload, ctx_session, ctx_alive)
+    if claimed and session:
+        return session, True, deferred
+    # 중복(DUP-SKIP) — 장부에 선점된 세션이 응답 기준.
+    with ledger_lock():
+        ent = load_runs().get(key) or {}
+    return ent.get("session") or new_session_name(p), bool(claimed), deferred
+
+
+def prepare(p):
+    """백그라운드/polling 전용: dup 판정+장부 선점. (session, fresh) 반환.
+
+    preempt_round의 결과를 그대로 소비하되 네트워크 부수효과는 즉시 발행한다 —
+    이 경로에는 즉시 200 계약이 없다. 반환 session은 선점된 장부 엔트리의 세션
+    (재회차 접미 포함)이다 — 이전 구현은 접미 전 세션을 돌려줘 서버가 이전 회차
+    context를 저장했다(PR#47 리뷰 R1).
+    """
+    session, fresh, deferred = preempt_round(p)
+    run_deferred(deferred)
+    return session, fresh
 
 
 def execute_once(p, session):
@@ -661,8 +935,10 @@ def execute_once(p, session):
     update_run(key, status="running", mode="new", started=time.time(), workspace=workspace,
                timeout_s=prof.get("timeout_s", DEFAULT_TIMEOUT_S), profile=prof.get("profile_name"))
     progress_projection(ent, "running")  # 세션 기동 확인(tmux new-session rc=0) 후
-    tt_comment(ent["issue_id"], "runner:%s dispatch#%s → tmux %s (queued, ws=%s)"
-               % (machine_name(), p["dispatch_id"], ent["session"], workspace))
+    reround = (" 재검토 재실행: 대상 %s→%s" % (ent["prev_sha"], ent["target_sha"])
+               if ent.get("prev_sha") else "")
+    tt_comment(ent["issue_id"], "runner:%s dispatch#%s → tmux %s (queued, ws=%s)%s"
+               % (machine_name(), p["dispatch_id"], ent["session"], workspace, reround))
     log("START dispatch#%s session=%s ws=%s" % (p["dispatch_id"], ent["session"], workspace))
 
 
@@ -746,11 +1022,10 @@ def run_agent(key):
 
 # ---------- 감시자 ----------
 
-def finalize(runs_dir_name, key, ent, exit_code, tail=""):
-    issue, did = ent["issue_id"], ent["dispatch_id"]
-    session = ent.get("session", "?")
-    summary = ""
+def _run_summary(key):
+    """run 산출 파일(.out→.log) 마지막 2000자 — finalize와 흡수 경로 공용."""
     base = key.replace("#", "_")
+    summary = ""
     for suffix in (".out", ".log"):  # codex는 .out, plain 드라이버는 .log가 stdout 수신
         cand = os.path.join(RUNTIME_DIR, base + suffix)
         if os.path.exists(cand):
@@ -761,11 +1036,39 @@ def finalize(runs_dir_name, key, ent, exit_code, tail=""):
                 pass
             if suffix == ".out":
                 break
+    return summary
+
+
+def finalize(runs_dir_name, key, ent, exit_code, tail="", summary=None, write=True,
+             owns_report=None):
+    """런 종료 보고. write=False면 장부 전환 없이 보고만 — 흡수 경로(선점이 이미
+    전환을 장부에 반영) 전용: 이후 재회차 엔트리를 done으로 되덮지 않게 한다.
+
+    소유권 게이트 (PR#47 리뷰 R3): 완료 전환·보고의 소유권을 감시자와 흡수 경로가
+    같은 원자적 게이트에서 결정한다 — 보고 직전 claim_report()가 lock 안에서 관찰한
+    session/round가 여전히 현재 회차인지 확인하고 보고 소유를 check-and-set한다.
+    finalize 내부(보고 네트워크 호출)에서 대기 중인 이전 회차 감시자의 늦은 반환은
+    다음 회차 엔트리의 queued/running 상태·감시를 바꾸지 못한다. 네트워크 호출(TT
+    코멘트·진행 투영)은 lock 밖에서 실행된다. owns_report=True는 소유권을 이미 가진
+    흡수 경로 호출(흡수 시점 claim 승계)이다. 전환은 update_run_if_round — 관찰
+    회차가 현재 회차·running일 때만 장부에 반영된다.
+    """
+    issue, did = ent["issue_id"], ent["dispatch_id"]
+    session = ent.get("session", "?")
+    if summary is None:
+        summary = _run_summary(key)
+    if owns_report is None:
+        owns_report = claim_report(key, ent, exit_code)
+    if not owns_report:
+        log("FINALIZE-SKIP dispatch#%s session=%s — 보고 소유권 없음 (다음 회차 선점, 흡수 경로 보고)"
+            % (did, session))
+        return "skipped"
     if exit_code == 0:
         tt_comment(issue, "runner:%s dispatch#%s done exit=0 session=%s\n%s"
                    % (machine_name(), did, session, mask(summary)))
         log("DONE dispatch#%s exit=0 session=%s" % (did, session))
-        update_run(key, status="done", exit=exit_code, ended=time.time())
+        if write:
+            update_run_if_round(key, ent, status="done", exit=exit_code, ended=time.time())
         progress_projection(ent, "finished")
         return "done"
     # (M3BZS1G3 ①) 실패 출력에서 입력/승인 요구 시그니처 → crashed가 아니라 BLOCKED.
@@ -777,14 +1080,17 @@ def finalize(runs_dir_name, key, ent, exit_code, tail=""):
                    "waiting_for=human. 재지시('승인' 또는 지시)를 기다림; 자동 재시도 없음.\n%s"
                    % (machine_name(), did, sig, exit_code, session, mask(combined[-1500:])))
         log("BLOCKED dispatch#%s signature=%s exit=%s session=%s" % (did, sig, exit_code, session))
-        update_run(key, status="blocked", exit=exit_code, blocked_on=sig, ended=time.time())
+        if write:
+            update_run_if_round(key, ent, status="blocked", exit=exit_code,
+                                blocked_on=sig, ended=time.time())
         progress_projection(ent, "failed")  # 세션은 종료 — 사람 대기 = 실행 미활성
         return "blocked"
     detail = tail or summary
     tt_comment(issue, "runner:%s dispatch#%s failed exit=%s session=%s\n%s"
                % (machine_name(), did, exit_code, session, mask(detail)))
     log("FAILED dispatch#%s exit=%s" % (did, exit_code))
-    update_run(key, status="failed", exit=exit_code, ended=time.time())
+    if write:
+        update_run_if_round(key, ent, status="failed", exit=exit_code, ended=time.time())
     progress_projection(ent, "failed")
     return "failed"
 
@@ -1018,18 +1324,36 @@ class H(BaseHTTPRequestHandler):
                     raise ValueError("missing " + k)
         except Exception as e:
             return self._send(400, {"detail": "bad payload: %s" % e})
-        threading.Thread(target=self._safe, args=(p,), daemon=True).start()
-        # 즉시 200: context용 세션 결정은 무결정(side-effect free) — claim은 백그라운드만
-        return self._send(200, {"context": ctx_token(decide_session(p))})
+        # (PR#47 리뷰 R1 3차) 응답 결정과 선점을 동기화: 회차 결정(claim)을 한 번,
+        # 동기로 수행하고 200과 백그라운드 실행이 '동일한 선점 결과'를 공유한다 —
+        # 완료 감시자의 running→done 전환(.done 마커)이 선점과 어떤 순서로 겹쳐도
+        # 응답 == 실제 수락·선점한 회차. 장부 파일 연산만 동기 실행하고 네트워크
+        # 부수효과(TT 코멘트·흡수 finalize 보고)는 deferred로 미뤄 즉시 200 계약 유지.
+        decided = None
+        if (p.get("message") or "").strip().lower() not in APPROVE_WORDS:
+            try:
+                decided = preempt_round(p)
+            except Exception as e:
+                log("PREEMPT-FAIL dispatch#%s: %s: %s" % (p.get("dispatch_id"), type(e).__name__, e))
+        threading.Thread(target=self._safe, args=(p, decided), daemon=True).start()
+        if decided is None:
+            # 승인 메시지(선점 없음) 또는 동기 선점 실패 — 무결정 추정으로 응답
+            return self._send(200, {"context": ctx_token(decide_session(p))})
+        return self._send(200, {"context": ctx_token(decided[0])})
 
-    def _safe(self, p):
+    def _safe(self, p, decided=None):
         try:
             msg = (p.get("message") or "").strip().lower()
             if msg in APPROVE_WORDS:
                 if not maybe_approve_release(p):
                     log("APPROVE-NOTHING dispatch#%s — 대기 중인 held 런 없음" % p.get("dispatch_id"))
                 return
-            session, fresh = prepare(p)
+            if decided is None:
+                # 동기 선점 실패(장부 I/O 등) — 백그라운드에서 재선점(기존 경로)
+                session, fresh = prepare(p)
+            else:
+                session, fresh, deferred = decided
+                run_deferred(deferred)  # 200 이후 발행 — 흡수 finalize·가시화 코멘트
             if fresh:
                 execute_once(p, session)
         except Exception as e:
