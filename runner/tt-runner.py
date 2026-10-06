@@ -9,7 +9,8 @@ tmux agent 실행으로 바꾼 단일 파일 러너다. 표준 라이브러리�
 - secret 파일(~/.hermes/tt-runner.secret) 부재 = 기동 실패 (fail-closed, 어댑터와 다르게).
 - 바인딩: tailnet IP 또는 127.0.0.1만. 0.0.0.0 거부.
 - 장부 키 "<issue_id>#<dispatch_id>" 단일 실행 게이트 — webhook/polling 공통 진입점,
-  선점 실패는 DUP-SKIP.
+  선점 실패는 DUP-SKIP. 단 done 런에 동일 키 재전송이 오면 message 첫 줄의 리뷰 대상
+  sha(PR #n @ sha8)를 비교해 달라졌을 때만 새 회차로 재실행한다(think-tank#46).
 - message는 셸 인자로 절대 interpolate하지 않는다: 첫 실행은 stdin 파일, 계속 재지시는
   메시지 파일을 쓰고 Pane 안에서 "$(cat 파일)" 형태로만 읽는다.
 - 파괴적 패턴이면 실행 보류(held) + TT 승인 요청 코멘트, '승인' 응답까지 시작하지 않는다.
@@ -317,23 +318,102 @@ def run_key(p):
     return "%s#%s" % (p["issue_id"], p["dispatch_id"])
 
 
+# think-tank#46 제안 A: 리뷰 대상 sha는 message 첫 줄의 'PR #n (repo) @ sha8' 계약 형식.
+# harvest 마커 'PR#n@sha8'도 커버. 본문 어디든 대상이 아닌 sha(베이스·이전 판정 등)가
+# 섞이므로 첫 줄로 한정한다.
+TARGET_SHA_RE = re.compile(r"PR\s*#\d+[^@\n]*@\s*([0-9a-f]{7,40})(?![0-9a-f])")
+
+
+def target_sha(message):
+    """dispatch message의 리뷰 대상 sha. 없으면 None — 비리뷰 재전송은 기존 동작 유지."""
+    first = (message or "").split("\n", 1)[0]
+    m = TARGET_SHA_RE.search(first)
+    return m.group(1) if m else None
+
+
+def _target_note(new_sha, old_sha):
+    """DUP-SKIP 사유용 대상 비교 요약 (제안 C 가시화)."""
+    if new_sha and old_sha:
+        return ("동일 %s" % new_sha) if new_sha == old_sha else ("불일치 %s→%s" % (old_sha, new_sha))
+    if new_sha:
+        return "신규 %s (기존 기록 없음)" % new_sha
+    if old_sha:
+        return "메시지에 대상 없음 (기존 %s)" % old_sha
+    return "메시지에 대상 sha 없음"
+
+
+def _clear_round_artifacts(key):
+    """재검토 회차 시작 전 이전 회차 아티팩트 제거 (think-tank#46).
+
+    장부 키를 회차 간 공유하므로 잔여 .done/.exit가 남으면 watch_once가 새 런을
+    즉시 finalize해버리고 .log/.out은 회차 출력을 섞는다.
+    """
+    base = os.path.join(RUNTIME_DIR, key.replace("#", "_"))
+    for suffix in (".done", ".exit", ".out", ".log", ".msg"):
+        try:
+            os.remove(base + suffix)
+        except OSError:
+            pass
+
+
 def claim_dispatch(p, session):
-    """webhook/polling 공통 단일 게이트: 성공 시 True(진입 권한 확보)."""
+    """webhook/polling 공통 단일 게이트: 성공 시 True(진입 권한 확보).
+
+    think-tank#46: 동일 (issue, dispatch_id) 재전송이라도 기존 런이 done이고 message의
+    리뷰 대상 sha가 달라졌으면 새 회차로 재실행한다(재검토 체인 정지 방지). 이때 세션명에
+    sha8을 덧붙여 이전 회차 세션(keep_shell로 생존 가능)과 충돌을 피하고, 이전 회차
+    런타임 아티팩트를 지운다. 그 외 중복은 DUP-SKIP하되 사유에 대상 불일치 여부를
+    명시하고(제안 C), done이 아닌 상태에서 대상 불일치 재전송이 오면 TT 코멘트로 1회
+    가시화한다. 서버가 재요청마다 새 dispatch id를 발급하는 방안(제안 B)은 미구현 —
+    probe가 회차별 새 id를 쓰면 이 보상 경로는 평상시 발동하지 않는다.
+    """
     key = run_key(p)
     with ledger_lock():
         runs = load_runs()
         if key in runs:
-            log("DUP-SKIP dispatch#%s (key=%s status=%s)" % (p["dispatch_id"], key, runs[key].get("status")))
-            return False
-        runs[key] = {"status": "queued", "issue_id": str(p["issue_id"]),
-                     "dispatch_id": p["dispatch_id"], "agent": str(p.get("agent") or ""),
-                     "message": p.get("message", ""), "context_in": p.get("context", ""),
-                     "work_contract": p.get("work_contract"),
-                     "execution_attempt": p.get("execution_attempt", 0),
-                     "opts": p.get("_opts") or {},
-                     "session": session, "ts": time.time()}
-        save_runs(runs)
-    return True
+            prev = runs[key]
+            new_sha = target_sha(p.get("message", ""))
+            old_sha = prev.get("target_sha") or target_sha(prev.get("message", ""))
+            if prev.get("status") == "done" and new_sha and old_sha and new_sha != old_sha:
+                session = "%s-%s" % (session, new_sha[:8])
+                log("RE-ROUND dispatch#%s (key=%s) 대상 %s→%s — 재실행"
+                    % (p["dispatch_id"], key, old_sha, new_sha))
+                runs[key] = {"status": "queued", "issue_id": str(p["issue_id"]),
+                             "dispatch_id": p["dispatch_id"], "agent": str(p.get("agent") or ""),
+                             "message": p.get("message", ""), "context_in": p.get("context", ""),
+                             "work_contract": p.get("work_contract"),
+                             "execution_attempt": p.get("execution_attempt", 0),
+                             "opts": p.get("_opts") or {},
+                             "session": session, "ts": time.time(),
+                             "target_sha": new_sha, "prev_sha": old_sha}
+                save_runs(runs)
+                _clear_round_artifacts(key)
+                return True
+            log("DUP-SKIP dispatch#%s (key=%s status=%s, 대상 %s)"
+                % (p["dispatch_id"], key, prev.get("status"), _target_note(new_sha, old_sha)))
+            flagged = bool(new_sha and old_sha and new_sha != old_sha)
+            if flagged and not prev.get("mismatch_notified"):
+                prev["mismatch_notified"] = True
+                save_runs(runs)
+            else:
+                flagged = False
+        else:
+            runs[key] = {"status": "queued", "issue_id": str(p["issue_id"]),
+                         "dispatch_id": p["dispatch_id"], "agent": str(p.get("agent") or ""),
+                         "message": p.get("message", ""), "context_in": p.get("context", ""),
+                         "work_contract": p.get("work_contract"),
+                         "execution_attempt": p.get("execution_attempt", 0),
+                         "opts": p.get("_opts") or {},
+                         "session": session, "ts": time.time(),
+                         "target_sha": target_sha(p.get("message", ""))}
+            save_runs(runs)
+            return True
+    if flagged:
+        tt_comment(str(p["issue_id"]),
+                   "runner:%s dispatch#%s DUP-SKIP — 재전송 요청이 기존 dispatch와 대상 불일치"
+                   "(%s→%s). status=%s라 재실행하지 않음; 진행 상태 확인 필요 (장부:%s)"
+                   % (machine_name(), p["dispatch_id"], old_sha, new_sha, prev.get("status"), key))
+    return False
 
 
 def update_run(key, **fields):
@@ -661,8 +741,10 @@ def execute_once(p, session):
     update_run(key, status="running", mode="new", started=time.time(), workspace=workspace,
                timeout_s=prof.get("timeout_s", DEFAULT_TIMEOUT_S), profile=prof.get("profile_name"))
     progress_projection(ent, "running")  # 세션 기동 확인(tmux new-session rc=0) 후
-    tt_comment(ent["issue_id"], "runner:%s dispatch#%s → tmux %s (queued, ws=%s)"
-               % (machine_name(), p["dispatch_id"], ent["session"], workspace))
+    reround = (" 재검토 재실행: 대상 %s→%s" % (ent["prev_sha"], ent["target_sha"])
+               if ent.get("prev_sha") else "")
+    tt_comment(ent["issue_id"], "runner:%s dispatch#%s → tmux %s (queued, ws=%s)%s"
+               % (machine_name(), p["dispatch_id"], ent["session"], workspace, reround))
     log("START dispatch#%s session=%s ws=%s" % (p["dispatch_id"], ent["session"], workspace))
 
 
