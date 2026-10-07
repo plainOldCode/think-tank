@@ -13,7 +13,12 @@ jobs:
     steps:
       - id: pick
         run: |
-          if [ "${{ github.event_name }}" = "push" ]; then echo 'runner=m2max'; else echo 'runner=ubuntu-latest'; fi >> "$GITHUB_OUTPUT"
+          # fromJSON 소비용 JSON 배열 출력 (리뷰 #4) — push(신뢰 코드)=self-hosted, PR(외부 코드)=호스팅
+          if [ "${{ github.event_name }}" = "push" ]; then
+            echo 'runner=["self-hosted", "m2max"]'
+          else
+            echo 'runner=["ubuntu-latest"]'
+          fi >> "$GITHUB_OUTPUT"
   tests:
     needs: runner-pick
     # mac arm64 실측(main push) + setup-python 미사용: self-hosted mac에서 AGENT_TOOLSDIRECTORY를
