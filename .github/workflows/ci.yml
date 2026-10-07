@@ -6,7 +6,7 @@ on:
 jobs:
   tests:
     # m2max-3(self-hosted mac arm64)에서 실행 — 즉시 실행 + mac 실측 (TT M4BC1PKH-2CDA)
-    # setup-python 미사용: self-hosted mac에서 AGENT_TOOLSDIRECTORY를 /Users/runner로 강제 덮어씀(상류 하드코딩) → uv 도입
+    # setup-python 미사용: self-hosted mac에서 AGENT_TOOLSDIRECTORY를 호스팅 러너 홈 경로로 강제 덮어씀(상류 하드코딩) → uv 도입
     runs-on: [self-hosted, m2max]
     steps:
       - uses: actions/checkout@v4
