@@ -27,7 +27,7 @@ if [[ -n "${TT_SCAN_DIFF:-}" ]]; then
     for f in $(git diff --name-only "$TT_SCAN_DIFF" 2>/dev/null); do
       case "$f" in .venv/*|scripts/secret-scan.sh|scripts/secret-patterns.local) continue ;; esac
       add="$(git diff "$TT_SCAN_DIFF" -- "$f" | grep '^+' | grep -v '^+++' | sed "s|^+|$f:+|" || true)"
-      hit="$(printf '%s\n' "$add" | grep -P -e "$pat" 2>/dev/null | head -10 || true)"
+      hit="$(printf '%s\n' "$add" | PAT="$pat" perl -ne 'print if m/$ENV{PAT}/' 2>/dev/null | head -10 || true)"
       [[ -n "$hit" ]] && out+="$hit"$'\n'
     done
     if [[ -n "$out" ]]; then
@@ -38,7 +38,12 @@ if [[ -n "${TT_SCAN_DIFF:-}" ]]; then
   done
 else
   for pat in "${PATTERNS[@]}"; do
-    out="$(git grep -I -P -n -e "$pat" -- ':!.venv' ':!scripts/secret-scan.sh' ':!scripts/secret-patterns.local' 2>/dev/null)"
+    # git grep -P는 git 빌드에 pcre가 없으면(예: Apple CLT git) 사용 불가 — ls-files+perl로 이식
+    out="$(git ls-files -- ':!.venv' ':!scripts/secret-scan.sh' ':!scripts/secret-patterns.local' | while IFS= read -r f; do
+      [ -f "$f" ] || continue
+      grep -qI . "$f" 2>/dev/null || continue
+      PAT="$pat" perl -ne 'print "$ARGV:$.:$_" if m/$ENV{PAT}/' "$f"
+    done)"
     if [[ -n "$out" ]]; then
       echo "✗ 패턴 [$pat]:"
       echo "$out" | head -10

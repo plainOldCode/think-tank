@@ -5,18 +5,21 @@ on:
     branches: [main]
 jobs:
   tests:
-    runs-on: ubuntu-latest
+    # m2max-3(self-hosted mac arm64)에서 실행 — 즉시 실행 + mac 실측 (TT M4BC1PKH-2CDA)
+    # setup-python 미사용: self-hosted mac에서 AGENT_TOOLSDIRECTORY를 /Users/runner로 강제 덮어씀(상류 하드코딩) → uv 도입
+    runs-on: [self-hosted, m2max]
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: astral-sh/setup-uv@v5
         with:
           python-version: "3.12"
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-      - run: pip install fastapi uvicorn pydantic httpx pytest
+      - run: uv venv --python 3.12 .venv
+      - run: uv pip install -p .venv/bin/python fastapi uvicorn pydantic httpx pytest
       - run: bash scripts/secret-scan.sh .
-      - run: pytest tests/ -q
+      - run: .venv/bin/python -m pytest tests/ -q
       - run: node tests/smoke_mobile.mjs
       - run: node tests/smoke_theme_wiring.mjs
       - run: node tests/smoke_agent_board.mjs
