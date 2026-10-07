@@ -4,10 +4,21 @@ on:
   push:
     branches: [main]
 jobs:
+  # 리뷰 #3 (PR#49@1eee3269): 공개 repo의 PR 코드가 상주 러너에서 실행되는 것 방지 —
+  # push(main, 신뢰 코드)만 self-hosted m2max, pull_request(외부 코드)는 호스팅 ubuntu
+  runner-pick:
+    runs-on: ubuntu-latest
+    outputs:
+      runner: ${{ steps.pick.outputs.runner }}
+    steps:
+      - id: pick
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then echo 'runner=m2max'; else echo 'runner=ubuntu-latest'; fi >> "$GITHUB_OUTPUT"
   tests:
-    # m2max-3(self-hosted mac arm64)에서 실행 — 즉시 실행 + mac 실측 (TT M4BC1PKH-2CDA)
-    # setup-python 미사용: self-hosted mac에서 AGENT_TOOLSDIRECTORY를 호스팅 러너 홈 경로로 강제 덮어씀(상류 하드코딩) → uv 도입
-    runs-on: [self-hosted, m2max]
+    needs: runner-pick
+    # mac arm64 실측(main push) + setup-python 미사용: self-hosted mac에서 AGENT_TOOLSDIRECTORY를
+    # 호스팅 러너 홈 경로로 강제 덮어씀(상류 하드코딩) → uv 도입 (TT M4BC1PKH-2CDA)
+    runs-on: ${{ fromJSON(needs.runner-pick.outputs.runner) }}
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5

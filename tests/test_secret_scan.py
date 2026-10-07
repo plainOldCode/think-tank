@@ -1,3 +1,4 @@
+import pytest
 import shutil
 import subprocess
 from pathlib import Path
@@ -76,5 +77,15 @@ def test_pipe_filename_not_executed(tmp_path):
     r = scan(repo)
     assert not (repo / "review-marker.txt").exists(), (
         "scanner executed a tracked filename instead of reading it")
+    assert r.returncode == 1
+    assert name in r.stdout
+
+
+@pytest.mark.parametrize("name", ["한글파일.txt", "tab\tname.txt", "back\\slash.txt", "-credential.txt"])
+def test_special_filenames_scanned(tmp_path, name):
+    """quotePath 인용/옵션 오해 파일명도 검사 대상 (리뷰 #2)."""
+    repo = make_repo(tmp_path)
+    commit_file(repo, name, [TOKEN])
+    r = scan(repo)
     assert r.returncode == 1
     assert name in r.stdout

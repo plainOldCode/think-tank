@@ -39,15 +39,16 @@ if [[ -n "${TT_SCAN_DIFF:-}" ]]; then
 else
   for pat in "${PATTERNS[@]}"; do
     # git grep -P는 git 빌드에 pcre가 없으면(예: Apple CLT git) 사용 불가 — ls-files+perl로 이식
-    out="$(git ls-files -- ':!.venv' ':!scripts/secret-scan.sh' ':!scripts/secret-patterns.local' | while IFS= read -r f; do
+    # -z + read -d '': core.quotePath 인용/탭/역슬래시 파일명 보존 (리뷰 #2) — grep -- 로 옵션 해석 방지
+    out="$(git ls-files -z -- ':!.venv' ':!scripts/secret-scan.sh' ':!scripts/secret-patterns.local' | while IFS= read -r -d '' f; do
       [ -f "$f" ] || continue
-      grep -qI . "$f" 2>/dev/null || continue
+      grep -qI . -- "$f" 2>/dev/null || continue
       PAT="$pat" perl -e '
         my $f = $ARGV[0];
         open(my $fh, "<", $f) or exit 0;  # 3-arg open — two-arg `<>`는 `|`로 끝나는 파일명을 명령으로 실행함(리뷰 P1)
         my $n = 0;
         while (my $l = <$fh>) { $n++; print "$f:$n:$l" if $l =~ m/$ENV{PAT}/; }
-      ' "$f"
+      ' -- "$f"  # -- : -credential.txt 같은 이름의 옵션 오해 방지 (리뷰 #2)
     done)"
     if [[ -n "$out" ]]; then
       echo "✗ 패턴 [$pat]:"
