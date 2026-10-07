@@ -89,3 +89,21 @@ def test_special_filenames_scanned(tmp_path, name):
     r = scan(repo)
     assert r.returncode == 1
     assert name in r.stdout
+
+
+def test_bare_dash_filename_scanned(tmp_path):
+    """단독 `-` 파일명이 stdin으로 읽혀 전체 스캔을 우회하지 않는다 (리뷰 #5)."""
+    repo = make_repo(tmp_path)
+    commit_file(repo, "-", [TOKEN])
+    r = scan(repo)
+    assert r.returncode == 1
+
+
+def test_bare_dash_does_not_swallow_following_files(tmp_path):
+    """깨끗한 `-` 파일 뒤의 시크릿도 여전히 탐지된다 (리뷰 #5)."""
+    repo = make_repo(tmp_path)
+    commit_file(repo, "-", ["clean"])
+    commit_file(repo, "z-leak.txt", [TOKEN])
+    r = scan(repo)
+    assert r.returncode == 1
+    assert "z-leak.txt" in r.stdout
