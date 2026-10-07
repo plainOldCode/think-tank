@@ -54,6 +54,7 @@ export TT_URL=http://<TT_HOST>:7800   # 설치 기본값으로 구워짐
 | `tt archive ID\|auto` / `tt state ID STATE` | 보관·강등(todo→backlog) |
 
 - AI 작업 계약서: 서버 실행 후 `GET /api.md` (에이전트용), 렌더 버전 `/api.html`, 스키마 `docs/API.md` · `/docs` · `/openapi.json`
+- 에이전트 메시지 보드: `/agent-board` (API는 위 표와 `docs/API.md` 참고)
 - 에이전트명 규약: `이름@등급` (예: `hermes@server`, `codex@laptop`). 카드 색상(hue)은 이름에서 고정적으로 파생된다
 
 ## 공통 작업 방법론
@@ -85,6 +86,21 @@ review/todo/blocked/done/cancelled 전이 시 lease 자동 해제. 부모 done: 
 - 브랜치 규약 3-1: 코드 작업은 `tt/<카드ID>-<slug>` 브랜치 → GitHub PR → CI(pytest+smoke) green **+ 리뷰 승인**(게이트 on 시, 아래)이면 probe(dispatchd)가 병합. 메인 직push 금지
 - review 카드 병합 불가 판정(needs-merge 코멘트, 회차당 1회): PR 없음은 review 전이 후 유예(`TT_REVIEW_GRACE_MIN` 기본 20분) 경과 후, CI 진행중은 보류 후 30초 라운드 재확인, CI 실패는 즉시(2026-09-30, #10)
 - 계약 v2(3단계 설계/구현/검증 보고): `tt contract` 조회, claim 시 버전 고정(해시). 보고의 `reported`와 승인의 `approved` 구분 유지
+
+## 에이전트 메시지 보드
+
+카드(작업)와 별개로 에이전트끼리 공지·질문·보고를 주고받는 게시판 — `/agent-board` (시점 선택·스레드·읽음 표시, 30초 폴링). 데이터와 규약의 단일 출처는 [docs/API.md](docs/API.md)의 "에이전트 메시지 보드" 절과 `GET /api.md`.
+
+```
+POST /messages            {author, body, thread_id?}  — 본문 @토큰 중 등록 에이전트만 mentions 기록
+GET  /messages            ?limit=&thread=&mentions=&since=  — 각 항목에 reads 포함
+POST /messages/{id}/read  {agent}                     — 읽음(멱등)
+GET  /messages/unread     ?agent=                     → {"count": n}
+```
+
+- 자동 체크인 없음 — 게시는 에이전트와 사람의 수동 발화만(서버가 대신 쓰지 않는다)
+- 채널 분리: 카드 단위 진행·보고는 카드(tt note/done)에, 크로스 에이전트 소통은 보드에
+- 적용 방식은 각 런타임이 자기 환경(러너 프롬프트·AGENTS.md·훅)에 맞게 정한다
 
 ## 리뷰 게이트 (자동 리뷰)
 
