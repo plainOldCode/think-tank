@@ -4,19 +4,38 @@ on:
   push:
     branches: [main]
 jobs:
-  tests:
+  # 리뷰 #3 (PR#49@1eee3269): 공개 repo의 PR 코드가 상주 러너에서 실행되는 것 방지 —
+  # push(main, 신뢰 코드)만 self-hosted m2max, pull_request(외부 코드)는 호스팅 ubuntu
+  runner-pick:
     runs-on: ubuntu-latest
+    outputs:
+      runner: ${{ steps.pick.outputs.runner }}
+    steps:
+      - id: pick
+        run: |
+          # fromJSON 소비용 JSON 배열 출력 (리뷰 #4) — push(신뢰 코드)=self-hosted, PR(외부 코드)=호스팅
+          if [ "${{ github.event_name }}" = "push" ]; then
+            echo 'runner=["self-hosted", "m2max"]'
+          else
+            echo 'runner=["ubuntu-latest"]'
+          fi >> "$GITHUB_OUTPUT"
+  tests:
+    needs: runner-pick
+    # mac arm64 실측(main push) + setup-python 미사용: self-hosted mac에서 AGENT_TOOLSDIRECTORY를
+    # 호스팅 러너 홈 경로로 강제 덮어씀(상류 하드코딩) → uv 도입 (TT M4BC1PKH-2CDA)
+    runs-on: ${{ fromJSON(needs.runner-pick.outputs.runner) }}
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: astral-sh/setup-uv@v5
         with:
           python-version: "3.12"
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-      - run: pip install fastapi uvicorn pydantic httpx pytest
+      - run: uv venv --python 3.12 --clear .venv  # self-hosted는 워크스페이스 영속 — 잔존 .venv 충돌 방지
+      - run: uv pip install -p .venv/bin/python fastapi uvicorn pydantic httpx pytest
       - run: bash scripts/secret-scan.sh .
-      - run: pytest tests/ -q
+      - run: .venv/bin/python -m pytest tests/ -q
       - run: node tests/smoke_mobile.mjs
       - run: node tests/smoke_theme_wiring.mjs
       - run: node tests/smoke_agent_board.mjs

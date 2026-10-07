@@ -1,3 +1,5 @@
+import pytest
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -63,3 +65,60 @@ def test_conflict_marker_blocks(tmp_path):
     commit_file(repo, "base.md", ["base line"])
     commit_file(repo, "bad.md", ["<<<" + "<<<< HEAD", "clean", "<<<" + "<<<< x"])
     assert scan(repo, "HEAD~1").returncode == 1
+
+
+def test_pipe_filename_not_executed(tmp_path):
+    """두 인자 open(`<>`) 회귀: `|`로 끝나는 tracked 파일명이 명령으로 실행되면 안 된다 (리뷰 P1)."""
+    repo = make_repo(tmp_path)
+    name = "review-marker.txt|"
+    (repo / name).write_text(f"{TOKEN}\n")
+    git(repo, "add", "--", name)
+    git(repo, "commit", "-qm", "pipe filename")
+
+    r = scan(repo)
+    assert not (repo / "review-marker.txt").exists(), (
+        "scanner executed a tracked filename instead of reading it")
+    assert r.returncode == 1
+    assert name in r.stdout
+
+
+@pytest.mark.parametrize("name", ["한글파일.txt", "tab\tname.txt", "back\\slash.txt", "-credential.txt"])
+def test_special_filenames_scanned(tmp_path, name):
+    """quotePath 인용/옵션 오해 파일명도 검사 대상 (리뷰 #2)."""
+    repo = make_repo(tmp_path)
+    commit_file(repo, name, [TOKEN])
+    r = scan(repo)
+    assert r.returncode == 1
+    assert name in r.stdout
+
+
+def test_bare_dash_filename_scanned(tmp_path):
+    """단독 `-` 파일명이 stdin으로 읽혀 전체 스캔을 우회하지 않는다 (리뷰 #5)."""
+    repo = make_repo(tmp_path)
+    commit_file(repo, "-", [TOKEN])
+    r = scan(repo)
+    assert r.returncode == 1
+
+
+def test_bare_dash_does_not_swallow_following_files(tmp_path):
+    """깨끗한 `-` 파일 뒤의 시크릿도 여전히 탐지된다 (리뷰 #5)."""
+    repo = make_repo(tmp_path)
+    commit_file(repo, "-", ["clean"])
+    commit_file(repo, "z-leak.txt", [TOKEN])
+    r = scan(repo)
+    assert r.returncode == 1
+    assert "z-leak.txt" in r.stdout
+
+
+def test_tracked_symlink_not_followed(tmp_path):
+    """tracked 심볼릭 링크가 repo 밖 파일 내용을 출력하지 않는다 (리뷰 #6)."""
+    outside = tmp_path / "outside.txt"
+    outside.write_text(TOKEN + "\n")
+    repo = make_repo(tmp_path)
+    os.symlink(outside, repo / "link.txt")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-qm", "symlink")
+
+    r = scan(repo)
+    assert r.returncode == 0
+    assert TOKEN not in r.stdout
