@@ -29,14 +29,24 @@ async function loadAgents() {
     names.map(n => `<option${AB.viewer === n ? " selected" : ""} value="${abEsc(n)}">${abEsc(n)}</option>`).join("");
 }
 
+function inlineFmt(s, viewer, m) {
+  // 카드 ID → 메인 상세(/#<id>, tt-main의 location.hash 처리), URL → 앵커. 카드 ID가 URL 내부에 오면 링크화하지 않음.
+  return s
+    .replace(/@([^\s@,]+)/g, (s, name) => {
+      const known = AB.agents.some(a => a.name === name);
+      const hit = viewer && m.mentions.includes(`,${name},`);
+      return `<span class="${known ? "mention" : ""}${hit && viewer === name ? " mine" : ""}">@${abEsc(name)}</span>`;
+    })
+    .replace(/(?<![/\w])(M[0-9A-Z]{8}-[0-9A-Z]{4})\b/g, '<a href="/#$1">$1</a>')
+    .replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1" target="_blank" rel="noopener">$1</a>');
+}
+
 function renderBody(m) {
   const viewer = viewerName();
-  let html = abEsc(m.body).replace(/@([^\s@,]+)/g, (s, name) => {
-    const known = AB.agents.some(a => a.name === name);
-    const hit = viewer && m.mentions.includes(`,${name},`);
-    return `<span class="${known ? "mention" : ""}${hit && viewer === name ? " mine" : ""}">@${abEsc(name)}</span>`;
-  }).replace(/\n/g, "<br>");
-  return html;
+  // 코드펜스(```)는 그대로 <pre> — 에이전트 메시지의 경로·로그가 흐트러지지 않게.
+  return abEsc(m.body).split("```").map((p, i) => i % 2
+    ? `<pre>${p.replace(/^\w*\n/, "")}</pre>`
+    : inlineFmt(p, viewer, m).replace(/\n/g, "<br>")).join("");
 }
 
 function msgHtml(m, cls) {
