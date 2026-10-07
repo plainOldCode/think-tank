@@ -89,6 +89,26 @@ def _review_grace_min():
         return 20
 
 
+def _stale_act(i, att, now):
+    """'PR 없음' review 카드 스탈 공지 액션 — 연령 기반(attempt당 마커 1회). 기본 24h.
+    (needs-merge 노트가 attempt당 1회 dedup이라 사이클 카운트는 불가 → 연령으로 판정)"""
+    try:
+        stale_h = max(0, float(os.getenv("TT_PROBE_STALE_HOURS", "24")))
+    except ValueError:
+        stale_h = 24.0
+    if not stale_h:
+        return None
+    smarker = f"[stale-notify a{att}]"
+    if _probe_marker(i, smarker):
+        return None
+    age = _age_min(now, i.get("updated_at") or "")
+    if age is None or age < stale_h * 60:
+        return None
+    return {"agent": "probe", "issue": i["id"], "action": "stale-notify",
+            "marker": smarker,
+            "reason": f"PR 없음 {int(age // 60)}시간 지속 — 사람 판단 대기 공지"}
+
+
 REVIEW_LINE = re.compile(r"^review:\s*(approve|request-changes)\b", re.I)
 PR_SHA = re.compile(r"PR#(\d+)@([0-9a-fA-F]{8})")
 
@@ -276,6 +296,10 @@ def decide(snap):
         marker = f"[needs-merge a{att}]"
         if any(marker in (c.get("body") or "") for c in (i.get("comments") or [])
                if c.get("author") == "probe"):
+            # 이미 needs-merge 노트 발행 — 스탈(연령)만 재평가 후 무음.
+            sa = _stale_act(i, att, snap.get("now") or "")
+            if sa:
+                actions.append(sa)
             continue
         prs_for = [p for p in snap.get("prs") or [] if pr_card_id(p) == i["id"]]
         drafts = [p for p in prs_for if p.get("isDraft")]
@@ -321,6 +345,22 @@ def decide(snap):
             age = _age_min(snap.get("now") or "", i.get("updated_at") or "")
             if age is None or age < _review_grace_min():
                 continue  # PR 생성 유예 — 성급한 'PR 없음' 코멘트 금지
+            # 코멘트 PR URL 역기입(HG5S): 본문 repo: 미표기 + 코멘트에 PR URL이 있으면 채택 —
+            # execute에서 실재 검증 후 본문 보강 → 다음 사이클 스캔 풀 진입. 마커로 회차 dedup.
+            if not card_repo(i):
+                for repo, prn in _comment_pr_repos(i):
+                    amarker = f"[pr-adopted {prn}/{repo}]"
+                    if _probe_marker(i, amarker):
+                        break
+                    actions.append({"agent": "probe", "issue": i["id"], "action": "pr-adopt",
+                                    "repo": repo, "pr": prn, "marker": amarker,
+                                    "reason": f"코멘트 PR URL 역기입 — {repo}#{prn} 채택"})
+                    break
+            # 스탈 공지: 'PR 없음' review 카드가 N시간 지속 — 사일런트 반복 방지.
+            # (needs-merge 노트는 attempt당 1회 dedup이라 사이클 카운트 불가 → 연령 기반)
+            sa = _stale_act(i, att, snap.get("now") or "")
+            if sa:
+                actions.append(sa)
             reason = "PR 없음"
         actions.append({"agent": "probe", "issue": i["id"], "action": "review-note",
                         "reason": f"{reason} — 사람 판단 대기"})
@@ -360,6 +400,18 @@ REPO_CARDS = {
 REPO = os.environ.get("TT_REPO_SLUG", "plainOldCode/think-tank")
 
 CARD_REPO = re.compile(r"repo:\s*([\w.-]+/[\w.-]+)")
+PR_URL = re.compile(r"https://github\.com/([\w.-]+/[\w.-]+)/pull/(\d+)")
+
+
+def _comment_pr_repos(issue):
+    """카드 코멘트의 github PR URL → [(owner/repo, pr_no)] — 등장 순 중복 제거."""
+    seen = []
+    for c in issue.get("comments") or []:
+        for m in PR_URL.finditer(c.get("body") or ""):
+            t = (m.group(1), int(m.group(2)))
+            if t not in seen:
+                seen.append(t)
+    return seen
 
 
 def card_repo(issue):
@@ -628,6 +680,41 @@ def execute(url, act):
         api(url, f"/issues/{act['issue']}/comments", "POST",
             {"author": "probe", "body": f"{marker} {act['reason']} — "
                                         "tt verify로 done 확정 또는 review→todo 재작업"})
+    elif kind == "pr-adopt":
+        # 코멘트 PR URL 역기입(HG5S) 집행: PR 실재·카드 ID 일치 검증 후 본문 repo: 보강.
+        # 이미 표기되어 있으면 무음(멱등) — 검증 실패(부재/불일치)도 조용히 스킵.
+        repo = act.get("repo") or ""
+        try:
+            pr = gh_json("pr", "view", act.get("pr"), "--repo", repo,
+                         "--json", "title,headRefName")
+        except Exception:
+            return
+        pid = card_from_branch(pr.get("headRefName") or "") or pr_card_id(
+            {"branch": pr.get("headRefName") or "", "title": pr.get("title") or ""})
+        if pid != act["issue"]:
+            return
+        cur = api(url, f"/issues/{act['issue']}")
+        body = (cur.get("body") or "").rstrip()
+        if f"repo: {repo}" in body:
+            return
+        api(url, f"/issues/{act['issue']}", "PATCH",
+            {"version": cur["version"], "body": (body + f"\n\nrepo: {repo}").strip() + "\n"})
+        api(url, f"/issues/{act['issue']}/comments", "POST",
+            {"author": "probe",
+             "body": f"{act.get('marker') or ''} 코멘트의 PR URL에서 {repo} 채택 — "
+                     "본문 repo: 보강(다음 사이클 스캔 풀 진입)"})
+    elif kind == "stale-notify":
+        # 'PR 없음' 지속 review 카드 — 메시지 보드 공지(멘션은 assignee 등록 에이전트에만 기록됨) + 카드 마커.
+        cur = api(url, f"/issues/{act['issue']}")
+        marker = act.get("marker") or ""
+        if any(marker in (c.get("body") or "") for c in (cur.get("comments") or [])):
+            return
+        who = cur.get("assignee") or ""
+        api(url, "/messages", "POST",
+            {"author": "probe",
+             "body": (f"@{who} " if who else "") + f"[stale] 카드 {act['issue']} — {act['reason']}"})
+        api(url, f"/issues/{act['issue']}/comments", "POST",
+            {"author": "probe", "body": f"{marker} {act['reason']}"})
     elif kind == "resume":
         api(url, f"/issues/{act['issue']}", "PATCH", {"state": "todo", "version": v})
     elif kind == "needs-human":
