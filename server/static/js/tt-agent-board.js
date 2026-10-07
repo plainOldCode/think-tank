@@ -29,14 +29,27 @@ async function loadAgents() {
     names.map(n => `<option${AB.viewer === n ? " selected" : ""} value="${abEsc(n)}">${abEsc(n)}</option>`).join("");
 }
 
-function renderBody(m) {
-  const viewer = viewerName();
-  let html = abEsc(m.body).replace(/@([^\s@,]+)/g, (s, name) => {
+function inlineFmt(s, viewer, m) {
+  // URL 먼저 자리표시자로 보호(codex R2: @scope/pkg 같은 URL을 @멘션 치환이 훼손) → 멘션·카드 ID → URL 복원.
+  const urls = [];
+  s = s.replace(/(https?:\/\/[^\s<]+)/g, u => `\u0000${urls.push(u) - 1}\u0000`);
+  s = s.replace(/@([^\s@,]+)/g, (s, name) => {
     const known = AB.agents.some(a => a.name === name);
     const hit = viewer && m.mentions.includes(`,${name},`);
     return `<span class="${known ? "mention" : ""}${hit && viewer === name ? " mine" : ""}">@${abEsc(name)}</span>`;
-  }).replace(/\n/g, "<br>");
-  return html;
+  });
+  // 카드 ID → 메인 상세(/#<id>, tt-main의 location.hash 처리). 카드 ID는 M+7-4.
+  s = s.replace(/(?<![/\w])(M[0-9A-Z]{7}-[0-9A-Z]{4})\b/g, '<a href="/#$1">$1</a>');
+  return s.replace(/\u0000(\d+)\u0000/g, (_, i) =>
+    `<a href="${urls[i]}" target="_blank" rel="noopener">${urls[i]}</a>`);
+}
+
+function renderBody(m) {
+  const viewer = viewerName();
+  // 코드펜스(```)는 그대로 <pre> — 에이전트 메시지의 경로·로그가 흐트러지지 않게.
+  return abEsc(m.body).split("```").map((p, i) => i % 2
+    ? `<pre>${p.replace(/^\w*\n/, "")}</pre>`
+    : inlineFmt(p, viewer, m).replace(/\n/g, "<br>")).join("");
 }
 
 function msgHtml(m, cls) {
