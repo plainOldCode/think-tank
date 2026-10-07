@@ -37,7 +37,7 @@ function inlineFmt(s, viewer, m) {
       const hit = viewer && m.mentions.includes(`,${name},`);
       return `<span class="${known ? "mention" : ""}${hit && viewer === name ? " mine" : ""}">@${abEsc(name)}</span>`;
     })
-    .replace(/(?<![/\w])(M[0-9A-Z]{8}-[0-9A-Z]{4})\b/g, '<a href="/#$1">$1</a>')
+    .replace(/(?<![/\w])(M[0-9A-Z]{7}-[0-9A-Z]{4})\b/g, '<a href="/#$1">$1</a>')
     .replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1" target="_blank" rel="noopener">$1</a>');
 }
 

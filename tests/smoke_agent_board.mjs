@@ -27,10 +27,20 @@ const el = () => ({
   addEventListener() {}, focus() {},
 });
 
+const els = new Map();
+const getEl = (id) => {
+  if (!els.has(id)) els.set(id, el());
+  return els.get(id);
+};
+
 const threadsFetched = [];
 // F1 잔여: 이미 읽힌 메시지(reads 비었음 X)가 첫 로드에 섞여 있어야 esc 잔존 참조가 터진다
 const listOnlyReplies = [
   { id: "MREPL-0002", thread_id: "MROOT-0001", author: "agy", body: "@codex 답변", mentions: ",codex,", created_at: "2026-10-05T09:01:00+0900", reads: ["codex"] },
+  // M4A55K92-4BZK: 카드 ID(M+7-4) 링크·코드펜스·URL 렌더 — 실제 카드 ID 형식으로 검증(codex F1)
+  { id: "MRENDER-0001", thread_id: null, author: "codex",
+    body: "관련 카드 M4580A48-573W 확인.\n```\nls -la /path\n```\n문서 https://example.com/x 참고",
+    mentions: "", created_at: "2026-10-05T09:02:00+0900", reads: [] },
 ];
 const withRoot = [
   { id: "MROOT-0001", thread_id: null, author: "codex", body: "질문입니다", mentions: "", created_at: "2026-10-05T09:00:00+0900", reads: ["agy"] },
@@ -43,7 +53,7 @@ for (let i = 0; i < 22; i++) {
 }
 const sandbox = {
   document: {
-    getElementById: () => el(),
+    getElementById: (id) => getEl(id),
   },
   fetch: (url) => {
     threadsFetched.push(url);
@@ -79,4 +89,18 @@ if (!threadsFetched.some(u => u.startsWith("/messages?thread="))) {
   console.error("FAIL: 루트 보완 조회(/messages?thread=) 미호출 — reply-only 스레드 누락");
   process.exit(1);
 }
-console.log("smoke_agent_board OK — 자기완결 초기화 + 루트 보완 조회 확인");
+// M4A55K92-4BZK: 본문 렌더 — 카드 ID 링크(실제 형식 M+7-4), 코드펜스 <pre>, URL 앵커
+const board = getEl("board").innerHTML;
+if (!board.includes('<a href="/#M4580A48-573W">M4580A48-573W</a>')) {
+  console.error("FAIL: 카드 ID가 /#상세 링크로 렌더되지 않음 — 정규식 길이 확인({7})");
+  process.exit(1);
+}
+if (!board.includes("<pre>")) {
+  console.error("FAIL: 코드펜스가 <pre>로 렌더되지 않음");
+  process.exit(1);
+}
+if (!board.includes('href="https://example.com/x"')) {
+  console.error("FAIL: URL이 앵커로 렌더되지 않음");
+  process.exit(1);
+}
+console.log("smoke_agent_board OK — 자기완결 초기화 + 루트 보완 조회 + 본문 렌더 확인");
