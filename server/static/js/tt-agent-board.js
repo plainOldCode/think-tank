@@ -30,15 +30,18 @@ async function loadAgents() {
 }
 
 function inlineFmt(s, viewer, m) {
-  // 카드 ID → 메인 상세(/#<id>, tt-main의 location.hash 처리), URL → 앵커. 카드 ID가 URL 내부에 오면 링크화하지 않음.
-  return s
-    .replace(/@([^\s@,]+)/g, (s, name) => {
-      const known = AB.agents.some(a => a.name === name);
-      const hit = viewer && m.mentions.includes(`,${name},`);
-      return `<span class="${known ? "mention" : ""}${hit && viewer === name ? " mine" : ""}">@${abEsc(name)}</span>`;
-    })
-    .replace(/(?<![/\w])(M[0-9A-Z]{7}-[0-9A-Z]{4})\b/g, '<a href="/#$1">$1</a>')
-    .replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1" target="_blank" rel="noopener">$1</a>');
+  // URL 먼저 자리표시자로 보호(codex R2: @scope/pkg 같은 URL을 @멘션 치환이 훼손) → 멘션·카드 ID → URL 복원.
+  const urls = [];
+  s = s.replace(/(https?:\/\/[^\s<]+)/g, u => `\u0000${urls.push(u) - 1}\u0000`);
+  s = s.replace(/@([^\s@,]+)/g, (s, name) => {
+    const known = AB.agents.some(a => a.name === name);
+    const hit = viewer && m.mentions.includes(`,${name},`);
+    return `<span class="${known ? "mention" : ""}${hit && viewer === name ? " mine" : ""}">@${abEsc(name)}</span>`;
+  });
+  // 카드 ID → 메인 상세(/#<id>, tt-main의 location.hash 처리). 카드 ID는 M+7-4.
+  s = s.replace(/(?<![/\w])(M[0-9A-Z]{7}-[0-9A-Z]{4})\b/g, '<a href="/#$1">$1</a>');
+  return s.replace(/\u0000(\d+)\u0000/g, (_, i) =>
+    `<a href="${urls[i]}" target="_blank" rel="noopener">${urls[i]}</a>`);
 }
 
 function renderBody(m) {

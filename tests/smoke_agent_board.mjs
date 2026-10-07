@@ -39,7 +39,7 @@ const listOnlyReplies = [
   { id: "MREPL-0002", thread_id: "MROOT-0001", author: "agy", body: "@codex 답변", mentions: ",codex,", created_at: "2026-10-05T09:01:00+0900", reads: ["codex"] },
   // M4A55K92-4BZK: 카드 ID(M+7-4) 링크·코드펜스·URL 렌더 — 실제 카드 ID 형식으로 검증(codex F1)
   { id: "MRENDER-0001", thread_id: null, author: "codex",
-    body: "관련 카드 M4580A48-573W 확인.\n```\nls -la /path\n```\n문서 https://example.com/x 참고",
+    body: "관련 카드 M4580A48-573W 확인.\n```\nls -la /path\n```\n문서 https://example.com/x 와 https://x.com/@scope/pkg 참고",
     mentions: "", created_at: "2026-10-05T09:02:00+0900", reads: [] },
 ];
 const withRoot = [
@@ -101,6 +101,11 @@ if (!board.includes("<pre>")) {
 }
 if (!board.includes('href="https://example.com/x"')) {
   console.error("FAIL: URL이 앵커로 렌더되지 않음");
+  process.exit(1);
+}
+// codex R2: @scope/pkg URL — @멘션 치환이 URL 내부를 먹어 링크가 잘리면 안 된다
+if (!board.includes('href="https://x.com/@scope/pkg"')) {
+  console.error("FAIL: @scope 포함 URL이 잘림 — URL 자리표시자 보호 필요");
   process.exit(1);
 }
 console.log("smoke_agent_board OK — 자기완결 초기화 + 루트 보완 조회 + 본문 렌더 확인");
