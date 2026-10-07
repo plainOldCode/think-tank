@@ -1,4 +1,5 @@
 import pytest
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -107,3 +108,17 @@ def test_bare_dash_does_not_swallow_following_files(tmp_path):
     r = scan(repo)
     assert r.returncode == 1
     assert "z-leak.txt" in r.stdout
+
+
+def test_tracked_symlink_not_followed(tmp_path):
+    """tracked 심볼릭 링크가 repo 밖 파일 내용을 출력하지 않는다 (리뷰 #6)."""
+    outside = tmp_path / "outside.txt"
+    outside.write_text(TOKEN + "\n")
+    repo = make_repo(tmp_path)
+    os.symlink(outside, repo / "link.txt")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-qm", "symlink")
+
+    r = scan(repo)
+    assert r.returncode == 0
+    assert TOKEN not in r.stdout
