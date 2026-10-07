@@ -42,7 +42,12 @@ else
     out="$(git ls-files -- ':!.venv' ':!scripts/secret-scan.sh' ':!scripts/secret-patterns.local' | while IFS= read -r f; do
       [ -f "$f" ] || continue
       grep -qI . "$f" 2>/dev/null || continue
-      PAT="$pat" perl -ne 'print "$ARGV:$.:$_" if m/$ENV{PAT}/' "$f"
+      PAT="$pat" perl -e '
+        my $f = $ARGV[0];
+        open(my $fh, "<", $f) or exit 0;  # 3-arg open — two-arg `<>`는 `|`로 끝나는 파일명을 명령으로 실행함(리뷰 P1)
+        my $n = 0;
+        while (my $l = <$fh>) { $n++; print "$f:$n:$l" if $l =~ m/$ENV{PAT}/; }
+      ' "$f"
     done)"
     if [[ -n "$out" ]]; then
       echo "✗ 패턴 [$pat]:"

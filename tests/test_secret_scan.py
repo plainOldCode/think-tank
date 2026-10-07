@@ -63,3 +63,18 @@ def test_conflict_marker_blocks(tmp_path):
     commit_file(repo, "base.md", ["base line"])
     commit_file(repo, "bad.md", ["<<<" + "<<<< HEAD", "clean", "<<<" + "<<<< x"])
     assert scan(repo, "HEAD~1").returncode == 1
+
+
+def test_pipe_filename_not_executed(tmp_path):
+    """두 인자 open(`<>`) 회귀: `|`로 끝나는 tracked 파일명이 명령으로 실행되면 안 된다 (리뷰 P1)."""
+    repo = make_repo(tmp_path)
+    name = "review-marker.txt|"
+    (repo / name).write_text(f"{TOKEN}\n")
+    git(repo, "add", "--", name)
+    git(repo, "commit", "-qm", "pipe filename")
+
+    r = scan(repo)
+    assert not (repo / "review-marker.txt").exists(), (
+        "scanner executed a tracked filename instead of reading it")
+    assert r.returncode == 1
+    assert name in r.stdout
