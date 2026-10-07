@@ -16,7 +16,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-      - run: uv venv --python 3.12 .venv
+      - run: uv venv --python 3.12 --clear .venv  # self-hosted는 워크스페이스 영속 — 잔존 .venv 충돌 방지
       - run: uv pip install -p .venv/bin/python fastapi uvicorn pydantic httpx pytest
       - run: bash scripts/secret-scan.sh .
       - run: .venv/bin/python -m pytest tests/ -q
