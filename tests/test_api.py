@@ -339,6 +339,59 @@ def test_dispatch_failure_system_comment(client, hook_server):
     assert client.get("/agents").json()[0]["last_err"] != ""
 
 
+def test_dispatch_idempotent_3x_one_comment(client, hook_server):
+    """TT 개선#1 (M4DEDPK2-0VSF) 검증 기준 — 동일 dispatch 3회 재전송 → 코멘트 1건."""
+    i = mk(client, title="멱등 카드")
+    client.post("/agents", json={"name": "demo", "base_url": hook_server})
+    payload = {"agent": "demo", "message": "이거 해줘", "author": "human"}
+    d1 = client.post(f"/issues/{i['id']}/dispatch", json=payload)
+    d2 = client.post(f"/issues/{i['id']}/dispatch", json=payload)
+    d3 = client.post(f"/issues/{i['id']}/dispatch", json=payload)
+    assert d1.status_code == 201
+    assert d2.status_code == 200 and d3.status_code == 200  # 기수락은 200
+    dids = {d.json()["id"] for d in (d1, d2, d3)}
+    assert len(dids) == 1  # 동일 did
+    comments = client.get(f"/issues/{i['id']}").json()["comments"]
+    assert [c for c in comments if c["body"] == "이거 해줘"] == [comments[0]] or \
+           sum(1 for c in comments if c["body"] == "이거 해줘") == 1
+    assert len(Hook.received) == 1  # 웹훅 전달도 1회
+    # dispatch 행도 1건
+    rows = client.get(f"/issues/{i['id']}/dispatches").json()
+    assert len(rows) == 1
+
+
+def test_dispatch_idem_new_attempt_after_bump(client, hook_server):
+    """회차(attempt)가 바뀌면 동일 본문이라도 새 멱등키 — 정상 신규 dispatch."""
+    i = mk(client, title="재회차 카드")
+    client.post("/agents", json={"name": "demo", "base_url": hook_server})
+    payload = {"agent": "demo", "message": "동일 본문"}
+    d1 = client.post(f"/issues/{i['id']}/dispatch", json=payload).json()
+    # attempt bump는 claim 경로(서버가 원자적으로 +1) — 일반 PATCH 대상이 아니다
+    client.post(f"/issues/{i['id']}/claim", json={"agent": "worker"})
+    d2 = client.post(f"/issues/{i['id']}/dispatch", json=payload)
+    assert d2.status_code == 201
+    assert d2.json()["id"] != d1["id"]  # 새 did
+    rows = client.get(f"/issues/{i['id']}/dispatches").json()
+    assert len(rows) == 2
+
+
+def test_dispatch_idem_error_retry_redelivers_same_did(client, hook_server):
+    """전달 실패(error) 행에 대한 재전송 — 동일 did로 재전달, 신규 코멘트 없음."""
+    i = mk(client, title="재전달 카드")
+    client.post("/agents", json={"name": "demo", "base_url": hook_server})
+    Hook.mode = "fail"
+    d1 = client.post(f"/issues/{i['id']}/dispatch",
+                     json={"agent": "demo", "message": "재시도 대상"}).json()
+    assert d1["status"] == "error"
+    Hook.mode = "ok"
+    d2 = client.post(f"/issues/{i['id']}/dispatch", json={"agent": "demo", "message": "재시도 대상"})
+    assert d2.status_code == 200
+    assert d2.json()["id"] == d1["id"]  # 동일 did 재전달
+    assert d2.json()["status"] == "ok"
+    comments = client.get(f"/issues/{i['id']}").json()["comments"]
+    assert sum(1 for c in comments if c["body"] == "재시도 대상") == 1  # 코멘트 1건 유지
+    assert len(Hook.received) == 2  # 웹훅은 재전달됨
+
 def test_dispatch_guards(client, hook_server):
     i = mk(client, title="가드")
     assert client.post(f"/issues/{i['id']}/dispatch", json={"agent": "ghost", "message": "x"}).status_code == 404

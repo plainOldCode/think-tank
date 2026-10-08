@@ -1,7 +1,10 @@
 """에이전트·디스패치 라우터 — agent registry, hook dispatch, runner progress."""
+import hashlib
 import json
+import sqlite3
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import JSONResponse
 
 import config
 import db as dbmod
@@ -10,6 +13,30 @@ from models import AgentIn, AgentPatch, DispatchIn, DispatchProgress
 from service import Ctx
 
 router = APIRouter()
+
+
+def _idem_key(issue_id: str, agent: str, attempt: int, message: str) -> str:
+    """기수락 멱등키 (TT 개선#1 요구 3): issue+agent+attempt+본문 해시.
+
+    실행 회차 ID(execution_attempt)와 멱등키는 구분 개념이다 — 키는 attempt를
+    재료로 파생할 뿐이고, attempt가 바뀌면(재회차) 동일 본문이라도 새 키가 되어
+    정상 신규 dispatch로 기록된다. 서버가 파생하므로 클라이언트 합의 불필요.
+    """
+    digest = hashlib.sha256(message.encode("utf-8")).hexdigest()[:16]
+    return f"{issue_id}:{agent}:{attempt}:{digest}"
+
+
+def _dispatch_payload(issue, ag, p, did, issue_id, request, ctx, prev, tail):
+    return {
+        "dispatch_id": did, "issue_id": issue_id, "issue_title": issue["title"],
+        "agent": p.agent, "author": p.author, "message": p.message,
+        "context": prev["context"] if prev else "", "comments": tail,
+        "tt_url": str(request.base_url).rstrip("/"),
+        "model": ag["model"] or "",  # RZ20: 감사 추적 — 이 회차가 어떤 모델로 실행되는지 선언값
+        "work_contract": (p.work_contract if p.work_contract is not None else
+                          (json.loads(issue["work_contract"]) if issue["work_contract"] else ctx.contract)),
+        "execution_attempt": issue["execution_attempt"],
+    }
 
 
 def get_ctx(request: Request) -> Ctx:
@@ -93,26 +120,42 @@ def dispatch(issue_id: str, p: DispatchIn, request: Request, ctx: Ctx = Depends(
             raise HTTPException(404, f"agent {p.agent} 미등록 — POST /agents")
         if not ag["enabled"]:
             raise HTTPException(409, f"agent {p.agent} 비활성")
-        c.execute("INSERT INTO comments (issue_id, author, body, ts) VALUES (?,?,?,?)",
-                  (issue_id, p.author, p.message, dbmod.now()))
-        prev = c.execute("SELECT context FROM dispatches WHERE issue_id=? AND agent=? "
-                         "ORDER BY id DESC LIMIT 1", (issue_id, p.agent)).fetchone()
+        # 기수락 멱등키 (TT 개선#1 요구 3): 동일 issue+agent+attempt+본문 재전송은
+        # 코멘트·dispatch 행 없이 기존 행을 반환한다. error 상태 행은 재전달 대상 —
+        # 동일 did로 재시도(러너 장부 키 안정성 유지), 신규 코멘트는 다시 만들지 않는다.
+        idem = _idem_key(issue_id, p.agent, issue["execution_attempt"], p.message)
+        existing = c.execute("SELECT * FROM dispatches WHERE idem_key=? "
+                             "ORDER BY id DESC LIMIT 1", (idem,)).fetchone()
+        if existing is not None and existing["status"] != "error":
+            return JSONResponse(status_code=200, content=dict(existing))
+        redeliver = existing is not None
+        if not redeliver:
+            # resume context는 신규 행 INSERT 전에 조회해야 이전 회차를 가리킨다
+            # (INSERT 후 조회하면 방금 만든 빈 context 행이 최신이 되어버림).
+            prev = c.execute("SELECT context FROM dispatches WHERE issue_id=? AND agent=? "
+                             "ORDER BY id DESC LIMIT 1", (issue_id, p.agent)).fetchone()
+            c.execute("INSERT INTO comments (issue_id, author, body, ts) VALUES (?,?,?,?)",
+                      (issue_id, p.author, p.message, dbmod.now()))
+            try:
+                did = c.execute("INSERT INTO dispatches (issue_id, agent, author, message, context, status, ts, model, idem_key) "
+                                "VALUES (?,?,?,?,?,?,?,?,?)",
+                                (issue_id, p.agent, p.author, p.message, "", "queued", dbmod.now(),
+                                 ag["model"] or "", idem)).lastrowid
+            except sqlite3.IntegrityError:
+                # 동시 중복 POST — 유니크 인덱스가 원자적으로 승자를 결정한다.
+                c.rollback()
+                row = c.execute("SELECT * FROM dispatches WHERE idem_key=? "
+                                "ORDER BY id DESC LIMIT 1", (idem,)).fetchone()
+                if row and row["status"] != "error":
+                    return JSONResponse(status_code=200, content=dict(row))
+                raise HTTPException(409, "dispatch idempotency race")
+        else:
+            did = existing["id"]
+            prev = c.execute("SELECT context FROM dispatches WHERE issue_id=? AND agent=? "
+                             "ORDER BY id DESC LIMIT 1", (issue_id, p.agent)).fetchone()
         tail = dbmod.comments_of(c, issue_id)[-20:]
-        did = c.execute("INSERT INTO dispatches (issue_id, agent, author, message, context, status, ts, model) "
-                        "VALUES (?,?,?,?,?,?,?,?)",
-                        (issue_id, p.agent, p.author, p.message, "", "queued", dbmod.now(),
-                         ag["model"] or "")).lastrowid
         c.commit()
-    payload = {
-        "dispatch_id": did, "issue_id": issue_id, "issue_title": issue["title"],
-        "agent": p.agent, "author": p.author, "message": p.message,
-        "context": prev["context"] if prev else "", "comments": tail,
-        "tt_url": str(request.base_url).rstrip("/"),
-        "model": ag["model"] or "",  # RZ20: 감사 추적 — 이 회차가 어떤 모델로 실행되는지 선언값
-        "work_contract": (p.work_contract if p.work_contract is not None else
-                          (json.loads(issue["work_contract"]) if issue["work_contract"] else ctx.contract)),
-        "execution_attempt": issue["execution_attempt"],
-    }
+    payload = _dispatch_payload(issue, ag, p, did, issue_id, request, ctx, prev, tail)
     status, detail, dctx = "ok", "", ""
     try:
         code, dctx = service.deliver(ag["base_url"], ag["secret"], payload)
@@ -130,6 +173,8 @@ def dispatch(issue_id: str, p: DispatchIn, request: Request, ctx: Ctx = Depends(
                       (issue_id, "tt-server", f"⚠ hook dispatch #{did} → {p.agent} 실패: {detail}", dbmod.now()))
         c.commit()
         row = c.execute("SELECT * FROM dispatches WHERE id=?", (did,)).fetchone()
+    if redeliver:
+        return JSONResponse(status_code=200, content=dict(row))
     return dict(row)
 
 

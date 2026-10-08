@@ -109,7 +109,8 @@ CREATE TABLE IF NOT EXISTS dispatches (
   last_progress_at TEXT,
   last_tail TEXT NOT NULL DEFAULT '',
   ended_at TEXT,
-  model TEXT NOT NULL DEFAULT ''
+  model TEXT NOT NULL DEFAULT '',
+  idem_key TEXT
 );
 """
 
@@ -180,11 +181,20 @@ def connect(path):
             con.execute(f"ALTER TABLE agents ADD COLUMN {col}")
         except sqlite3.OperationalError:
             pass
-    for col in ("model TEXT NOT NULL DEFAULT ''",):
+    for col in ("model TEXT NOT NULL DEFAULT ''",
+                "idem_key TEXT"):
         try:
             con.execute(f"ALTER TABLE dispatches ADD COLUMN {col}")
         except sqlite3.OperationalError:
             pass
+    # 동시 중복 POST의 원자적 승자 결정용 부분 유니크 인덱스(NULL 다수 허용).
+    # 기존 행은 전부 NULL이라 인덱스 생성이 안전하다.
+    try:
+        con.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_dispatches_idem "
+                    "ON dispatches(idem_key) WHERE idem_key IS NOT NULL")
+        con.commit()
+    except sqlite3.OperationalError:
+        pass
     # dispatch 실행 상태 투영 (TT M3EREF97-FXWQ): 기존 행은 '' = 비-tmux·러너 미수신.
     # status(웹훅 전달 상태)와 층위가 다르다 — 진행 상태의 단일 소스는 러너(서버 재계산 금지).
     for col in ("run_state TEXT NOT NULL DEFAULT ''",
