@@ -311,10 +311,12 @@ def decide(snap):
         marker = f"[needs-merge a{att}]"
         if any(marker in (c.get("body") or "") for c in (i.get("comments") or [])
                if c.get("author") == "probe"):
-            # 이미 needs-merge 노트 발행 — 스탈(연령)만 재평가 후 무음.
-            sa = _stale_act(i, att, snap.get("now") or "")
-            if sa:
-                actions.append(sa)
+            # 이미 needs-merge 노트 발행 — PR이 여전히 없을 때만 스탈 재평가 후 무음
+            # (codex P2: PENDING/FAILURE/draft PR 관측 중엔 'PR 없음' 공지 금지).
+            if not prs_for:
+                sa = _stale_act(i, att, snap.get("now") or "")
+                if sa:
+                    actions.append(sa)
             continue
         drafts = [p for p in prs_for if p.get("isDraft")]
         if drafts and len(drafts) == len(prs_for):

@@ -125,6 +125,17 @@ def test_PR_없음_스탈_기한_이내면_공지_없음():
     assert not [a for a in probe.core.decide(_snap([i])) if a["action"] == "stale-notify"]
 
 
+def test_관측된_PR_있으면_스탈_공지_없다():
+    # P2 회귀: needs-merge 마커 + 25h 경과여도 PR(PENDING/FAILURE/draft)이 보이면 공지 금지
+    i = _issue(comments=_stale_notes(1), updated_at="2026-10-06T09:00:00+0900")
+    pr = {"number": 7, "repo": "plainOldCode/think-tank", "branch": f"tt/{IID}",
+          "title": "", "isDraft": False, "head_sha": "c" * 40, "checks": []}
+    for variant in ({"checks": [{"state": "PENDING"}]}, {"checks": [{"state": "FAILURE"}]},
+                    {"isDraft": True}):
+        assert not [a for a in probe.core.decide(_snap([i], [{**pr, **variant}]))
+                    if a["action"] == "stale-notify"]
+
+
 # --- execute: pr-adopt / stale-notify ---
 
 @pytest.fixture
