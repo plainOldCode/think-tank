@@ -321,6 +321,7 @@ def load_runs():
 
 
 def save_runs(runs):
+    os.makedirs(os.path.dirname(RUNS_PATH), exist_ok=True)  # 신규 상태 dir 자기충족
     tmp = RUNS_PATH + ".tmp"
     with open(tmp, "w") as f:
         json.dump(runs, f, ensure_ascii=False, indent=1)
