@@ -1097,5 +1097,194 @@ class TestFinalizeOwnershipGate(unittest.TestCase):
         self.assertTrue(R.claim_report(self.key, snap, 1))   # 실패 보고는 감시자 몫
 
 
+class TestRunStateMachine(unittest.TestCase):
+    """TT 개선#1 (M4DEDPK2-0VSF) 요구 1 — 상태기계 전이표 단위 테스트."""
+
+    S = R.run_state
+
+    def test_table_covers_all_states(self):
+        self.assertEqual(set(self.S.TRANSITIONS), self.S.STATES)
+
+    def test_happy_path_queued_to_done(self):
+        ent = {"status": "queued"}
+        self.S.transition(ent, "running")
+        self.S.transition(ent, "stalled")
+        self.S.transition(ent, "running")
+        self.S.transition(ent, "finalizing")
+        self.S.transition(ent, "done", exit=0)
+        self.assertEqual(ent["status"], "done")
+        self.assertEqual(ent["exit"], 0)
+
+    def test_terminal_absorbing(self):
+        for t in self.S.TERMINAL:
+            with self.assertRaises(self.S.IllegalTransition):
+                self.S.transition({"status": t}, "running")
+
+    def test_queued_direct_done_illegal(self):
+        with self.assertRaises(self.S.IllegalTransition):
+            self.S.transition({"status": "queued"}, "done")
+
+    def test_entry_untouched_on_illegal(self):
+        ent = {"status": "queued", "issue_id": "X-1"}
+        with self.assertRaises(self.S.IllegalTransition):
+            self.S.transition(ent, "done")
+        self.assertEqual(ent, {"status": "queued", "issue_id": "X-1"})
+
+    def test_unknown_current_state_rejected(self):
+        with self.assertRaises(self.S.IllegalTransition):
+            self.S.transition({"status": "mystery"}, "running")
+
+    def test_stalled_recovery_and_kill_paths(self):
+        self.S.transition({"status": "running", "a": 1}, "stalled")
+        self.S.transition({"status": "stalled"}, "running")
+        self.S.transition({"status": "stalled"}, "finalizing")
+        self.S.transition({"status": "stalled"}, "failed", detail="stall-killed")
+
+    def test_active_includes_new_states(self):
+        self.assertIn("stalled", self.S.ACTIVE)
+        self.assertIn("finalizing", self.S.ACTIVE)
+        self.assertNotIn("done", self.S.ACTIVE)
+
+
+class TestStalledLedgerState(unittest.TestCase):
+    """TT 개선#1 요구 1·4 — STALL 통지 시 장부 stalled, 진행 재관찰 시 running 복귀."""
+
+    def setUp(self):
+        self.n = str(self.id()).rsplit(".", 1)[-1]
+        self.issue = "STL-" + self.n
+        self.key = "%s#911" % self.issue
+        self.orig_comment = R.tt_comment
+        self.orig_fp = R.pane_fingerprint
+        self.orig_tmux = R.tmux_run
+        self.comments = []
+        R.tt_comment = lambda i, b: self.comments.append((i, b))
+        R.tmux_run = lambda *a, **k: subprocess.CompletedProcess(a, 0)
+
+    def tearDown(self):
+        R.tt_comment = self.orig_comment
+        R.pane_fingerprint = self.orig_fp
+        R.tmux_run = self.orig_tmux
+
+    def _seed_running(self):
+        R.save_runs({self.key: {"status": "running", "issue_id": self.issue,
+                                "dispatch_id": 911, "session": "tt-stl-911",
+                                "round": 1, "started": time.time()}})
+
+    def test_stall_notify_sets_stalled_ledger_state(self):
+        self._seed_running()
+        R.pane_fingerprint = lambda name, key=None: "fixedfp"
+        now = time.time()
+        self.assertFalse(R.stall_check(self.key, R.get_run(self.key), now))
+        self.assertTrue(R.stall_check(self.key, R.get_run(self.key),
+                                      now + R.STALL_SILENCE_S + 5))
+        ent = R.get_run(self.key)
+        self.assertEqual(ent["status"], "stalled")
+        self.assertTrue(ent["stall_notified"])
+
+    def test_progress_recovery_returns_to_running(self):
+        self._seed_running()
+        R.pane_fingerprint = lambda name, key=None: "fixedfp"
+        now = time.time()
+        R.stall_check(self.key, R.get_run(self.key), now)
+        R.stall_check(self.key, R.get_run(self.key), now + R.STALL_SILENCE_S + 5)
+        self.assertEqual(R.get_run(self.key)["status"], "stalled")
+        # 진행 신호 재관찰(지문 변경) → running 복귀
+        R.pane_fingerprint = lambda name, key=None: "newfp"
+        self.assertFalse(R.stall_check(self.key, R.get_run(self.key), now + 10))
+        self.assertEqual(R.get_run(self.key)["status"], "running")
+
+    def test_stalled_entry_still_reportable_and_killable(self):
+        self._seed_running()
+        R.pane_fingerprint = lambda name, key=None: "fixedfp"
+        now = time.time()
+        R.stall_check(self.key, R.get_run(self.key), now)
+        R.stall_check(self.key, R.get_run(self.key), now + R.STALL_SILENCE_S + 5)
+        # stalled에서도 물리 완료 보고 가능 (REPORTABLE)
+        snap = R.get_run(self.key)
+        self.assertTrue(R.update_run_if_round(self.key, snap, status="done",
+                                              exit=0, ended=time.time()))
+        self.assertEqual(R.get_run(self.key)["status"], "done")
+
+
+class TestLateDoneRoundRegression(unittest.TestCase):
+    """TT 개선#1 검증 기준 — 이전 회차 감시자의 늦은 done 쓰기 거부 (A→B→C→B 경계).
+
+    finalize는 보고를 lock 밖 네트워크 호출로 하므로 반환 시점이 늦다. 그 사이
+    재회차 선점(A→B→C, 대상 재방문 C→B)이 장부를 교체했으면 이전 회차 스냅샷의
+    update_run_if_round는 반드시 거부된다(409 CAS와 이중 방어).
+    """
+
+    ISSUE = "ABC-1"
+    KEY = "ABC-1#701"
+
+    def setUp(self):
+        self.orig_comment = R.tt_comment
+        R.tt_comment = lambda i, b: None
+
+    def tearDown(self):
+        R.tt_comment = self.orig_comment
+
+    def _seed(self, round_no, sha, session):
+        R.save_runs({self.KEY: {"status": "running", "issue_id": self.ISSUE,
+                                "dispatch_id": 701, "session": session,
+                                "target_sha": sha, "round": round_no}})
+        return R.get_run(self.KEY)
+
+    def test_round_a_late_done_rejected_at_b(self):
+        snap_a = self._seed(1, "aaaaaaaa", "tt-abc-a")
+        self._seed(2, "bbbbbbbb", "tt-abc-b-r2")
+        self.assertFalse(R.update_run_if_round(self.KEY, snap_a, status="done",
+                                               exit=0, ended=time.time()))
+        self.assertEqual(R.get_run(self.KEY)["round"], 2)
+        self.assertEqual(R.get_run(self.KEY)["status"], "running")
+
+    def test_round_b_late_done_rejected_at_c(self):
+        snap_b = self._seed(2, "bbbbbbbb", "tt-abc-b-r2")
+        self._seed(3, "cccccccc", "tt-abc-c-r3")
+        self.assertFalse(R.update_run_if_round(self.KEY, snap_b, status="done",
+                                               exit=0, ended=time.time()))
+        self.assertEqual(R.get_run(self.KEY)["round"], 3)
+
+    def test_revisited_target_round4_rejects_round2_write(self):
+        # A→B→C→B 경계: 대상 sha 재방문으로 round 4(대상 b)가 되어도
+        # round 2 스냅샷의 늦은 done은 회차 비교로 거부된다.
+        snap_b = self._seed(2, "bbbbbbbb", "tt-abc-b-r2")
+        self._seed(4, "bbbbbbbb", "tt-abc-b-r4")
+        self.assertFalse(R.update_run_if_round(self.KEY, snap_b, status="done",
+                                               exit=0, ended=time.time()))
+        self.assertEqual(R.get_run(self.KEY)["round"], 4)
+
+    def test_current_round_done_accepted(self):
+        snap_c = self._seed(3, "cccccccc", "tt-abc-c-r3")
+        self.assertTrue(R.update_run_if_round(self.KEY, snap_c, status="done",
+                                              exit=0, ended=time.time()))
+        self.assertEqual(R.get_run(self.KEY)["status"], "done")
+
+    def test_claim_report_enters_finalizing_once(self):
+        self._seed(1, "aaaaaaaa", "tt-abc-a")
+        snap = R.get_run(self.KEY)
+        self.assertTrue(R.claim_report(self.KEY, snap, 0))
+        ent = R.get_run(self.KEY)
+        self.assertEqual(ent["status"], "finalizing")
+        self.assertEqual(ent["claimed_report"], 1)
+        # 동일 회차 재 claim — 거부
+        self.assertFalse(R.claim_report(self.KEY, snap, 0))
+
+    def test_finalizing_entry_replaced_by_preempt_rejects_late_write(self):
+        snap = self._seed(1, "aaaaaaaa", "tt-abc-a")
+        R.claim_report(self.KEY, snap, 0)  # finalizing 진입
+        self._seed(2, "bbbbbbbb", "tt-abc-b-r2")  # 선점이 엔트리 교체
+        self.assertFalse(R.update_run_if_round(self.KEY, snap, status="done",
+                                               exit=0, ended=time.time()))
+        self.assertEqual(R.get_run(self.KEY)["round"], 2)
+
+    def test_release_covers_stalled_and_finalizing(self):
+        self._seed(1, "aaaaaaaa", "tt-abc-a")
+        R.claim_report(self.KEY, R.get_run(self.KEY), 0)  # finalizing
+        R.release_issue(self.ISSUE, "test")
+        self.assertEqual(R.get_run(self.KEY)["status"], "cancelled")
+
+
+
 if __name__ == "__main__":
     unittest.main()

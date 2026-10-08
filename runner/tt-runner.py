@@ -33,6 +33,9 @@ import urllib.request
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import run_state  # 상태기계 — 전이표 유일 결정 지점 (TT 개선#1)
+
 STATE_DIR = os.path.expanduser(os.environ.get("TT_RUNNER_STATE",
                                               "~/.local/state/tt-runner"))
 RUNS_PATH = os.path.join(STATE_DIR, "runs.json")
@@ -389,7 +392,7 @@ def claim_dispatch(p, ctx_session=None, ctx_alive=False):
             # 이하)에서 선점이 옛 상태를 읽어 응답·실행이 갈라지는 경합 제거(PR#47
             # 리뷰 R1 3차). 실패(rc!=0)는 blocked/failed 분류가 tail 분석을 필요로
             # 하므로 감시자 몫으로 남긴다 — finalize와 동일한 조건만 흡수한다.
-            if prev.get("status") == "running":
+            if prev.get("status") in run_state.REPORTABLE:
                 base = key.replace("#", "_")
                 if os.path.exists(os.path.join(RUNTIME_DIR, base + ".done")):
                     try:
@@ -404,8 +407,12 @@ def claim_dispatch(p, ctx_session=None, ctx_alive=False):
                         rid = _round_id(prev)
                         owns_report = not (rid is not None
                                            and prev.get("claimed_report") == rid)
-                        prev.update(status="done", exit=0, ended=time.time(),
-                                    detail="finalize-absorbed")
+                        # 상태기계: running/stalled → finalizing → done (흡수는 즉시
+                        # 종료 보고 경로와 동일한 전이를 통과 — 전이표 유일 결정)
+                        if prev.get("status") != "finalizing":
+                            run_state.transition(prev, "finalizing")
+                        run_state.transition(prev, "done", exit=0, ended=time.time(),
+                                             detail="finalize-absorbed")
                         if owns_report and rid is not None:
                             prev["claimed_report"] = rid
                         save_runs(runs)
@@ -486,6 +493,26 @@ def update_run(key, **fields):
             save_runs(runs)
 
 
+def set_status(key, new, **fields):
+    """상태기계 전이표 경유 장부 상태 갱신. 불법 전이는 쓰지 않고 로그만 남긴다.
+
+    반환: 실제로 전이했으면 True. 호출부는 성공을 가정한 후속 네트워크 보고를
+    하지 않도록 반환값을 존중할 것 (TT 개선#1 요구 1).
+    """
+    with ledger_lock():
+        runs = load_runs()
+        ent = runs.get(key)
+        if ent is None:
+            return False
+        try:
+            run_state.transition(ent, new, **fields)
+        except run_state.IllegalTransition as e:
+            log("ILLEGAL-TRANSITION key=%s %s (요청 무시)" % (key, e))
+            return False
+        save_runs(runs)
+        return True
+
+
 def get_run(key):
     with ledger_lock():
         return load_runs().get(key)
@@ -530,21 +557,37 @@ def claim_report(key, snap, exit_code):
             return False
         if rid is not None:
             cur["claimed_report"] = rid
-            save_runs(runs)
+        # 상태기계: 보고 소유 획득 = finalizing 진입 (TT 개선#1 요구 1·2).
+        # 이미 finalizing/종단이면 전이 없음 — 소유 판정은 위 CAS가 담당.
+        try:
+            run_state.transition(cur, "finalizing")
+        except run_state.IllegalTransition as e:
+            log("CLAIM-REPORT state %s (key=%s) — finalizing 전이 생략" % (e, key))
+        save_runs(runs)
         return True
 
 
 def update_run_if_round(key, snap, **fields):
-    """finalize 전환용 조건부 갱신 — 관찰 회차가 아직 현재 회차이고 상태가 running일
-    때만 쓴다 (PR#47 리뷰 R3). 이전 회차 감시자의 늦은 반환(finalize는 보고를 lock
+    """finalize 전환용 조건부 갱신 — 관찰 회차가 아직 현재 회차이고 상태가 보고
+    가능(REPORTABLE: running/stalled/finalizing)일 때만 쓴다 (PR#47 리뷰 R3 +
+    TT 개선#1 요구 1·2). 이전 회차 감시자의 늦은 반환(finalize는 보고를 lock
     밖 네트워크 호출로 하므로 반환 시점이 늦다)이 재회차 엔트리(queued/running)를
     done/failed로 덮지 않게 한다. 반환: 실제로 썼으면 True."""
+    new_status = fields.get("status")
+    if new_status is not None and new_status not in run_state.TERMINAL:
+        raise ValueError("update_run_if_round는 종단 상태 전이 전용: %s" % new_status)
     with ledger_lock():
         runs = load_runs()
         cur = runs.get(key)
-        if cur is None or cur.get("status") != "running" or not _observes_round(cur, snap):
+        if (cur is None or cur.get("status") not in run_state.REPORTABLE
+                or not _observes_round(cur, snap)):
             return False
-        cur.update(fields)
+        try:
+            run_state.transition(cur, new_status, **{k: v for k, v in fields.items()
+                                                     if k != "status"})
+        except run_state.IllegalTransition as e:
+            log("ILLEGAL-TRANSITION key=%s %s (요청 무시)" % (key, e))
+            return False
         save_runs(runs)
         return True
 
@@ -886,14 +929,14 @@ def execute_once(p, session):
     message = ent.get("message", "")
     prof = resolve_profile(p)
     if prof is None:
-        update_run(key, status="failed", detail="profile-unknown")
+        set_status(key, "failed", detail="profile-unknown")
         log("REJECT dispatch#%s agent=%s (레지스트리 미등록/미설치)" % (p["dispatch_id"], p.get("agent")))
         tt_comment(ent["issue_id"], "runner:%s dispatch#%s 거부 — agent '%s' 미등록이거나 CLI 미설치 (장부:%s)"
                    % (machine_name(), p["dispatch_id"], p.get("agent"), key))
         return
     pat = destructive_hit(message)
     if pat and not ent.get("approved"):
-        update_run(key, status="held", gate=pat)
+        set_status(key, "held", gate=pat)
         tt_comment(ent["issue_id"],
                    "runner:%s dispatch#%s 보류 — 파괴적 패턴(%s) 감지. 계속하려면 '승인'으로 재-dispatch. (장부:%s)"
                    % (machine_name(), p["dispatch_id"], pat, key))
@@ -903,7 +946,7 @@ def execute_once(p, session):
     # (M3BZS1G3 ③) 1차 관문: 허용 root 밖/이상 값은 실행 시작 전 거부.
     real_ws, why = guard_workspace(prof, workspace)
     if why:
-        update_run(key, status="failed", detail="workspace-guard:" + why, ended=time.time())
+        set_status(key, "failed", detail="workspace-guard:" + why, ended=time.time())
         tt_comment(ent["issue_id"], "runner:%s dispatch#%s 거부 — 워크스페이스 불변식 위반(%s: %s) (장부:%s)"
                    % (machine_name(), p["dispatch_id"], why, workspace, key))
         log("WORKSPACE-GUARD dispatch#%s rejected=%s (%s)" % (p["dispatch_id"], workspace, why))
@@ -916,7 +959,7 @@ def execute_once(p, session):
     ctx_session = parse_ctx(ent.get("context_in"))
     if ctx_session and ctx_session == ent.get("session") and session_alive(ctx_session) \
             and continue_session(prof, ctx_session, message, key):
-        update_run(key, status="running", mode="continue", started=time.time())
+        set_status(key, "running", mode="continue", started=time.time())
         progress_projection(ent, "running")  # 계속 재지시도 실행 개시 — 동일 투영
         tt_comment(ent["issue_id"], "runner:%s dispatch#%s → tmux %s 계속 (send-keys)"
                    % (machine_name(), p["dispatch_id"], ctx_session))
@@ -927,12 +970,12 @@ def execute_once(p, session):
     try:
         start_session(key, prof, ent["session"], workspace)
     except Exception as e:
-        update_run(key, status="failed", detail=str(e))
+        set_status(key, "failed", detail=str(e))
         progress_projection(ent, "failed")  # 시작 실패도 활성 목록에 남기지 않는다
         tt_comment(ent["issue_id"], "runner:%s dispatch#%s 시작 실패: %s" % (p["dispatch_id"], mask(str(e))))
         log("START-FAIL dispatch#%s %s" % (p["dispatch_id"], e))
         return
-    update_run(key, status="running", mode="new", started=time.time(), workspace=workspace,
+    set_status(key, "running", mode="new", started=time.time(), workspace=workspace,
                timeout_s=prof.get("timeout_s", DEFAULT_TIMEOUT_S), profile=prof.get("profile_name"))
     progress_projection(ent, "running")  # 세션 기동 확인(tmux new-session rc=0) 후
     reround = (" 재검토 재실행: 대상 %s→%s" % (ent["prev_sha"], ent["target_sha"])
@@ -954,7 +997,7 @@ def maybe_approve_release(p):
         return False
     orig = {"dispatch_id": ent["dispatch_id"], "issue_id": ent["issue_id"],
             "agent": ent["agent"], "message": ent["message"], "context": ent.get("context_in", "")}
-    update_run(held, status="queued", gate=None, approved=True)
+    set_status(held, "queued", gate=None, approved=True)
     tt_comment(ent["issue_id"], "runner:%s dispatch#%s 승인 — 원 메시지 실행 시작 (장부:%s)"
                % (machine_name(), ent["dispatch_id"], held))
     log("GATE-RELEASED %s by dispatch#%s" % (held, p["dispatch_id"]))
@@ -1127,6 +1170,10 @@ def stall_check(key, ent, now):
         return False
     if fp != ent.get("pane_fp"):
         update_run(key, pane_fp=fp, pane_ts=now)
+        if ent.get("status") == "stalled":
+            set_status(key, "running", stall_notified=False)
+            log("STALL-RECOVER dispatch#%s session=%s — 진행 신호 재관찰, running 복귀"
+                % (ent.get("dispatch_id"), session))
         return False
     silent_for = now - (ent.get("pane_ts") or ent.get("started") or now)
     if silent_for > STALL_SILENCE_S + STALL_KILL_AFTER_S:
@@ -1140,7 +1187,7 @@ def stall_check(key, ent, now):
         tt_comment(ent["issue_id"], "runner:%s dispatch#%s STALL-killed — %ds 이상 pane 무음(exit와 무관) session=%s"
                    % (machine_name(), ent["dispatch_id"], int(silent_for), session))
         log("STALL-KILL dispatch#%s silent=%ds session=%s" % (ent["dispatch_id"], int(silent_for), session))
-        update_run(key, status="failed", detail="stall-killed", ended=time.time())
+        set_status(key, "failed", detail="stall-killed", ended=time.time())
         return True
     if silent_for > STALL_SILENCE_S and not ent.get("stall_notified"):
         progress_projection(ent, "stalled")  # stalled 판정 소유권: 오직 이 지점(서버 재계산 금지)
@@ -1149,7 +1196,7 @@ def stall_check(key, ent, now):
                    % (machine_name(), ent["dispatch_id"], int(silent_for), STALL_KILL_AFTER_S,
                       session_tail(session, 800)))
         log("STALL dispatch#%s silent=%ds session=%s" % (ent["dispatch_id"], int(silent_for), session))
-        update_run(key, stall_notified=True)
+        set_status(key, "stalled", stall_notified=True)
         return True
     return False
 
@@ -1157,7 +1204,7 @@ def stall_check(key, ent, now):
 def watch_once():
     runs = load_runs()
     for key, ent in list(runs.items()):
-        if ent.get("status") != "running":
+        if ent.get("status") not in run_state.STALLABLE:
             continue
         base = key.replace("#", "_")
         done = os.path.join(RUNTIME_DIR, base + ".done")
@@ -1188,7 +1235,7 @@ def watch_once():
             tt_comment(ent["issue_id"], "runner:%s dispatch#%s TIMEOUT killed at %s session=%s"
                        % (machine_name(), ent["dispatch_id"], time.strftime("%F %T"), session))
             log("TIMEOUT dispatch#%s killed session=%s" % (ent["dispatch_id"], session))
-            update_run(key, status="failed", detail="timeout", ended=time.time())
+            set_status(key, "failed", detail="timeout", ended=time.time())
             continue
         # 진행 투영 tick (TT M3EREF97-FXWQ): 지문 변경 = 진행, 변경 없어도 PROGRESS_S 주기마다
         # 갱신 POST(last_progress_at 전진). stalled/복구 판정은 stall_check 소유 —
@@ -1411,11 +1458,16 @@ def release_issue(issue_id, reason=""):
         runs = load_runs()
         targets = [k for k, r in runs.items()
                    if str(r.get("issue_id")) == str(issue_id)
-                   and r.get("status") in ("queued", "running", "held")]
+                   and r.get("status") in run_state.ACTIVE]
+        done_keys = []
         for k in targets:
-            runs[k]["status"] = "cancelled"
-            runs[k]["detail"] = "release-command"
-            runs[k]["ended"] = time.time()
+            try:
+                run_state.transition(runs[k], "cancelled", detail="release-command",
+                                     ended=time.time())
+                done_keys.append(k)
+            except run_state.IllegalTransition as e:
+                log("RELEASE-TRANSITION-FAIL key=%s %s" % (k, e))
+        targets = done_keys
         if targets:
             save_runs(runs)
     for k in targets:
