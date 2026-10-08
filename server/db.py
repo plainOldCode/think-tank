@@ -111,8 +111,15 @@ CREATE TABLE IF NOT EXISTS dispatches (
   ended_at TEXT,
   model TEXT NOT NULL DEFAULT '',
   idem_key TEXT,
-  delivery_lease TEXT,
-  report_session TEXT
+  delivery_lease TEXT
+);
+CREATE TABLE IF NOT EXISTS dispatch_reports (
+  -- 종료 보고 접수 이력 (R10): (dispatch, session) 유니크 — 응답 유실 재시도
+  -- 멱등 + 끼어든 세션 재시도에서도 동일 보고 재접수 방지
+  dispatch_id INTEGER NOT NULL,
+  session TEXT NOT NULL,
+  ts TEXT NOT NULL,
+  PRIMARY KEY (dispatch_id, session)
 );
 """
 

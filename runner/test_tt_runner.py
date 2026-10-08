@@ -1482,10 +1482,10 @@ class TestStaleReportSuppression(unittest.TestCase):
         outcome = R.finalize(None, self.KEY, snap, 0)
         self.assertEqual(outcome, "done")
         self.assertEqual(self.comments, [])  # CAS 우회 폴백 없음
-        self.assertTrue(os.path.exists(R._pending_path(self.KEY)))
+        self.assertTrue(os.path.exists(R._pending_path(self.KEY, "tt-stale-801")))
         self.prog = [True]  # 서버 회복 — CAS 경유 재전송
         R._flush_pending_reports()
-        self.assertFalse(os.path.exists(R._pending_path(self.KEY)))
+        self.assertFalse(os.path.exists(R._pending_path(self.KEY, "tt-stale-801")))
         self.assertEqual(R.get_run(self.KEY)["status"], "done")
 
     def test_replaced_entry_rejects_stale_terminal_write(self):
@@ -1577,7 +1577,7 @@ class TestReviewEdgeRegressions(unittest.TestCase):
         R.save_runs({self.KEY: dict(snap, status="running")})
         self.prog = [False]
         R.tt_http_raw = lambda m, p, payload=None: [  # GET dispatches 응답 모사
-            {"id": 901, "run_state": "finished"}]
+            {"id": 901, "run_state": "finished", "report_session": "tt-stale-801"}]
         outcome = R.finalize(None, self.KEY, R.get_run(self.KEY), 0)
         self.assertEqual(outcome, "done")
         self.assertEqual(self.comments, [])
@@ -1589,11 +1589,11 @@ class TestReviewEdgeRegressions(unittest.TestCase):
         outcome = R.finalize(None, self.KEY, R.get_run(self.KEY), 0)
         self.assertEqual(outcome, "done")
         self.assertEqual(self.comments, [])  # /comments 폴백 없음 — CAS 우회 차단
-        self.assertTrue(os.path.exists(R._pending_path(self.KEY)))
+        self.assertTrue(os.path.exists(R._pending_path(self.KEY, "tt-edge-901")))
         # 서버 회복 — CAS 경유 재전송 성공, 파일 정리 (코멘트 경로 아님)
         self.prog = [True]
         R._flush_pending_reports()
-        self.assertFalse(os.path.exists(R._pending_path(self.KEY)))
+        self.assertFalse(os.path.exists(R._pending_path(self.KEY, "tt-edge-901")))
         self.assertEqual(self.comments, [])
 
     def test_r7_observation_failure_discards_cross_round_silence(self):
@@ -1620,6 +1620,40 @@ class TestReviewEdgeRegressions(unittest.TestCase):
             self.assertGreater(hb2["pane_ts"], now - 600)
         finally:
             R.pane_fingerprint = orig_fp
+
+    def test_r11_terminal_recheck_requires_same_round_report(self):
+        """리뷰 4차 R11 — 응답 유실 재확인이 보고 접수 회차(report_session)까지
+        대조한다: 이전 회차의 terminal 기록을 새 회차 접수 성공으로 오인하면 새
+        회차 보고가 소실된다. 불일치면 미접수 → pending 보존."""
+        snap = self._seed()  # session=tt-stale-801, round 1
+        self.prog = [False]
+        R.tt_http_raw = lambda m, p, payload=None: [
+            {"id": 901, "run_state": "finished", "report_session": "tt-stale-801-abc1234-r2"}]
+        outcome = R.finalize(None, self.KEY, snap, 0)
+        self.assertEqual(outcome, "done")
+        self.assertEqual(self.comments, [])
+        # report_session 불일치 — 접수 확인 안 됨 → pending 보존(재전송 대상)
+        self.assertTrue(os.path.exists(R._pending_path(self.KEY, "tt-edge-901")))
+
+    def test_r12_pending_paths_are_per_round(self):
+        """리뷰 4차 R12 — pending은 회차(세션)별 불변 파일: 이전 보고 flush의 늦은
+        성공이 다음 회차 보관 파일을 덮어쓰거나 지우지 않는다."""
+        self.assertNotEqual(R._pending_path("K#1", "s1"), R._pending_path("K#1", "s1-abc-r2"))
+        ent1 = {"issue_id": "R12", "dispatch_id": 1, "session": "s1"}
+        ent2 = {"issue_id": "R12", "dispatch_id": 1, "session": "s1-abc1234-r2"}
+        R._store_pending_report("R12#1", "finished", "보고 A", ent1)
+        path_a = R._pending_path("R12#1", "s1")
+        # A 전송 중에 B 보고 기록 — 단일 경로 구조라면 같은 경로를 덮어써 A를 잃음
+        R._store_pending_report("R12#1", "finished", "보고 B", ent2)
+        path_b = R._pending_path("R12#1", "s1-abc1234-r2")
+        self.assertNotEqual(path_a, path_b)
+        self.assertIn("보고 A", open(path_a).read())  # A가 덮어써지지 않음
+        # A의 늦은 성공 — A 경로만 정리, B 보존
+        os.remove(path_a)
+        self.assertFalse(os.path.exists(path_a))
+        self.assertTrue(os.path.exists(path_b))
+        self.assertIn("보고 B", open(path_b).read())
+        os.remove(path_b)
 
     def test_r6_capture_failure_never_kills(self):
         """R6 — 관찰 실패(ok=False) 순회는 과거 지문이 임계를 넘어도 판정 스킵."""

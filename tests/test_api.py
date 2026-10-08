@@ -497,6 +497,43 @@ def test_dispatch_recovery_completion_boundary(client, hook_server):
     assert len(Hook.received) == 1
 
 
+def test_dispatch_error_lease_blocks_concurrent_resend(client, hook_server):
+    """리뷰 4차 R4 — error 행 복구 전달 진행 중(신선 lease)의 동시 재전송도
+    기수락된다: 자격(status)과 lease 신선도를 같은 조건에 넣어 전달 중 경계 차단."""
+    import sqlite3 as _sq
+    from datetime import datetime
+    i = mk(client, title="error lease 경합")
+    client.post("/agents", json={"name": "demo", "base_url": hook_server})
+    payload = {"agent": "demo", "message": "error lease 대상"}
+    d1 = client.post(f"/issues/{i['id']}/dispatch", json=payload).json()
+    con = _sq.connect(client.app.state.ctx.db_path)
+    # A가 error 행 복구를 선점한 직후(웹훅 대기 중) 상태 모사
+    con.execute("UPDATE dispatches SET status='error', detail='HTTP 500', delivery_lease=? WHERE id=?",
+                (datetime.now().astimezone().strftime("%Y-%m-%dT%H:%M:%S%z"), d1["id"]))
+    con.commit()
+    con.close()
+    Hook.received.clear()
+    d2 = client.post(f"/issues/{i['id']}/dispatch", json=payload)
+    assert d2.status_code == 200 and d2.json()["id"] == d1["id"]
+    assert len(Hook.received) == 0  # 진행 중 복구 — 이중 웹훅 없음
+
+
+def test_dispatch_report_dedup_interleaved_sessions(client, hook_server):
+    """리뷰 4차 R10 — 접수 이력이 (dispatch, session) 유니크: A 접수 → B-r2 접수 →
+    A 응답 유실 재시도 순서에서도 A 보고는 다시 접수되지 않는다(총 2건)."""
+    i = mk(client, title="끼어든 세션 dedup")
+    client.post("/agents", json={"name": "demo", "base_url": hook_server})
+    d = client.post(f"/issues/{i['id']}/dispatch", json={"agent": "demo", "message": "m"}).json()
+    url = f"/issues/{i['id']}/dispatches/{d['id']}/progress"
+    pa = {"state": "finished", "exit": 0, "comment": "runner:x dispatch#%d done exit=0 session=A" % d["id"], "session": "tt-x-1-sha1-r1"}
+    pb = {"state": "finished", "exit": 0, "comment": "runner:x dispatch#%d done exit=0 session=B" % d["id"], "session": "tt-x-1-sha2-r2"}
+    assert client.post(url, json=pa).status_code == 200   # A 접수
+    assert client.post(url, json=pb).status_code == 200   # B-r2 접수
+    assert client.post(url, json=pa).status_code == 200   # A 응답 유실 재시도
+    got = client.get(f"/issues/{i['id']}").json()
+    assert len([c for c in got["comments"] if "done exit=0" in c["body"]]) == 2
+
+
 def test_dispatch_progress_terminal_report_dedup(client, hook_server):
     """리뷰 3차 R10 — 응답 유실 재시도: 동일 dispatch+회차(세션) 종료 보고는
     한 번만 접수된다(200 멱등). 새 회차(다른 세션)는 정상 접수된다."""

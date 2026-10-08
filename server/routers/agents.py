@@ -20,12 +20,11 @@ DELIVERY_RECOVER_S = 30  # webhook 타임아웃(10s)의 3배 — 전달 lease �
 
 
 def _redeliver_wanted(row) -> bool:
-    """기수락 예외 판정 (R4): error 행은 항상 재전달. queued 행은 전달 lease가
-    없거나 만료됐을 때만 — lease는 "전달 소유권"으로, 진행 중 재전송(신선한
-    lease)은 기수락, 전달 전 크래시 잔재(무 lease·만료)는 복구 대상이다."""
-    if row["status"] == "error":
-        return True
-    if row["status"] != "queued":
+    """기수락 예외 판정 (R4): 재전달 자격(status ∈ error/queued)과 전달 lease
+    신선도를 함께 본다. lease는 "전달 소유권" — 신선한 lease(복구 전달 진행 중인
+    error 포함)는 기수락, 무 lease·만료(전달 전 크래시 잔재)만 복구 대상이다.
+    선점 UPDATE와 동일 조건이라 경합에서도 한쪽만 웹훅을 친다."""
+    if row["status"] not in ("error", "queued"):
         return False
     lease = row["delivery_lease"]
     if not lease:
@@ -189,9 +188,9 @@ def dispatch(issue_id: str, p: DispatchIn, request: Request, ctx: Ctx = Depends(
             # 완료 경계도 차단: A가 복구 전달을 끝내 status=ok로 확정한 뒤 B의 늦은
             # 선점은 실패한다(2차 리뷰 R4). 선점 실패 = 이미 전달됐거나 전달 진행 중.
             res = c.execute(
-                "UPDATE dispatches SET delivery_lease=? WHERE id=? AND ("
-                "status='error' OR (status='queued' AND "
-                "(delivery_lease IS NULL OR delivery_lease < ?)))",
+                "UPDATE dispatches SET delivery_lease=? WHERE id=? AND "
+                "status IN ('error','queued') AND "
+                "(delivery_lease IS NULL OR delivery_lease < ?)",
                 (dbmod.now(), did,
                  (datetime.now().astimezone() - timedelta(seconds=DELIVERY_RECOVER_S))
                  .strftime("%Y-%m-%dT%H:%M:%S%z")))
@@ -270,22 +269,22 @@ def dispatch_progress(issue_id: str, dispatch_id: int, p: DispatchProgress, requ
             # 소유 — 서버 재계산 금지).
             if p.state in ("finished", "failed"):
                 res = c.execute(
-                    "UPDATE dispatches SET run_state=?, ended_at=? WHERE id=? AND "
+                    "UPDATE dispatches SET run_state=?, ended_at=?, report_session=? WHERE id=? AND "
                     "(attempt IS NULL OR attempt >= "
                     "(SELECT i.execution_attempt FROM issues i WHERE i.id=dispatches.issue_id))",
-                    (p.state, ts, dispatch_id))
+                    (p.state, ts, p.session or "", dispatch_id))
                 if res.rowcount != 1:
                     raise HTTPException(
                         409, f"stale round report: dispatch#{dispatch_id} attempt={row['attempt']} "
                              f"< issue current execution_attempt — 이전 회차 종료 보고 거부")
                 if p.comment:
-                    # 원자적 dedup (R10): 응답 유실 재시도 — 첫 요청이 커밋됐어도
-                    # 같은 회차(세션) 보고는 다시 INSERT하지 않는다(200 멱등).
-                    # 새 회차는 세션명이 달라(report_session 불일치) 정상 접수된다.
+                    # 원자적 dedup (R10): 접수 이력을 (dispatch, session) 유니크 키로
+                    # 보존한다 — 마지막 세션만 기억하면 A→B-r2→A 재시도에서 A 보고가
+                    # 다시 접수된다(4차 리뷰 R10). INSERT OR IGNORE의 rowcount로 한 번만
+                    # 접수: 동일 회차 재시도는 200 멱등, 새 회차는 새 이력으로 정상 접수.
                     dup = c.execute(
-                        "UPDATE dispatches SET report_session=? WHERE id=? "
-                        "AND (report_session IS NULL OR report_session != ?)",
-                        (p.session or "", dispatch_id, p.session or ""))
+                        "INSERT OR IGNORE INTO dispatch_reports (dispatch_id, session, ts) "
+                        "VALUES (?,?,?)", (dispatch_id, p.session or "", dbmod.now()))
                     if dup.rowcount:
                         # 종료 투영과 완료 보고를 같은 트랜잭션에 접수 (R3: CAS 통과 후
                         # 별도 /comments 사이 회차 변경 창 제거 — 409면 코멘트도 없다).

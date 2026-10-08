@@ -248,8 +248,15 @@ def _project_with_retry(ent, state, comment):
     return proj
 
 
-def _pending_path(key):
-    return os.path.join(RUNTIME_DIR, key.replace("#", "_") + ".pending.json")
+def _pending_path(key, session=None):
+    """pending 보고 경로 — 회차(세션)별 불변 파일 (리뷰 R12). issue#dispatch만으로
+    묶으면 이전 보고 flush의 늦은 성공이 다음 회차 보관 파일을 덮어쓰거나 지운다.
+    세션명은 회차 고유(재회차 접미 포함)라 파일이 겹치지 않는다."""
+    base = key.replace("#", "_")
+    if session:
+        safe = re.sub(r"[^A-Za-z0-9_-]", "_", str(session))
+        return os.path.join(RUNTIME_DIR, "%s.%s.pending.json" % (base, safe))
+    return os.path.join(RUNTIME_DIR, base + ".pending.json")
 
 
 def _store_pending_report(key, state, comment, ent):
@@ -259,7 +266,8 @@ def _store_pending_report(key, state, comment, ent):
     watch_once가 CAS 경유(progress)로 재전송한다. 접수되거나(200) 회차 이동으로
     거부되면(409) 파일을 정리한다. 장부 엔트리와 독립 — 소실·재회차와 무관하게
     서버 CAS가 유일 판정이다."""
-    with open(_pending_path(key), "w") as f:
+    os.makedirs(RUNTIME_DIR, exist_ok=True)
+    with open(_pending_path(key, ent.get("session")), "w") as f:
         json.dump({"key": key, "state": state, "comment": comment,
                    "issue_id": ent.get("issue_id"),
                    "dispatch_id": ent.get("dispatch_id"),
@@ -296,7 +304,11 @@ def _terminal_recorded(ent, state):
         r = tt_http_raw("GET", "/issues/%s/dispatches" % ent["issue_id"])
         rows = r if isinstance(r, list) else (r or {}).get("dispatches") or []
         for row in rows:
-            if row.get("id") == ent.get("dispatch_id") and row.get("run_state") == state:
+            # 리뷰 R11 — 보고 접수 회차 일치까지 대조: 이전 회차 terminal 기록을 새
+            # 회차 접수 성공으로 오인하면 새 회차 보고가 영구 소실된다.
+            if (row.get("id") == ent.get("dispatch_id")
+                    and row.get("run_state") == state
+                    and (row.get("report_session") or "") == (ent.get("session") or "")):
                 return True
     except Exception:
         pass
