@@ -2,11 +2,15 @@
 
 HG5S 실측: 신규 repo PR + 카드 본문 repo: 미표기 → probe 스캔 풀 미진입 →
 "PR 없음" 영구 정지. 탐지 가능한 정보(PR URL)는 이미 카드 코멘트에 있었다.
-- A decide: 본문 repo: 없는 review 카드가 "PR 없음" 판정 지점에서 코멘트 PR URL을
-  파싱해 pr-adopt 액션 발행(마커 dedup)
-- B execute pr-adopt: gh로 PR 실재·카드 ID 일치 검증 후 본문 repo: 보강(무음 멱등)
-- C decide/execute: 'PR 없음' N회차 지속 review 카드를 메시지 보드에 공지(stale-notify)
+- A decide: 본문 repo: 없는 review 카드의 코멘트 PR URL을 파싱해 pr-adopt 액션
+  발행 — needs-merge 마커와 독립(codex P1), 마커된 URL은 건너뛰고 다음 후보(codex P2)
+- B execute pr-adopt: 채택 기록 코멘트만 — 본문 PATCH는 scope_changed로 보고를
+  무효화하므로 하지 않는다(codex P1-2). 실제 풀 편입은 collect_repos가 코멘트에서 읽는다.
+- C decide/execute: 'PR 없음' 24h 지속 review 카드를 메시지 보드에 공지(stale-notify)
 """
+import json
+import sqlite3
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -49,15 +53,56 @@ def test_코멘트_PR_URL_있으면_pr_adopt_액션():
     assert adopt[0]["marker"] == "[pr-adopted 7/foo/bar]"
 
 
+def test_기존_needs_merge_마커_있어도_채택_판정된다():
+    # P1: 마커 dedup이 채택을 차단하면 HG5S 복구(나중에 URL이 달리는 케이스)가 불가
+    i = _issue(comments=[_pr_comment(),
+                         {"author": "probe", "body": "[needs-merge a1] PR 없음 — 사람 판단 대기"}])
+    assert [a for a in probe.core.decide(_snap([i])) if a["action"] == "pr-adopt"]
+
+
 def test_채택_마커_있으면_재발행_없음():
     i = _issue(comments=[_pr_comment(),
                          {"author": "probe", "body": "[pr-adopted 7/foo/bar] 채택"}])
     assert not [a for a in probe.core.decide(_snap([i])) if a["action"] == "pr-adopt"]
 
 
+def test_채택된_URL_다음_후보를_검사한다():
+    # P2: 첫 URL이 이미 기록돼 있어도 뒤의 유효 후보를 채택
+    i = _issue(comments=[_pr_comment(pr=7, repo="a/b"),
+                         {"author": "probe", "body": "[pr-adopted 7/a/b] 채택"},
+                         _pr_comment(pr=9, repo="c/d")])
+    adopt = [a for a in probe.core.decide(_snap([i])) if a["action"] == "pr-adopt"]
+    assert len(adopt) == 1 and adopt[0]["repo"] == "c/d" and adopt[0]["pr"] == 9
+
+
 def test_본문에_repo_표기_있으면_미발행():
     i = _issue(body="작업 설명\n\nrepo: foo/bar", comments=[_pr_comment()])
     assert not [a for a in probe.core.decide(_snap([i])) if a["action"] == "pr-adopt"]
+
+
+def test_collect_repos가_코멘트_PR_URL을_풀에_편입한다():
+    i = _issue(comments=[_pr_comment(pr=7, repo="foo/bar")])
+    assert "foo/bar" in probe.core.collect_repos([i])
+
+
+def test_라운드트립_코멘트_URL의_PR이_관측되어_병합_후보가_된다(live, monkeypatch):
+    # HG5S 재현→복구: 제출 카드 + 코멘트 PR URL(본문 repo: 없음) → 다음 사이클 관측
+    iid = _new_issue(live)
+    c = sqlite3.connect(live.db_path)
+    c.execute("UPDATE issues SET execution_attempt=1, work_contract=?, state='review' WHERE id=?",
+              ('{"report_required": true}', iid))
+    c.commit(); c.close()
+    live.post(f"/issues/{iid}/comments", json={"author": "a@t",
+                                               "body": "보고 완료 — https://github.com/foo/bar/pull/7"})
+    monkeypatch.setenv("TT_AUTO_DISPATCH", "1")
+    monkeypatch.delenv("TT_REVIEW_AGENT", raising=False)
+    snap = probe.core.snapshot("http://x")
+    monkeypatch.setattr(probe.core, "collect_prs", lambda repos: [
+        {"number": 7, "repo": "foo/bar", "branch": f"tt/{iid}", "title": "", "isDraft": False,
+         "head_sha": "c" * 40, "checks": [{"state": "SUCCESS"}]}] if "foo/bar" in repos else [])
+    snap["prs"] = probe.core.collect_prs(probe.core.collect_repos(snap["issues"]))
+    acts = probe.core.decide(snap)
+    assert any(a["action"] == "merge" for a in acts)
 
 
 # --- decide: stale-notify (C) — 연령 기반('PR 없음' 노트는 attempt당 1회라 사이클 카운트 불가) ---
@@ -85,6 +130,7 @@ def test_PR_없음_스탈_기한_이내면_공지_없음():
 @pytest.fixture
 def live(tmp_path, monkeypatch):
     c = TestClient(create_app(str(tmp_path / "p.db")))
+    c.db_path = str(tmp_path / "p.db")
     monkeypatch.setattr(probe.core, "api", _make_api(c))
     return c
 
@@ -104,36 +150,41 @@ def _new_issue(c, body="작업 설명"):
     return r.json()["id"]
 
 
-def test_pr_adopt_실행시_본문_보강과_채택_코멘트(live, monkeypatch):
+def test_pr_adopt_실행시_채택_코멘트만_기록(live):
     iid = _new_issue(live)
-    monkeypatch.setattr(probe.core, "gh_json",
-                        lambda *a: {"title": f"tt/{iid}: x", "headRefName": f"tt/{iid}"})
     probe.core.execute("http://x", {"action": "pr-adopt", "issue": iid, "repo": "foo/bar",
                                     "pr": 7, "marker": "[pr-adopted 7/foo/bar]"})
     got = live.get(f"/issues/{iid}").json()
-    assert "repo: foo/bar" in (got["body"] or "")
-    assert any("채택" in (c["body"] or "") for c in got["comments"] if c["author"] == "probe")
+    assert any("[pr-adopted 7/foo/bar]" in (c["body"] or "")
+               for c in got["comments"] if c["author"] == "probe")
+    assert (got["body"] or "") == "작업 설명"  # 본문 무변경
 
 
-def test_pr_adopt_카드_ID_불일치_PR은_스킵(live, monkeypatch):
+def test_pr_adopt는_보고와_회차를_무효화하지_않는다(live):
+    # P1-2 회귀: 제출된 v2 보고 카드에 채택해도 attempt/보고가 그대로여야 한다
     iid = _new_issue(live)
-    monkeypatch.setattr(probe.core, "gh_json", lambda *a: {"title": "다른 카드 작업",
-                                                           "headRefName": "feature/other"})
+    c = sqlite3.connect(live.db_path)
+    report = json.dumps({"contract_version": "tt-tdd-v2.1:x", "attempt": 1, "result": "passed"})
+    c.execute("UPDATE issues SET execution_attempt=1, work_contract=?, completion_report=?, "
+              "state='review' WHERE id=?", ('{"report_required": true}', report, iid))
+    c.commit(); c.close()
     probe.core.execute("http://x", {"action": "pr-adopt", "issue": iid, "repo": "foo/bar",
                                     "pr": 7, "marker": "[pr-adopted 7/foo/bar]"})
     got = live.get(f"/issues/{iid}").json()
-    assert "repo: foo/bar" not in (got["body"] or "")
-    assert not got["comments"]
+    assert got["execution_attempt"] == 1
+    rep = got["completion_report"]
+    assert (json.loads(rep) if isinstance(rep, str) else rep)["result"] == "passed"
+    assert got["state"] == "review"
 
 
-def test_pr_adopt_이미_본문_표기시_무음(live, monkeypatch):
-    iid = _new_issue(live, body="작업 설명\n\nrepo: foo/bar")
-    monkeypatch.setattr(probe.core, "gh_json",
-                        lambda *a: {"title": f"tt/{iid}: x", "headRefName": f"tt/{iid}"})
+def test_pr_adopt_마커_있으면_무음(live):
+    iid = _new_issue(live)
+    live.post(f"/issues/{iid}/comments", json={"author": "probe",
+                                               "body": "[pr-adopted 7/foo/bar] 채택"})
     probe.core.execute("http://x", {"action": "pr-adopt", "issue": iid, "repo": "foo/bar",
                                     "pr": 7, "marker": "[pr-adopted 7/foo/bar]"})
     got = live.get(f"/issues/{iid}").json()
-    assert not any("채택" in (c["body"] or "") for c in got["comments"])
+    assert len([c for c in got["comments"] if c["author"] == "probe"]) == 1
 
 
 def test_stale_notify_실행시_보드_공지와_마커_코멘트(live):
@@ -141,7 +192,7 @@ def test_stale_notify_실행시_보드_공지와_마커_코멘트(live):
     live.patch(f"/issues/{iid}", json={"assignee": "b@t"})
     probe.core.execute("http://x", {"action": "stale-notify", "issue": iid,
                                     "marker": "[stale-notify a1]",
-                                    "reason": "PR 없음 3회차 지속 — 사람 판단 대기 공지"})
+                                    "reason": "PR 없음 25시간 지속 — 사람 판단 대기 공지"})
     got = live.get(f"/issues/{iid}").json()
     assert any("[stale-notify a1]" in (c["body"] or "") for c in got["comments"])
     msgs = live.get("/messages").json()

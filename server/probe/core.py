@@ -68,7 +68,8 @@ def pr_card_id(pr):
 
 def collect_repos(issues):
     """PR 수집 repo 풀 — 알려진 repo(REPO_CARDS+TT_REPO_SCAN_EXTRA)는 항시, 카드 repo 표기는 동적.
-    review 카드 포함(GBE5 사고) + repo 미표기 카드도known repo에서 브랜치/제목 ID로 발견된다(사용자 지시)."""
+    review 카드 포함(GBE5 사고) + repo 미표기 카드도 known repo에서 브랜치/제목 ID로 발견된다(사용자 지시).
+    review 카드 코멘트의 PR URL도 편입(HG5S) — 스캔은 무해하고 실제 카드 연결은 pr_card_id 조인이 검증."""
     out = sorted(set(REPO_CARDS.values()))
     for extra in os.environ.get("TT_REPO_SCAN_EXTRA", "").split(","):
         if extra.strip():
@@ -78,6 +79,8 @@ def collect_repos(issues):
             r = card_repo(i)
             if r:
                 out.append(r)
+        if i["state"] == "review" and i.get("comments"):
+            out.extend(repo for repo, _ in _comment_pr_repos(i))
     return out
 
 
@@ -293,6 +296,18 @@ def decide(snap):
         if not i.get("work_contract") or (i.get("execution_attempt") or 0) < 1:
             continue
         att = i.get("execution_attempt") or 0
+        prs_for = [p for p in snap.get("prs") or [] if pr_card_id(p) == i["id"]]
+        # 코멘트 PR URL 역기입(HG5S) — needs-merge 마커와 독립 판정(codex P1: 마커가
+        # 채택·재시도를 차단해서는 안 된다). 본문 변경 없이 collect_repos가 풀에 편입.
+        if not prs_for and not card_repo(i):
+            for repo, prn in _comment_pr_repos(i):
+                amarker = f"[pr-adopted {prn}/{repo}]"
+                if _probe_marker(i, amarker):
+                    continue  # 이미 채택 기록 — 다음 후보 검사(codex P2)
+                actions.append({"agent": "probe", "issue": i["id"], "action": "pr-adopt",
+                                "repo": repo, "pr": prn, "marker": amarker,
+                                "reason": f"코멘트 PR URL 역기입 — {repo}#{prn} 채택"})
+                break
         marker = f"[needs-merge a{att}]"
         if any(marker in (c.get("body") or "") for c in (i.get("comments") or [])
                if c.get("author") == "probe"):
@@ -301,7 +316,6 @@ def decide(snap):
             if sa:
                 actions.append(sa)
             continue
-        prs_for = [p for p in snap.get("prs") or [] if pr_card_id(p) == i["id"]]
         drafts = [p for p in prs_for if p.get("isDraft")]
         if drafts and len(drafts) == len(prs_for):
             # 전부 draft — 병합·ci-fix 판정 불가. ready 요청 1회(마커 dedup) 후 무음.
@@ -345,17 +359,6 @@ def decide(snap):
             age = _age_min(snap.get("now") or "", i.get("updated_at") or "")
             if age is None or age < _review_grace_min():
                 continue  # PR 생성 유예 — 성급한 'PR 없음' 코멘트 금지
-            # 코멘트 PR URL 역기입(HG5S): 본문 repo: 미표기 + 코멘트에 PR URL이 있으면 채택 —
-            # execute에서 실재 검증 후 본문 보강 → 다음 사이클 스캔 풀 진입. 마커로 회차 dedup.
-            if not card_repo(i):
-                for repo, prn in _comment_pr_repos(i):
-                    amarker = f"[pr-adopted {prn}/{repo}]"
-                    if _probe_marker(i, amarker):
-                        break
-                    actions.append({"agent": "probe", "issue": i["id"], "action": "pr-adopt",
-                                    "repo": repo, "pr": prn, "marker": amarker,
-                                    "reason": f"코멘트 PR URL 역기입 — {repo}#{prn} 채택"})
-                    break
             # 스탈 공지: 'PR 없음' review 카드가 N시간 지속 — 사일런트 반복 방지.
             # (needs-merge 노트는 attempt당 1회 dedup이라 사이클 카운트 불가 → 연령 기반)
             sa = _stale_act(i, att, snap.get("now") or "")
@@ -681,28 +684,16 @@ def execute(url, act):
             {"author": "probe", "body": f"{marker} {act['reason']} — "
                                         "tt verify로 done 확정 또는 review→todo 재작업"})
     elif kind == "pr-adopt":
-        # 코멘트 PR URL 역기입(HG5S) 집행: PR 실재·카드 ID 일치 검증 후 본문 repo: 보강.
-        # 이미 표기되어 있으면 무음(멱등) — 검증 실패(부재/불일치)도 조용히 스킵.
-        repo = act.get("repo") or ""
-        try:
-            pr = gh_json("pr", "view", act.get("pr"), "--repo", repo,
-                         "--json", "title,headRefName")
-        except Exception:
-            return
-        pid = card_from_branch(pr.get("headRefName") or "") or pr_card_id(
-            {"branch": pr.get("headRefName") or "", "title": pr.get("title") or ""})
-        if pid != act["issue"]:
-            return
+        # 채택 기록만 남긴다. 본문 PATCH는 scope_changed로 처리되어 완료 보고를
+        # 삭제하고 attempt를 올린다(codex P1-2) — 하지 않는다. 실제 스캔 풀 편입은
+        # collect_repos가 review 카드 코멘트의 PR URL을 읽는다.
         cur = api(url, f"/issues/{act['issue']}")
-        body = (cur.get("body") or "").rstrip()
-        if f"repo: {repo}" in body:
+        marker = act.get("marker") or ""
+        if any(marker in (c.get("body") or "") for c in (cur.get("comments") or [])):
             return
-        api(url, f"/issues/{act['issue']}", "PATCH",
-            {"version": cur["version"], "body": (body + f"\n\nrepo: {repo}").strip() + "\n"})
         api(url, f"/issues/{act['issue']}/comments", "POST",
             {"author": "probe",
-             "body": f"{act.get('marker') or ''} 코멘트의 PR URL에서 {repo} 채택 — "
-                     "본문 repo: 보강(다음 사이클 스캔 풀 진입)"})
+             "body": f"{marker} 코멘트의 PR URL 채택 — 스캔 풀 편입(다음 사이클 관측)"})
     elif kind == "stale-notify":
         # 'PR 없음' 지속 review 카드 — 메시지 보드 공지(멘션은 assignee 등록 에이전트에만 기록됨) + 카드 마커.
         cur = api(url, f"/issues/{act['issue']}")
