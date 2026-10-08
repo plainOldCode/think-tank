@@ -140,9 +140,15 @@ class DispatchIn(BaseModel):
 
 
 class DispatchProgress(BaseModel):
-    """러너→서버 진행 투영 (TT M3EREF97-FXWQ). 전부 선택, unknown 필드 무시."""
+    """러너→서버 진행 투영 (TT M3EREF97-FXWQ). 전부 선택, unknown 필드 무시.
+
+    comment는 종료 상태(finished/failed) 전용 완료 보고 본문 — attempt CAS 통과 시
+    dispatch 갱신과 같은 트랜잭션에서 코멘트로 접수된다(R3: 투영과 보고 사이
+    회차 변경 창 제거). author는 그 코멘트의 표기 주체(기본 runner)."""
     state: str | None = None
     tail: str | None = None
     ts: str | None = None
     machine: str | None = None
     session: str | None = None
+    comment: str | None = None
+    author: str | None = None

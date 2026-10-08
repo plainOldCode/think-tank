@@ -210,8 +210,11 @@ def tt_progress(issue_id, dispatch_id, payload):
         return False  # 타임아웃·오프라인 — 무재시도(기존 규약)
 
 
-def progress_projection(ent, state, tail=None, session=None):
+def progress_projection(ent, state, tail=None, session=None, comment=None):
     """장부 ent → 서버 진행 투영 한 발. 코멘트 경로와 완전 분리(코멘트 수 변화 0).
+
+    comment는 종료 상태(finished/failed) 전용 완료 보고 본문(R3) — 서버가 attempt
+    CAS와 같은 트랜잭션에서 코멘트로 접수한다. 409면 코멘트도 기록되지 않는다.
 
     반환: True(2xx) | "stale"(409 — 서버 attempt CAS가 이전 회차 보고로 거부) |
     False(기타 실패 — 기존 best-effort 규약). 종료 상태 보고 전 CAS 게이트로
@@ -221,7 +224,25 @@ def progress_projection(ent, state, tail=None, session=None):
                "ts": time.strftime("%Y-%m-%dT%H:%M:%S%z")}
     if tail is not None:
         payload["tail"] = tail
+    if comment is not None:
+        # tt_comment와 동일한 마스킹·절단·작성자 규약 (시크릿 미기재 불변식)
+        payload["comment"] = mask(comment)[:4000]
+        payload["author"] = os.environ.get("TT_AGENT", "runner@" + machine_name())
     return tt_progress(ent["issue_id"], ent["dispatch_id"], payload)
+
+
+def _terminal_recorded(ent, state):
+    """종료 투영이 서버에 기록됐는지 재확인(R3) — 응답 유실(타임아웃 후 커밋) 시
+    완료 코멘트 중복 발행을 막는다. 서버 200 + run_state 일치 시 True."""
+    try:
+        r = tt_http_raw("GET", "/issues/%s/dispatches" % ent["issue_id"])
+        rows = r if isinstance(r, list) else (r or {}).get("dispatches") or []
+        for row in rows:
+            if row.get("id") == ent.get("dispatch_id") and row.get("run_state") == state:
+                return True
+    except Exception:
+        pass
+    return False
 
 
 # ---------- 레지스트리 ----------
@@ -1117,14 +1138,18 @@ def _run_summary(key):
 
 
 def _stale_suppressed(key, ent, exit_code, status, write):
-    """서버 attempt CAS 거부(409 stale) 후처리 (TT 개선#1 요구 2).
+    """서버 attempt CAS 거부(409 stale) 후처리 (TT 개선#1 요구 2, 리뷰 R1).
 
     이 회차는 서버 기준 이미 재점유·재회차됐다 — 코멘트·투영 없이 로컬 장부만
-    조용히 종결한다(물리 종료는 사실, 보고만 억제). 전이표가 방어한다: 진행 중
-    재회차로 엔트리가 교체됐으면 queued→종단 불법 전이로 거부되어 무시된다."""
-    if write:
-        set_status(key, status, exit=exit_code, ended=time.time(),
-                   detail="stale-suppressed")
+    조용히 종결한다(물리 종료는 사실, 보고만 억제). 쓰기는 update_run_if_round의
+    회차 가드를 통과한다: 재회차로 엔트리가 교체됐으면(queued든 실행 중인
+    running이든) 관찰 회차 불일치로 거부 — 409 응답 대기 중인 이전 회차가 다음
+    회차를 done으로 덮는 부류가 불가능하다. 관찰 회차가 생존해 있으면(finalizing)
+    transition 표가 종단 전이를 결정한다."""
+    if write and not update_run_if_round(key, ent, status=status, exit=exit_code,
+                                         ended=time.time(), detail="stale-suppressed"):
+        log("STALE-SUPPRESS-SKIP dispatch#%s — 회차 가드 거부(이미 재회차)"
+            % ent.get("dispatch_id"))
     log("FINALIZE-STALE dispatch#%s — 서버 CAS 거부, 보고 억제 (장부 %s)"
         % (ent.get("dispatch_id"), status))
     return "stale"
@@ -1156,13 +1181,20 @@ def finalize(runs_dir_name, key, ent, exit_code, tail="", summary=None, write=Tr
         return "skipped"
     if exit_code == 0:
         # CAS 선(先) — 완료 전환 최종 판정은 서버 attempt/version CAS (TT 개선#1
-        # 요구 2). 서버가 현재 회차로 인정할 때만 보고한다: 투영 409면 코멘트·
-        # 장부 보고 모두 억제. 기타 실패(타임아웃·오프라인)는 기존 best-effort대로
-        # 보고 진행 — 서버 장애가 완료 보고를 지우면 안 된다.
-        if progress_projection(ent, "finished") == "stale":
+        # 요구 2). 종료 투영과 완료 보고를 한 번에 접수한다(리뷰 R3): 서버가 현재
+        # 회차로 인정할 때만 갱신+코멘트가 원자적으로 기록된다. 409면 둘 다 없음.
+        # 기타 실패(타임아웃·오프라인)는 기존 best-effort대로 보고 진행 — 서버 장애가
+        # 완료 보고를 지우면 안 된다. 단, 응답 유실(기록 후 타임아웃)은 재확인으로
+        # 중복 발행을 막는다.
+        body = ("runner:%s dispatch#%s done exit=0 session=%s\n%s"
+                % (machine_name(), did, session, mask(summary)))
+        proj = progress_projection(ent, "finished", comment=body)
+        if proj == "stale":
             return _stale_suppressed(key, ent, exit_code, "done", write)
-        tt_comment(issue, "runner:%s dispatch#%s done exit=0 session=%s\n%s"
-                   % (machine_name(), did, session, mask(summary)))
+        if proj is False and _terminal_recorded(ent, "finished"):
+            proj = True  # 응답 유실 — 서버 기록 확인, 코멘트 중복 발행 금지
+        if proj is not True:
+            tt_comment(issue, body)
         log("DONE dispatch#%s exit=0 session=%s" % (did, session))
         if write:
             update_run_if_round(key, ent, status="done", exit=exit_code, ended=time.time())
@@ -1172,21 +1204,30 @@ def finalize(runs_dir_name, key, ent, exit_code, tail="", summary=None, write=Tr
     combined = (tail or "") + "\n" + (summary or "")
     sig = input_needed(combined)
     if sig:
-        if progress_projection(ent, "failed") == "stale":
+        bbody = ("runner:%s dispatch#%s BLOCKED — 입력/승인 요구 감지(%s) exit=%s session=%s "
+                 "waiting_for=human. 재지시('승인' 또는 지시)를 기다림; 자동 재시도 없음.\n%s"
+                 % (machine_name(), did, sig, exit_code, session, mask(combined[-1500:])))
+        proj = progress_projection(ent, "failed", comment=bbody)
+        if proj == "stale":
             return _stale_suppressed(key, ent, exit_code, "blocked", write)
-        tt_comment(issue, "runner:%s dispatch#%s BLOCKED — 입력/승인 요구 감지(%s) exit=%s session=%s "
-                   "waiting_for=human. 재지시('승인' 또는 지시)를 기다림; 자동 재시도 없음.\n%s"
-                   % (machine_name(), did, sig, exit_code, session, mask(combined[-1500:])))
+        if proj is False and _terminal_recorded(ent, "failed"):
+            proj = True
+        if proj is not True:
+            tt_comment(issue, bbody)
         log("BLOCKED dispatch#%s signature=%s exit=%s session=%s" % (did, sig, exit_code, session))
         if write:
             update_run_if_round(key, ent, status="blocked", exit=exit_code,
                                 blocked_on=sig, ended=time.time())
         return "blocked"
-    if progress_projection(ent, "failed") == "stale":
+    fbody = ("runner:%s dispatch#%s failed exit=%s session=%s\n%s"
+             % (machine_name(), did, exit_code, session, mask(tail or summary)))
+    proj = progress_projection(ent, "failed", comment=fbody)
+    if proj == "stale":
         return _stale_suppressed(key, ent, exit_code, "failed", write)
-    detail = tail or summary
-    tt_comment(issue, "runner:%s dispatch#%s failed exit=%s session=%s\n%s"
-               % (machine_name(), did, exit_code, session, mask(detail)))
+    if proj is False and _terminal_recorded(ent, "failed"):
+        proj = True
+    if proj is not True:
+        tt_comment(issue, fbody)
     log("FAILED dispatch#%s exit=%s" % (did, exit_code))
     if write:
         update_run_if_round(key, ent, status="failed", exit=exit_code, ended=time.time())
@@ -1253,13 +1294,16 @@ def heartbeat_pass():
         fp = pane_fingerprint(session, key)
         prev = read_heartbeat(key) or {}
         if fp is None:
-            # 관찰 불가(세션 부재 등) — 직전 관찰을 유지해 판정 연속성 확보
-            if prev:
-                prev["ts"] = time.time()
-                write_heartbeat(key, prev)
+            # 관찰 불가(세션 부재 등) — 직전 관찰을 보존하되 ok=False로 기록한다(리뷰
+            # R6). stall_check는 유효 관찰이 없는 순회의 판정을 스킵하므로 과거 지문이
+            # 신선한 heartbeat처럼 동작해 현재 세션을 kill하는 부류가 불가능하다.
+            rec = {"ts": time.time(), "round": _round_id(cur), "ok": False,
+                   "dispatch_id": cur.get("dispatch_id"), "session": session,
+                   "pane_fp": prev.get("pane_fp"), "pane_ts": prev.get("pane_ts")}
+            write_heartbeat(key, rec)
             continue
         changed = prev.get("pane_fp") != fp
-        rec = {"ts": time.time(), "round": _round_id(cur),
+        rec = {"ts": time.time(), "round": _round_id(cur), "ok": True,
                "dispatch_id": cur.get("dispatch_id"), "session": session,
                "pane_fp": fp,
                "pane_ts": time.time() if changed else (prev.get("pane_ts") or time.time())}
@@ -1282,8 +1326,8 @@ def stall_check(key, ent, now):
     감시자가 재회차 엔트리를 failed로 덮는 부류가 불가능하다. wall-clock TIMEOUT과
     구분되는 이벤트. 반환 True면 이번 순회 추가 판정 생략."""
     hb = read_heartbeat(key)
-    if hb is None or hb.get("pane_fp") is None:
-        return False
+    if hb is None or not hb.get("ok", True) or hb.get("pane_fp") is None:
+        return False  # 무관찰/관찰 실패 순회 — 판정 스킵 (리뷰 R6)
     if hb.get("round") is not None and hb.get("round") != _round_id(ent):
         return False
     session = hb.get("session") or ent.get("session") or ""
@@ -1355,7 +1399,7 @@ def watch_once():
         # 갱신 POST(last_progress_at 전진). 근거는 상태파일 heartbeat(요구 4) —
         # stall 임계 초과 무음에서는 스킵(같은 순회 stall_check가 선행).
         hb = read_heartbeat(key)
-        if hb is None or hb.get("pane_fp") is None:
+        if hb is None or not hb.get("ok", True) or hb.get("pane_fp") is None:
             continue
         now_ts = time.time()
         silent_for = now_ts - (hb.get("pane_ts") or now_ts)

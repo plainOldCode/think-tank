@@ -1382,5 +1382,112 @@ class TestStaleReportSuppression(unittest.TestCase):
         self.assertEqual(R.get_run(self.KEY)["status"], "queued")  # 훼손 없음
 
 
+class TestReviewEdgeRegressions(unittest.TestCase):
+    """codex 리뷰(#59 R1·R3·R6) 회귀 — 경합·장애 경계."""
+
+    ISSUE = "EDGE-1"
+    KEY = "EDGE-1#901"
+
+    def setUp(self):
+        self.orig_comment = R.tt_comment
+        self.orig_prog = R.tt_progress
+        self.orig_raw = R.tt_http_raw
+        self.comments = []
+        self.prog_results = []
+        R.tt_comment = lambda i, b: self.comments.append((i, b))
+        R.tt_progress = lambda *a, **k: self.prog_results.pop(0)
+
+    def tearDown(self):
+        R.tt_comment = self.orig_comment
+        R.tt_progress = self.orig_prog
+        R.tt_http_raw = self.orig_raw
+
+    def _seed(self, round_no=1, status="running", session=None):
+        R.save_runs({self.KEY: {"status": status, "issue_id": self.ISSUE,
+                                "dispatch_id": 901, "session": session or "tt-edge-901",
+                                "round": round_no}})
+        return R.get_run(self.KEY)
+
+    def test_r1_stale_suppress_rejects_running_replacement(self):
+        """R1 — 409 응답 대기 중 다음 회차가 running으로 선점돼도 덮지 않는다.
+
+        A의 finalize가 progress 응답을 기다리는 동안 B가 흡수·선점되어 실행 중일
+        때, A의 늦은 409는 update_run_if_round 회차 가드로 거부된다(transition
+        표만으로는 running→done이 합법이라 막히지 않음 — 회차 비교 필수)."""
+        snap = self._seed(round_no=1)
+
+        def prog_during_wait(*a, **k):
+            # progress 네트워크 대기 중 다음 회차가 흡수·선점되어 running으로 교체됨
+            self._seed(round_no=2, status="running", session="tt-edge-901-r2")
+            return "stale"
+
+        R.tt_progress = prog_during_wait
+        outcome = R.finalize(None, self.KEY, snap, 0)
+        self.assertEqual(outcome, "stale")
+        ent = R.get_run(self.KEY)
+        self.assertEqual(ent["round"], 2)
+        self.assertEqual(ent["status"], "running")  # B 무훼손
+        self.assertEqual(self.comments, [])
+
+    def test_r3_comment_combined_on_success_and_recheck_on_loss(self):
+        """R3 — 투영 성공 시 별도 /comments 발행 없음(서버가 원자 접수);
+        응답 유실(False)이지만 서버 기록 재확인되면 역시 발행 없음."""
+        snap = self._seed()
+        self.prog_results.append(True)
+        outcome = R.finalize(None, self.KEY, snap, 0)
+        self.assertEqual(outcome, "done")
+        self.assertEqual(self.comments, [])  # 통합 접수 — 이중 코멘트 없음
+        # 응답 유실 + 서버 기록 확인 → 역시 발행 없음
+        R.save_runs({self.KEY: dict(snap, status="running")})
+        self.prog_results = [False]
+        R.tt_http_raw = lambda m, p, payload=None: [  # GET dispatches 응답 모사
+            {"id": 901, "run_state": "finished"}]
+        outcome = R.finalize(None, self.KEY, R.get_run(self.KEY), 0)
+        self.assertEqual(outcome, "done")
+        self.assertEqual(self.comments, [])
+        # 응답 유실 + 서버 미기록(진짜 다운) → 기존 best-effort 발행 1회
+        R.save_runs({self.KEY: dict(snap, status="running")})
+        self.prog_results = [False]
+        R.tt_http_raw = lambda m, p, payload=None: {"HTTP": 0, "detail": "conn refused"}
+        outcome = R.finalize(None, self.KEY, R.get_run(self.KEY), 0)
+        self.assertEqual(outcome, "done")
+        self.assertEqual(len(self.comments), 1)
+
+    def test_r6_capture_failure_never_kills(self):
+        """R6 — 관찰 실패(ok=False) 순회는 과거 지문이 임계를 넘어도 판정 스킵."""
+        now = time.time()
+        self._seed()
+        # 유효 관찰(오래된 pane_ts) 직후 관찰 실패 — 과거 지문은 보존되지만 ok=False
+        R.write_heartbeat(self.KEY, {"ts": now, "round": 1, "ok": True,
+                                     "dispatch_id": 901, "session": "tt-edge-901",
+                                     "pane_fp": "old", "pane_ts": now - R.STALL_SILENCE_S * 3})
+        R.write_heartbeat(self.KEY, {"ts": now, "round": 1, "ok": False,
+                                     "dispatch_id": 901, "session": "tt-edge-901",
+                                     "pane_fp": "old", "pane_ts": now - R.STALL_SILENCE_S * 3})
+        killed = []
+        R.tmux_run = lambda *a, **k: killed.append(a) or subprocess.CompletedProcess(a, 0)
+        self.assertFalse(R.stall_check(self.KEY, R.get_run(self.KEY), now))
+        self.assertEqual(killed, [])  # 관찰 없는 kill 없음
+        self.assertEqual(R.get_run(self.KEY)["status"], "running")
+
+    def test_r6_heartbeat_pass_marks_observation_failure(self):
+        """R6 — pane_fingerprint 실패(None) 시 ok=False 기록, 유효 관찰 복원 시 갱신."""
+        self._seed()
+        orig_fp = R.pane_fingerprint
+        try:
+            R.pane_fingerprint = lambda name, key=None: None
+            R.heartbeat_pass()
+            hb = R.read_heartbeat(self.KEY)
+            self.assertFalse(hb["ok"])
+            # 관찰 복원 — ok=True + 새 pane_ts
+            R.pane_fingerprint = lambda name, key=None: "fp-new"
+            R.heartbeat_pass()
+            hb2 = R.read_heartbeat(self.KEY)
+            self.assertTrue(hb2["ok"])
+            self.assertEqual(hb2["pane_fp"], "fp-new")
+        finally:
+            R.pane_fingerprint = orig_fp
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -15,6 +15,25 @@ from service import Ctx
 router = APIRouter()
 
 
+DELIVERY_RECOVER_S = 30  # webhook 타임아웃(10s)의 3배 — 진행 중 전달과 크래시 잔재 구분
+
+
+def _redeliver_wanted(row) -> bool:
+    """기수락 예외 판정 (R4): error 행은 항상 재전달, queued 행은 접수 후
+    DELIVERY_RECOVER_S가 지나도록 미전달이면 전달 전 크래시로 보고 복구한다.
+    진행 중(최근 queued) 재전송은 기수락 — 이중 webhook 방지."""
+    if row["status"] == "error":
+        return True
+    if row["status"] != "queued":
+        return False
+    try:
+        from datetime import datetime
+        age = (datetime.now().astimezone() - datetime.fromisoformat(row["ts"])).total_seconds()
+    except ValueError:
+        return False
+    return age > DELIVERY_RECOVER_S
+
+
 def _idem_key(issue_id: str, agent: str, attempt: int, message: str) -> str:
     """기수락 멱등키 (TT 개선#1 요구 3): issue+agent+attempt+본문 해시.
 
@@ -126,7 +145,7 @@ def dispatch(issue_id: str, p: DispatchIn, request: Request, ctx: Ctx = Depends(
         idem = _idem_key(issue_id, p.agent, issue["execution_attempt"], p.message)
         existing = c.execute("SELECT * FROM dispatches WHERE idem_key=? "
                              "ORDER BY id DESC LIMIT 1", (idem,)).fetchone()
-        if existing is not None and existing["status"] != "error":
+        if existing is not None and not _redeliver_wanted(existing):
             return JSONResponse(status_code=200, content=dict(existing))
         redeliver = existing is not None
         if not redeliver:
@@ -136,19 +155,25 @@ def dispatch(issue_id: str, p: DispatchIn, request: Request, ctx: Ctx = Depends(
                              "ORDER BY id DESC LIMIT 1", (issue_id, p.agent)).fetchone()
             c.execute("INSERT INTO comments (issue_id, author, body, ts) VALUES (?,?,?,?)",
                       (issue_id, p.author, p.message, dbmod.now()))
+            # R5: 행 생성 시점부터 resume context를 상속해 둔다 — 전달 실패(error)나
+            # 전달 전 크래시로 끝나도 재전달 payload가 원래 context를 잃지 않는다.
+            # 전달 성공 시에만 웹훅 응답 token으로 갱신된다.
+            inh_ctx = prev["context"] if prev else ""
             try:
                 did = c.execute("INSERT INTO dispatches (issue_id, agent, author, message, context, status, ts, model, idem_key, attempt) "
                                 "VALUES (?,?,?,?,?,?,?,?,?,?)",
-                                (issue_id, p.agent, p.author, p.message, "", "queued", dbmod.now(),
+                                (issue_id, p.agent, p.author, p.message, inh_ctx, "queued", dbmod.now(),
                                  ag["model"] or "", idem, issue["execution_attempt"])).lastrowid
             except sqlite3.IntegrityError:
                 # 동시 중복 POST — 유니크 인덱스가 원자적으로 승자를 결정한다.
                 c.rollback()
                 row = c.execute("SELECT * FROM dispatches WHERE idem_key=? "
                                 "ORDER BY id DESC LIMIT 1", (idem,)).fetchone()
-                if row and row["status"] != "error":
+                if row is not None and not _redeliver_wanted(row):
                     return JSONResponse(status_code=200, content=dict(row))
-                raise HTTPException(409, "dispatch idempotency race")
+                if row is None:
+                    raise HTTPException(409, "dispatch idempotency race")
+                did = row["id"]  # 크래시 잔재 queued — 재전달 경로로 계속
         else:
             did = existing["id"]
             prev = c.execute("SELECT context FROM dispatches WHERE issue_id=? AND agent=? "
@@ -164,7 +189,13 @@ def dispatch(issue_id: str, p: DispatchIn, request: Request, ctx: Ctx = Depends(
     except Exception as e:
         status, detail = "error", f"{type(e).__name__}: {e}"[:300]
     with ctx.con() as c:
-        c.execute("UPDATE dispatches SET status=?, detail=?, context=? WHERE id=?", (status, detail, dctx, did))
+        # 실패(error) 시 context는 생성 시 상속값을 보존(R5) — 성공 시에만 응답 token으로 갱신
+        if status == "ok":
+            c.execute("UPDATE dispatches SET status=?, detail=?, context=? WHERE id=?",
+                      (status, detail, dctx, did))
+        else:
+            c.execute("UPDATE dispatches SET status=?, detail=? WHERE id=?",
+                      (status, detail, did))
         c.execute("UPDATE agents SET last_ok=?, last_err=? WHERE name=?",
                   (dbmod.now() if status == "ok" else ag["last_ok"],
                    "" if status == "ok" else detail, p.agent))
@@ -210,34 +241,43 @@ def dispatch_progress(issue_id: str, dispatch_id: int, p: DispatchProgress, requ
         ts = p.ts if p.ts else dbmod.now()
         if p.state is not None:
             # 완료 전환 최종 판정 — 서버 attempt CAS (TT 개선#1 요구 2, if-match).
-            # 종료 상태(finished/failed)는 dispatch가 생성된 회차(attempt 스냅샷)와
-            # 이슈의 현재 execution_attempt가 일치할 때만 받는다. 이슈가 재claim·재회차로
-            # attempt가 앞서 있으면 이전 회차 감시자의 늦은 종료 보고는 409로 거부된다 —
-            # "이전 회차가 현재 회차를 덮는" 부류가 구조적으로 사라진다. attempt 스냅샷이
-            # 없는 구형 행(NULL)은 기존 동작 유지. running/stalled 등 비종료 진행은
-            # last-write-wins 그대로(러너 stall_check 소유 — 서버 재계산 금지).
-            if p.state in ("finished", "failed") and row["attempt"] is not None:
-                cur_att = c.execute("SELECT execution_attempt FROM issues WHERE id=?",
-                                    (issue_id,)).fetchone()
-                if cur_att and (cur_att["execution_attempt"] or 0) > row["attempt"]:
+            # 종료 상태(finished/failed)는 비교와 갱신을 단일 조건부 UPDATE로 원자화한다
+            # (R2: SELECT 후 UPDATE 사이 claim 끼워들기 창 제거) — dispatch가 생성된
+            # 회차(attempt 스냅샷)보다 이슈의 현재 execution_attempt가 앞서면 갱신
+            # 자체가 이뤄지지 않고 409로 거부된다. "이전 회차가 현재 회차를 덮는" 부류가
+            # 구조적으로 사라진다. attempt 스냅샷이 없는 구형 행(NULL)은 기존 동작 유지.
+            # running/stalled 등 비종료 진행은 last-write-wins 그대로(러너 stall_check
+            # 소유 — 서버 재계산 금지).
+            if p.state in ("finished", "failed"):
+                res = c.execute(
+                    "UPDATE dispatches SET run_state=?, ended_at=? WHERE id=? AND "
+                    "(attempt IS NULL OR attempt >= "
+                    "(SELECT i.execution_attempt FROM issues i WHERE i.id=dispatches.issue_id))",
+                    (p.state, ts, dispatch_id))
+                if res.rowcount != 1:
                     raise HTTPException(
                         409, f"stale round report: dispatch#{dispatch_id} attempt={row['attempt']} "
-                             f"< issue execution_attempt={cur_att['execution_attempt']}")
-            fields["run_state"] = p.state
-            if p.state in ("running", "stalled"):
-                # 진행 병기 허용 상태: ts/tail 유무와 무관하게 liveness 시각 갱신
-                # (동일 상태 재전송도 진행으로 봄 — 러너는 변경/주기 모두 허용)
-                fields["last_progress_at"] = ts
-                if p.tail is not None:
-                    fields["last_tail"] = p.tail[:500]  # 서버 클램프 (422 아님)
-                if not row["started_at"]:
-                    fields["started_at"] = ts
-            elif p.state in ("finished", "failed"):
-                fields["ended_at"] = ts  # tail 병기 없음 — 종료 상세는 done/failed 코멘트 소관
+                             f"< issue current execution_attempt — 이전 회차 종료 보고 거부")
+                if p.comment:
+                    # 종료 투영과 완료 보고를 같은 트랜잭션에 접수 (R3: CAS 통과 후
+                    # 별도 /comments 사이 회차 변경 창 제거 — 409면 코멘트도 없다)
+                    c.execute("INSERT INTO comments (issue_id, author, body, ts) VALUES (?,?,?,?)",
+                              (issue_id, (p.author or "runner").strip() or "runner",
+                               p.comment[:4000], dbmod.now()))
             else:
-                # queued: run_state(+machine/session)만 — ts/tail 진행 미반영 (§2.2)
-                if not row["started_at"]:
-                    fields["started_at"] = ts
+                fields["run_state"] = p.state
+                if p.state in ("running", "stalled"):
+                    # 진행 병기 허용 상태: ts/tail 유무와 무관하게 liveness 시각 갱신
+                    # (동일 상태 재전송도 진행으로 봄 — 러너는 변경/주기 모두 허용)
+                    fields["last_progress_at"] = ts
+                    if p.tail is not None:
+                        fields["last_tail"] = p.tail[:500]  # 서버 클램프 (422 아님)
+                    if not row["started_at"]:
+                        fields["started_at"] = ts
+                else:
+                    # queued: run_state(+machine/session)만 — ts/tail 진행 미반영 (§2.2)
+                    if not row["started_at"]:
+                        fields["started_at"] = ts
         elif p.tail is not None or p.ts or p.machine or p.session:
             raise HTTPException(422, "state 없이 진행/식별 갱신 불가")
         # machine/session: 전송 시에만 반영(공백 문자열은 전송으로 보지 않음 — 기존 값 유지)
