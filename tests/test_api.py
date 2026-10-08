@@ -339,6 +339,427 @@ def test_dispatch_failure_system_comment(client, hook_server):
     assert client.get("/agents").json()[0]["last_err"] != ""
 
 
+
+
+def test_progress_terminal_cas_rejects_stale_round(client, hook_server):
+    """TT 개선#1 (M4DEDPK2-0VSF) 요구 2 — 서버 attempt CAS: 이전 회차의 늦은
+    종료 보고는 409로 거부된다(교차 머신 이전 회차 감시자 방어)."""
+    i = mk(client, title="CAS 카드")
+    reg_agent(client, hook_server)
+    did = make_dispatch(client, i["id"])  # attempt 0에서 생성
+    assert progress_post(client, i["id"], did, {"state": "running"}).status_code == 200
+    # 재claim — attempt 0→1 (이전 회차는 이제 stale)
+    client.post(f"/issues/{i['id']}/claim", json={"agent": "worker"})
+    r = progress_post(client, i["id"], did, {"state": "finished"})
+    assert r.status_code == 409, r.text
+    assert "stale round report" in r.text
+    # failed 종료 보고도 동일 거부
+    assert progress_post(client, i["id"], did, {"state": "failed"}).status_code == 409
+    # 비종료 진행(running/stalled)은 CAS 대상 아님 — last-write-wins 그대로
+    assert progress_post(client, i["id"], did, {"state": "stalled"}).status_code == 200
+    # 신규 회차 dispatch(attempt 1)의 종료 보고는 정상 수락
+    did2 = make_dispatch(client, i["id"])
+    assert progress_post(client, i["id"], did2, {"state": "finished"}).status_code == 200
+
+def test_progress_comment_atomic_with_cas(client, hook_server):
+    """리뷰 R3 — 종료 투영과 완료 보고가 한 트랜잭션: 통과 시 코멘트 기록,
+    409 시 코멘트도 없다(이전 회차 증거가 새 회차 cursor 뒤에 들어가는 것 차단)."""
+    i = mk(client, title="통합 접수")
+    reg_agent(client, hook_server)
+    did = make_dispatch(client, i["id"])
+    body = "runner:x dispatch#%d done exit=0 session=s" % did
+    r = progress_post(client, i["id"], did, {"state": "finished", "comment": body,
+                                             "author": "runner@t"})
+    assert r.status_code == 200
+    comments = client.get(f"/issues/{i['id']}").json()["comments"]
+    assert any(c["body"] == body and c["author"] == "runner@t" for c in comments)
+    # 재claim 후 같은 did로 코멘트付き 종료 보고 → 409 + 코멘트 미기록
+    client.post(f"/issues/{i['id']}/claim", json={"agent": "worker"})
+    r2 = progress_post(client, i["id"], did, {"state": "failed",
+                                              "comment": "늦은 실패 보고", "author": "runner@t"})
+    assert r2.status_code == 409
+    comments = client.get(f"/issues/{i['id']}").json()["comments"]
+    assert not any(c["body"] == "늦은 실패 보고" for c in comments)
+
+
+def test_progress_cas_conditional_update_atomic(client, hook_server):
+    """리뷰 R2 — 비교와 갱신이 단일 조건부 UPDATE라 SELECT 후 claim 끼워들기가
+    반영되지 않는다: 조건부 UPDATE는 실행 시점 attempt를 평가한다."""
+    import sqlite3 as _sq
+    i = mk(client, title="원자 CAS")
+    reg_agent(client, hook_server)
+    did = make_dispatch(client, i["id"])
+    # 동일 연결에서 조건부 UPDATE 직전에 attempt를 올리는 시나리오 — SQL 자체가
+    # 실행 시점 스냅샷을 평가하므로 rowcount 0(거부)이어야 한다.
+    db_path = client.app.state.ctx.db_path
+    con = _sq.connect(db_path)
+    con.execute("UPDATE issues SET execution_attempt=5 WHERE id=?", (i["id"],))
+    con.commit()
+    cur = con.execute(
+        "UPDATE dispatches SET run_state='finished', ended_at='2026-01-01T00:00:00+0900' "
+        "WHERE id=? AND (attempt IS NULL OR attempt >= "
+        "(SELECT i.execution_attempt FROM issues i WHERE i.id=dispatches.issue_id))", (did,))
+    con.commit()
+    assert cur.rowcount == 0  # 조건 불충족 — 갱신 없음 (409 상응)
+    row = con.execute("SELECT run_state FROM dispatches WHERE id=?", (did,)).fetchone()
+    assert row[0] == ""  # 훼손 없음
+    con.close()
+    # 엔드포인트 경로에서도 409로 관측
+    assert progress_post(client, i["id"], did, {"state": "finished"}).status_code == 409
+
+
+def test_dispatch_crashed_queued_recovery(client, hook_server):
+    """리뷰 R4 — 전달 전 크래시로 남은 queued 행: 일정 시간 경과 후 재전송 시
+    동일 did로 재전달된다(영구 미전달 차단). 진행 중 queued는 기수락 유지."""
+    import time as _t
+    i = mk(client, title="크래시 복구")
+    client.post("/agents", json={"name": "demo", "base_url": hook_server})
+    payload = {"agent": "demo", "message": "크래시 대상"}
+    d1 = client.post(f"/issues/{i['id']}/dispatch", json=payload).json()
+    assert d1["status"] == "ok"
+    # 크래시 시뮬레이션: 새 행을 넣고 ts를 31초 전으로 조작(전달 없이 commit된 상태)
+    import sqlite3 as _sq
+    con = _sq.connect(client.app.state.ctx.db_path)
+    con.execute("UPDATE dispatches SET status='queued', detail='', ts=? WHERE id=?",
+                ("2020-01-01T00:00:00+0900", d1["id"]))
+    con.commit()
+    con.close()
+    Hook.received.clear()
+    d2 = client.post(f"/issues/{i['id']}/dispatch", json=payload)
+    assert d2.status_code == 200
+    assert d2.json()["id"] == d1["id"]  # 동일 did 재전달
+    assert len(Hook.received) == 1  # 웹훅 재전달됨
+    # 최근 queued(진행 중)는 기수락 — 이중 웹훅 없음
+    d3 = client.post(f"/issues/{i['id']}/dispatch", json={"agent": "demo", "message": "새 지시"})
+    _ = d3.status_code  # 새 행(본문 다름)
+    Hook.received.clear()
+    d4 = client.post(f"/issues/{i['id']}/dispatch", json={"agent": "demo", "message": "새 지시"})
+    assert d4.status_code == 200
+    assert len(Hook.received) == 0  # 진행 중 — 재전달 없음
+
+
+def test_dispatch_fresh_lease_dedupes_concurrent_resend(client, hook_server):
+    """리뷰 R4 — 전달 소유권(lease): 신선 lease 보유 queued 행의 재전송은 기수락
+    (이중 웹훅 방지), 만료 lease만 복구 재전달 + 전달 완료 후 lease 해제."""
+    import sqlite3 as _sq
+    from datetime import datetime
+    i = mk(client, title="lease 경합")
+    client.post("/agents", json={"name": "demo", "base_url": hook_server})
+    payload = {"agent": "demo", "message": "lease 대상"}
+    d1 = client.post(f"/issues/{i['id']}/dispatch", json=payload).json()
+    assert d1["status"] == "ok"
+    con = _sq.connect(client.app.state.ctx.db_path)
+    # 전달 전 크래시 시뮬레이션 — queued + 신선 lease(전달 진행 중)
+    con.execute("UPDATE dispatches SET status='queued', detail='', delivery_lease=? WHERE id=?",
+                (datetime.now().astimezone().strftime("%Y-%m-%dT%H:%M:%S%z"), d1["id"]))
+    con.commit()
+    con.close()
+    Hook.received.clear()
+    d2 = client.post(f"/issues/{i['id']}/dispatch", json=payload)
+    assert d2.status_code == 200
+    assert len(Hook.received) == 0  # 신선 lease — 이중 웹훅 없음
+    # lease 만료 — 복구 재전달
+    con = _sq.connect(client.app.state.ctx.db_path)
+    con.execute("UPDATE dispatches SET delivery_lease=? WHERE id=?",
+                ("2020-01-01T00:00:00+0900", d1["id"]))
+    con.commit()
+    con.close()
+    d3 = client.post(f"/issues/{i['id']}/dispatch", json=payload)
+    assert d3.status_code == 200 and d3.json()["id"] == d1["id"]
+    assert len(Hook.received) == 1
+    con = _sq.connect(client.app.state.ctx.db_path)
+    con.row_factory = _sq.Row
+    row = con.execute("SELECT delivery_lease FROM dispatches WHERE id=?", (d1["id"],)).fetchone()
+    con.close()
+    assert row["delivery_lease"] is None  # 전달 완료 후 lease 해제
+
+
+def test_dispatch_recovery_completion_boundary(client, hook_server):
+    """리뷰 3차 R4 — 복구 전달 완료 후 늦은 재전송: 자격(status)과 lease를 같은
+    조건에 넣어 완료 경계 차단. error 행 복구 전달(ok 확정) 뒤의 재전송은
+    웹훅을 다시 치지 않는다."""
+    import sqlite3 as _sq
+    i = mk(client, title="완료 경계")
+    client.post("/agents", json={"name": "demo", "base_url": hook_server})
+    payload = {"agent": "demo", "message": "경계 대상"}
+    d1 = client.post(f"/issues/{i['id']}/dispatch", json=payload).json()
+    con = _sq.connect(client.app.state.ctx.db_path)
+    con.execute("UPDATE dispatches SET status='error', detail='HTTP 500' WHERE id=?", (d1["id"],))
+    con.commit()
+    con.close()
+    Hook.received.clear()
+    # A: 복구 재전달 — 웹훅 1회, ok 확정
+    dA = client.post(f"/issues/{i['id']}/dispatch", json=payload)
+    assert dA.status_code == 200 and len(Hook.received) == 1
+    # B: A 확정 뒤의 늦은 재전송 — 선점 실패, 웹훅 추가 없음
+    dB = client.post(f"/issues/{i['id']}/dispatch", json=payload)
+    assert dB.status_code == 200 and dB.json()["id"] == d1["id"]
+    assert len(Hook.received) == 1
+
+
+def test_dispatch_error_lease_blocks_concurrent_resend(client, hook_server):
+    """리뷰 4차 R4 — error 행 복구 전달 진행 중(신선 lease)의 동시 재전송도
+    기수락된다: 자격(status)과 lease 신선도를 같은 조건에 넣어 전달 중 경계 차단."""
+    import sqlite3 as _sq
+    from datetime import datetime
+    i = mk(client, title="error lease 경합")
+    client.post("/agents", json={"name": "demo", "base_url": hook_server})
+    payload = {"agent": "demo", "message": "error lease 대상"}
+    d1 = client.post(f"/issues/{i['id']}/dispatch", json=payload).json()
+    con = _sq.connect(client.app.state.ctx.db_path)
+    # A가 error 행 복구를 선점한 직후(웹훅 대기 중) 상태 모사
+    con.execute("UPDATE dispatches SET status='error', detail='HTTP 500', delivery_lease=? WHERE id=?",
+                (datetime.now().astimezone().strftime("%Y-%m-%dT%H:%M:%S%z"), d1["id"]))
+    con.commit()
+    con.close()
+    Hook.received.clear()
+    d2 = client.post(f"/issues/{i['id']}/dispatch", json=payload)
+    assert d2.status_code == 200 and d2.json()["id"] == d1["id"]
+    assert len(Hook.received) == 0  # 진행 중 복구 — 이중 웹훅 없음
+
+
+def test_dispatch_report_dedup_interleaved_sessions(client, hook_server):
+    """리뷰 4차 R10 — 접수 이력이 (dispatch, session) 유니크: A 접수 → B-r2 접수 →
+    A 응답 유실 재시도 순서에서도 A 보고는 다시 접수되지 않는다(총 2건)."""
+    i = mk(client, title="끼어든 세션 dedup")
+    client.post("/agents", json={"name": "demo", "base_url": hook_server})
+    d = client.post(f"/issues/{i['id']}/dispatch", json={"agent": "demo", "message": "m"}).json()
+    url = f"/issues/{i['id']}/dispatches/{d['id']}/progress"
+    pa = {"state": "finished", "exit": 0, "comment": "runner:x dispatch#%d done exit=0 session=A" % d["id"], "session": "tt-x-1-sha1-r1"}
+    pb = {"state": "finished", "exit": 0, "comment": "runner:x dispatch#%d done exit=0 session=B" % d["id"], "session": "tt-x-1-sha2-r2"}
+    assert client.post(url, json=pa).status_code == 200   # A 접수
+    assert client.post(url, json=pb).status_code == 200   # B-r2 접수
+    assert client.post(url, json=pa).status_code == 200   # A 응답 유실 재시도
+    got = client.get(f"/issues/{i['id']}").json()
+    assert len([c for c in got["comments"] if "done exit=0" in c["body"]]) == 2
+
+
+def test_dispatch_projection_without_comment_leaves_report_session(client, hook_server):
+    """리뷰 5차 R11 — 코멘트 없는 종료 투영(STALL-kill·TIMEOUT·release)은
+    report_session을 기록하지 않는다: 접수 증거는 코멘트 접수와만 연결."""
+    import sqlite3 as _sq
+    i = mk(client, title="무코멘트 투영")
+    client.post("/agents", json={"name": "demo", "base_url": hook_server})
+    d = client.post(f"/issues/{i['id']}/dispatch", json={"agent": "demo", "message": "m"}).json()
+    url = f"/issues/{i['id']}/dispatches/{d['id']}/progress"
+    assert client.post(url, json={"state": "failed", "exit": 1, "session": "s1"}).status_code == 200
+    con = _sq.connect(client.app.state.ctx.db_path)
+    con.row_factory = _sq.Row
+    row = con.execute("SELECT run_state, report_session FROM dispatches WHERE id=?", (d["id"],)).fetchone()
+    con.close()
+    assert row["run_state"] == "failed"
+    assert row["report_session"] is None  # 접수 증거 아님
+
+
+def test_dispatch_dedup_retry_keeps_current_projection(client, hook_server):
+    """리뷰 5차 R13 — 접수 이력 중복인 이전 세션 재시도는 투영(run_state/ended_at/
+    session)을 갱신하지 않는다: A 접수 → B-r2 running 투영 → A 재시도 → 서버는
+    여전히 B-r2 running(/agents/active에 B 존재)."""
+    i = mk(client, title="재시도 투영 보존")
+    client.post("/agents", json={"name": "demo", "base_url": hook_server})
+    d = client.post(f"/issues/{i['id']}/dispatch", json={"agent": "demo", "message": "m"}).json()
+    url = f"/issues/{i['id']}/dispatches/{d['id']}/progress"
+    pa = {"state": "finished", "exit": 0,
+          "comment": "runner:x dispatch#%d done exit=0 session=A" % d["id"],
+          "session": "tt-x-1-sha1-r1"}
+    pb = {"state": "running", "session": "tt-x-1-sha2-r2"}
+    assert client.post(url, json=pa).status_code == 200   # A 접수
+    assert client.post(url, json=pb).status_code == 200   # B-r2 running 투영
+    assert client.post(url, json=pa).status_code == 200   # A 응답 유실 재시도
+    active = client.get("/agents/active").json()
+    assert any(a["dispatch_id"] == d["id"] for a in active)  # B-r2 running 유지
+    got = client.get(f"/issues/{i['id']}").json()
+    assert len([c for c in got["comments"] if "done exit=0" in c["body"]]) == 1
+
+
+def test_claim_redelivery_requires_fresh_lease_for_both_statuses():
+    """리뷰 5차 R4 — 선점 헬퍼 단위: error/queued 모두 신선 lease 보유 행은
+    선점 실패(None — 기수락), 무 lease/만료만 성공. 충돌·기존 진입점이 이
+    함수 하나를 공유하므로 INSERT 충돌 경계도 동일하게 차단된다."""
+    import sqlite3 as _sq
+    from datetime import datetime, timedelta
+    from server.routers.agents import _claim_redelivery, DELIVERY_RECOVER_S
+    from server import db as dbmod
+    con = _sq.connect(":memory:")
+    con.row_factory = _sq.Row
+    con.execute("CREATE TABLE dispatches (id INTEGER PRIMARY KEY, status TEXT, delivery_lease TEXT, context TEXT)")
+    con.execute("INSERT INTO dispatches (id, status, delivery_lease, context) VALUES (1, 'error', NULL, 'ctx-1')")
+    con.execute("INSERT INTO dispatches (id, status, delivery_lease, context) VALUES (2, 'queued', NULL, 'ctx-2')")
+    fresh = datetime.now().astimezone().strftime("%Y-%m-%dT%H:%M:%S%z")
+    stale = (datetime.now().astimezone() - timedelta(seconds=DELIVERY_RECOVER_S + 5)).strftime("%Y-%m-%dT%H:%M:%S%z")
+    con.execute("INSERT INTO dispatches (id, status, delivery_lease, context) VALUES (3, 'error', ?, 'ctx-3')", (fresh,))
+    con.execute("INSERT INTO dispatches (id, status, delivery_lease, context) VALUES (4, 'queued', ?, 'ctx-4')", (fresh,))
+    con.execute("INSERT INTO dispatches (id, status, delivery_lease, context) VALUES (5, 'error', ?, 'ctx-5')", (stale,))
+    con.execute("INSERT INTO dispatches (id, status, delivery_lease, context) VALUES (6, 'ok', NULL, 'ctx-6')")
+    assert _claim_redelivery(con, con.execute("SELECT * FROM dispatches WHERE id=1").fetchone()) == {"context": "ctx-1"}
+    assert _claim_redelivery(con, con.execute("SELECT * FROM dispatches WHERE id=2").fetchone()) == {"context": "ctx-2"}
+    assert _claim_redelivery(con, con.execute("SELECT * FROM dispatches WHERE id=3").fetchone()) is None  # 신선 error
+    assert _claim_redelivery(con, con.execute("SELECT * FROM dispatches WHERE id=4").fetchone()) is None  # 신선 queued
+    assert _claim_redelivery(con, con.execute("SELECT * FROM dispatches WHERE id=5").fetchone()) == {"context": "ctx-5"}
+    assert _claim_redelivery(con, con.execute("SELECT * FROM dispatches WHERE id=6").fetchone()) is None  # 자격 없음
+    con.close()
+
+
+def test_dispatch_report_claim_gate_is_atomic_under_concurrency(client, hook_server):
+    """리뷰 6차 R13 — 보고 선점 게이트의 동시 원자성: 동일 보고 재시도와 새 회차
+    투영이 겹쳐도 (dispatch, session) 선점은 한 번만 성공하고, 투영은 승자의
+    보고로만 갱신된다(혼합 상태 — finished+새 회차 session — 불가)."""
+    import threading
+    i = mk(client, title="동시 선점 게이트")
+    client.post("/agents", json={"name": "demo", "base_url": hook_server})
+    d = client.post(f"/issues/{i['id']}/dispatch", json={"agent": "demo", "message": "m"}).json()
+    url = f"/issues/{i['id']}/dispatches/{d['id']}/progress"
+    pa = {"state": "finished", "exit": 0,
+          "comment": "runner:x dispatch#%d done exit=0 session=A" % d["id"],
+          "session": "tt-x-1-sha1-r1"}
+    pb = {"state": "running", "session": "tt-x-1-sha2-r2"}
+    barrier = threading.Barrier(5)
+    codes = []
+
+    def fire(payload):
+        barrier.wait(timeout=10)
+        codes.append(client.post(url, json=payload).status_code)
+
+    threads = [threading.Thread(target=fire, args=(p,))
+               for p in [pa, pa, pb, pb, pa]]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30)
+    assert all(c == 200 for c in codes), codes
+    row = client.get(f"/issues/{i['id']}/dispatches").json()
+    row = [r for r in row if r["id"] == d["id"]][0]
+    # 혼합 금지: 종료로 기록됐으면 세션은 A 보고의 것, 실행 중이면 B-r2
+    if row["run_state"] == "finished":
+        assert row["session"] == "tt-x-1-sha1-r1", row
+    else:
+        assert row["session"] == "tt-x-1-sha2-r2", row
+    got = client.get(f"/issues/{i['id']}").json()
+    assert len([c for c in got["comments"] if "done exit=0" in c["body"]]) == 1
+
+
+def test_dispatch_progress_terminal_report_dedup(client, hook_server):
+    """리뷰 3차 R10 — 응답 유실 재시도: 동일 dispatch+회차(세션) 종료 보고는
+    한 번만 접수된다(200 멱등). 새 회차(다른 세션)는 정상 접수된다."""
+    i = mk(client, title="보고 dedup")
+    client.post("/agents", json={"name": "demo", "base_url": hook_server})
+    d = client.post(f"/issues/{i['id']}/dispatch", json={"agent": "demo", "message": "m"}).json()
+    body = "runner:tp13 dispatch#%d done exit=0 session=s1" % d["id"]
+    p = {"state": "finished", "exit": 0, "comment": body, "session": "s1"}
+    url = f"/issues/{i['id']}/dispatches/{d['id']}/progress"
+    assert client.post(url, json=p).status_code == 200
+    assert client.post(url, json=p).status_code == 200  # 응답 유실 재시도
+    got = client.get(f"/issues/{i['id']}").json()
+    assert len([c for c in got["comments"] if "done exit=0" in c["body"]]) == 1
+    # 새 회차 — 세션명이 달라 report_session 불일치 → 정상 접수
+    assert client.post(url, json=dict(p, session="s1-abc1234-r2")).status_code == 200
+    got = client.get(f"/issues/{i['id']}").json()
+    assert len([c for c in got["comments"] if "done exit=0" in c["body"]]) == 2
+
+
+def test_dispatch_progress_comment_bumps_version(client, hook_server):
+    """리뷰 R9 — 통합 종료 접수가 코멘트 접수 코어를 공유: issues.version/
+    updated_at 갱신이 보존된다(/comments와 동일 의미)."""
+    i = mk(client, title="버전 갱신")
+    client.post("/agents", json={"name": "demo", "base_url": hook_server})
+    d = client.post(f"/issues/{i['id']}/dispatch", json={"agent": "demo", "message": "m"}).json()
+    before = client.get(f"/issues/{i['id']}").json()["version"]
+    r = client.post(f"/issues/{i['id']}/dispatches/{d['id']}/progress", json={
+                                       "state": "finished", "exit": 0,
+                                       "comment": "runner:tp13 dispatch#%d done exit=0 session=s" % d["id"]})
+    assert r.status_code == 200
+    after = client.get(f"/issues/{i['id']}").json()
+    assert after["version"] == before + 1
+    got = client.get(f"/issues/{i['id']}").json()
+    assert any("done exit=0" in cm["body"] for cm in got["comments"])
+
+
+def test_dispatch_progress_blocked_comment_escalates(client, hook_server):
+    """리뷰 R9 — 통합 접수가 blocked 카드의 human 알림을 유발(waiting_for=human
+    마커 + blocked 상태 → escalate_blocked_human)."""
+    i = mk(client, title="통합 블록 알림")
+    client.post("/agents", json={"name": "demo", "base_url": hook_server})
+    d = client.post(f"/issues/{i['id']}/dispatch", json={"agent": "demo", "message": "m"}).json()
+    # 카드를 blocked로 — waiting_for=human 마커 코멘트와 함께 통합 접수
+    client.post(f"/issues/{i['id']}/comments", json={"author": "runner:x", "body": "blocked"})
+    client.patch(f"/issues/{i['id']}", json={"state": "blocked"})
+    client.post(f"/issues/{i['id']}/dispatches/{d['id']}/progress", json={
+                                   "state": "failed", "exit": 2,
+                                   "comment": "runner:tp13 dispatch#%d BLOCKED — 승인 요구 exit=2 session=s "
+                                              "waiting_for=human." % d["id"]})
+    after = client.get(f"/issues/{i['id']}").json()
+    assert after["blocked_notified_at"], "blocked 카드 알림 미발동"
+
+
+def test_dispatch_redelivery_keeps_resume_context(client, hook_server):
+    """리뷰 R5 — error 재전달이 원래 resume context를 잃지 않는다:
+    성공(토큰) → 실패 → 재전달 시 payload.context == 앞선 토큰."""
+    Hook.mode = "ctx"
+    i = mk(client, title="컨텍스트 보존")
+    client.post("/agents", json={"name": "demo", "base_url": hook_server})
+    client.post(f"/issues/{i['id']}/dispatch", json={"agent": "demo", "message": "1차"})  # ses_X1
+    Hook.mode = "fail"
+    d2 = client.post(f"/issues/{i['id']}/dispatch", json={"agent": "demo", "message": "2차"}).json()
+    assert d2["status"] == "error"
+    Hook.mode = "ok"
+    d2r = client.post(f"/issues/{i['id']}/dispatch", json={"agent": "demo", "message": "2차"})
+    assert d2r.status_code == 200 and d2r.json()["id"] == d2["id"]
+    # 재전달 payload의 context는 행에 상속된 토큰(ses_X1) — 빈 문자열 아님
+    assert Hook.received[-1][1]["context"] == "ses_X1"
+
+def test_dispatch_idempotent_3x_one_comment(client, hook_server):
+    """TT 개선#1 (M4DEDPK2-0VSF) 검증 기준 — 동일 dispatch 3회 재전송 → 코멘트 1건."""
+    i = mk(client, title="멱등 카드")
+    client.post("/agents", json={"name": "demo", "base_url": hook_server})
+    payload = {"agent": "demo", "message": "이거 해줘", "author": "human"}
+    d1 = client.post(f"/issues/{i['id']}/dispatch", json=payload)
+    d2 = client.post(f"/issues/{i['id']}/dispatch", json=payload)
+    d3 = client.post(f"/issues/{i['id']}/dispatch", json=payload)
+    assert d1.status_code == 201
+    assert d2.status_code == 200 and d3.status_code == 200  # 기수락은 200
+    dids = {d.json()["id"] for d in (d1, d2, d3)}
+    assert len(dids) == 1  # 동일 did
+    comments = client.get(f"/issues/{i['id']}").json()["comments"]
+    assert [c for c in comments if c["body"] == "이거 해줘"] == [comments[0]] or \
+           sum(1 for c in comments if c["body"] == "이거 해줘") == 1
+    assert len(Hook.received) == 1  # 웹훅 전달도 1회
+    # dispatch 행도 1건
+    rows = client.get(f"/issues/{i['id']}/dispatches").json()
+    assert len(rows) == 1
+
+
+def test_dispatch_idem_new_attempt_after_bump(client, hook_server):
+    """회차(attempt)가 바뀌면 동일 본문이라도 새 멱등키 — 정상 신규 dispatch."""
+    i = mk(client, title="재회차 카드")
+    client.post("/agents", json={"name": "demo", "base_url": hook_server})
+    payload = {"agent": "demo", "message": "동일 본문"}
+    d1 = client.post(f"/issues/{i['id']}/dispatch", json=payload).json()
+    # attempt bump는 claim 경로(서버가 원자적으로 +1) — 일반 PATCH 대상이 아니다
+    client.post(f"/issues/{i['id']}/claim", json={"agent": "worker"})
+    d2 = client.post(f"/issues/{i['id']}/dispatch", json=payload)
+    assert d2.status_code == 201
+    assert d2.json()["id"] != d1["id"]  # 새 did
+    rows = client.get(f"/issues/{i['id']}/dispatches").json()
+    assert len(rows) == 2
+
+
+def test_dispatch_idem_error_retry_redelivers_same_did(client, hook_server):
+    """전달 실패(error) 행에 대한 재전송 — 동일 did로 재전달, 신규 코멘트 없음."""
+    i = mk(client, title="재전달 카드")
+    client.post("/agents", json={"name": "demo", "base_url": hook_server})
+    Hook.mode = "fail"
+    d1 = client.post(f"/issues/{i['id']}/dispatch",
+                     json={"agent": "demo", "message": "재시도 대상"}).json()
+    assert d1["status"] == "error"
+    Hook.mode = "ok"
+    d2 = client.post(f"/issues/{i['id']}/dispatch", json={"agent": "demo", "message": "재시도 대상"})
+    assert d2.status_code == 200
+    assert d2.json()["id"] == d1["id"]  # 동일 did 재전달
+    assert d2.json()["status"] == "ok"
+    comments = client.get(f"/issues/{i['id']}").json()["comments"]
+    assert sum(1 for c in comments if c["body"] == "재시도 대상") == 1  # 코멘트 1건 유지
+    assert len(Hook.received) == 2  # 웹훅은 재전달됨
+
 def test_dispatch_guards(client, hook_server):
     i = mk(client, title="가드")
     assert client.post(f"/issues/{i['id']}/dispatch", json={"agent": "ghost", "message": "x"}).status_code == 404

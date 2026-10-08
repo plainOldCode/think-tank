@@ -459,15 +459,10 @@ def verify_issue(issue_id: str, p: VerifyIn, ctx: Ctx = Depends(get_ctx)):
 @router.post("/issues/{issue_id}/comments", status_code=201)
 def add_comment(issue_id: str, p: CommentIn, ctx: Ctx = Depends(get_ctx)):
     with ctx.con() as c:
-        row = service.get_issue(c, issue_id)
-        c.execute("INSERT INTO comments (issue_id, author, body, ts) VALUES (?,?,?,?)",
-                  (issue_id, p.author, p.body, dbmod.now()))
-        c.execute("UPDATE issues SET updated_at=?, version=version+1 WHERE id=?", (dbmod.now(), issue_id))
+        service.get_issue(c, issue_id)
+        # 접수 코어는 통합 종료 접수(progress comment)와 공유 (R9)
+        service.record_comment(c, issue_id, p.author, p.body)
         c.commit()
-        # legacy 러너 호환 (M3BZV172-9F0S B): blocked 카드에 waiting_for=human 마커 코멘트가
-        # 도착하면(runner BLOCKED 서식) 필드 없이도 human 알림 1회 발동.
-        if row["state"] == "blocked" and "waiting_for=human" in p.body:
-            service.escalate_blocked_human(c, issue_id, source="comment")
     return {"ok": True}
 
 

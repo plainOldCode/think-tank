@@ -64,6 +64,20 @@ def reset_evidence(c, issue_id):
             "evidence_after_comment_id": cursor}
 
 
+def record_comment(c, issue_id, author, body, notify_human=True):
+    """코멘트 접수 코어 (리뷰 R9) — /comments 라우터와 통합 종료 접수(progress
+    comment)가 공유한다. 버전·updated_at 갱신과 legacy blocked human 알림
+    (waiting_for=human 마커 + blocked 카드)까지 동일 의미 보존."""
+    c.execute("INSERT INTO comments (issue_id, author, body, ts) VALUES (?,?,?,?)",
+              (issue_id, author, body, dbmod.now()))
+    c.execute("UPDATE issues SET updated_at=?, version=version+1 WHERE id=?",
+              (dbmod.now(), issue_id))
+    if notify_human:
+        row = c.execute("SELECT state FROM issues WHERE id=?", (issue_id,)).fetchone()
+        if row and row["state"] == "blocked" and "waiting_for=human" in (body or ""):
+            escalate_blocked_human(c, issue_id, source="comment")
+
+
 def check_report(row, report):
     pinned = json.loads(row["work_contract"]) if row["work_contract"] else {}
     if report.attempt != row["execution_attempt"] or report.contract_version != pinned.get("version"):
