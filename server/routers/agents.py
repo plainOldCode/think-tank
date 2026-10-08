@@ -286,15 +286,21 @@ def dispatch_progress(issue_id: str, dispatch_id: int, p: DispatchProgress, requ
             # running/stalled 등 비종료 진행은 last-write-wins 그대로(러너 stall_check
             # 소유 — 서버 재계산 금지).
             if p.state in ("finished", "failed"):
-                # 이미 접수된 동일 보고(동일 dispatch+session)의 재시도는 투영 갱신
-                # 없이 기수락한다(5차 리뷰 R13) — 끼어든 세션의 응답 유실 재시도가
-                # 새 회차의 running 투영을 종료로 덮지 않게 한다. 코멘트 유무와
-                # 무관하게 run_state/ended_at/session을 그대로 둔다.
-                if p.comment and p.session and c.execute(
-                        "SELECT 1 FROM dispatch_reports WHERE dispatch_id=? AND session=?",
-                        (dispatch_id, p.session)).fetchone():
-                    row = c.execute("SELECT * FROM dispatches WHERE id=?", (dispatch_id,)).fetchone()
-                    return dict(row)
+                # 보고 선점 선(先)결제 (6차 리뷰 R13 — 원자성): 접수 이력 (dispatch,
+                # session) 유니크 INSERT OR IGNORE가 그 자체로 게이트다. 이력 SELECT와
+                # 투영 갱신을 분리하면 경합 창(이력 부재 판독 → 타 요청 접수 → 재개)에서
+                # 이전 세션 재시도가 새 회차 running 투영을 종료로 덮는다. 승자만 아래
+                # 투영 갱신·코멘트 접수로 진행하고, 패자는 이미 접수된 보고의 재시도로
+                # 투영(run_state/ended_at/session) 무변경 기수락 200. 세션 없는 보고는
+                # 회차 식별 불가 — 선점 없이 기존 동작(CAS + 매 접수).
+                claimed = None
+                if p.comment and p.session:
+                    claimed = c.execute(
+                        "INSERT OR IGNORE INTO dispatch_reports (dispatch_id, session, ts) "
+                        "VALUES (?,?,?)", (dispatch_id, p.session, dbmod.now()))
+                    if claimed.rowcount == 0:
+                        row = c.execute("SELECT * FROM dispatches WHERE id=?", (dispatch_id,)).fetchone()
+                        return dict(row)
                 # report_session은 코멘트 접수와만 연결한다(5차 리뷰 R11) — STALL-kill·
                 # TIMEOUT·release 등 코멘트 없는 종료 투영은 접수 증거가 아니므로
                 # 기록하면 _terminal_recorded가 오패정한다.
@@ -308,26 +314,18 @@ def dispatch_progress(issue_id: str, dispatch_id: int, p: DispatchProgress, requ
                     "(SELECT i.execution_attempt FROM issues i WHERE i.id=dispatches.issue_id))" % sets,
                     (*args, dispatch_id))
                 if res.rowcount != 1:
+                    # 409 — with 블록 예외 롤백으로 방금 선점한 보고 이력도 함께 취소된다
+                    # (미접수 보고의 이력 잔재 방지). 코멘트도 접수되지 않는다.
                     raise HTTPException(
                         409, f"stale round report: dispatch#{dispatch_id} attempt={row['attempt']} "
                              f"< issue current execution_attempt — 이전 회차 종료 보고 거부")
                 if p.comment:
-                    # 원자적 dedup (R10): 접수 이력을 (dispatch, session) 유니크 키로
-                    # 보존한다 — 마지막 세션만 기억하면 A→B-r2→A 재시도에서 A 보고가
-                    # 다시 접수된다(4차 리뷰 R10). INSERT OR IGNORE의 rowcount로 한 번만
-                    # 접수: 동일 회차 재시도는 200 멱등, 새 회차는 새 이력으로 정상 접수.
-                    dup = None
-                    if p.session:  # 세션 없는 보고는 회차 식별 불가 — dedup 없음
-                        dup = c.execute(
-                            "INSERT OR IGNORE INTO dispatch_reports (dispatch_id, session, ts) "
-                            "VALUES (?,?,?)", (dispatch_id, p.session, dbmod.now()))
-                    if dup is None or dup.rowcount:
-                        # 종료 투영과 완료 보고를 같은 트랜잭션에 접수 (R3: CAS 통과 후
-                        # 별도 /comments 사이 회차 변경 창 제거 — 409면 코멘트도 없다).
-                        # 접수 코어 공유로 버전 갱신·blocked 알림 부수효과 보존 (R9)
-                        service.record_comment(c, issue_id,
-                                               (p.author or "runner").strip() or "runner",
-                                               p.comment[:4000])
+                    # 종료 투영과 완료 보고를 같은 트랜잭션에 접수 (R3: CAS 통과 후
+                    # 별도 /comments 사이 회차 변경 창 제거 — 409면 코멘트도 없다).
+                    # 접수 코어 공유로 버전 갱신·blocked 알림 부수효과 보존 (R9)
+                    service.record_comment(c, issue_id,
+                                           (p.author or "runner").strip() or "runner",
+                                           p.comment[:4000])
             else:
                 fields["run_state"] = p.state
                 if p.state in ("running", "stalled"):

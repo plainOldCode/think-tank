@@ -600,6 +600,44 @@ def test_claim_redelivery_requires_fresh_lease_for_both_statuses():
     con.close()
 
 
+def test_dispatch_report_claim_gate_is_atomic_under_concurrency(client, hook_server):
+    """리뷰 6차 R13 — 보고 선점 게이트의 동시 원자성: 동일 보고 재시도와 새 회차
+    투영이 겹쳐도 (dispatch, session) 선점은 한 번만 성공하고, 투영은 승자의
+    보고로만 갱신된다(혼합 상태 — finished+새 회차 session — 불가)."""
+    import threading
+    i = mk(client, title="동시 선점 게이트")
+    client.post("/agents", json={"name": "demo", "base_url": hook_server})
+    d = client.post(f"/issues/{i['id']}/dispatch", json={"agent": "demo", "message": "m"}).json()
+    url = f"/issues/{i['id']}/dispatches/{d['id']}/progress"
+    pa = {"state": "finished", "exit": 0,
+          "comment": "runner:x dispatch#%d done exit=0 session=A" % d["id"],
+          "session": "tt-x-1-sha1-r1"}
+    pb = {"state": "running", "session": "tt-x-1-sha2-r2"}
+    barrier = threading.Barrier(5)
+    codes = []
+
+    def fire(payload):
+        barrier.wait(timeout=10)
+        codes.append(client.post(url, json=payload).status_code)
+
+    threads = [threading.Thread(target=fire, args=(p,))
+               for p in [pa, pa, pb, pb, pa]]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30)
+    assert all(c == 200 for c in codes), codes
+    row = client.get(f"/issues/{i['id']}/dispatches").json()
+    row = [r for r in row if r["id"] == d["id"]][0]
+    # 혼합 금지: 종료로 기록됐으면 세션은 A 보고의 것, 실행 중이면 B-r2
+    if row["run_state"] == "finished":
+        assert row["session"] == "tt-x-1-sha1-r1", row
+    else:
+        assert row["session"] == "tt-x-1-sha2-r2", row
+    got = client.get(f"/issues/{i['id']}").json()
+    assert len([c for c in got["comments"] if "done exit=0" in c["body"]]) == 1
+
+
 def test_dispatch_progress_terminal_report_dedup(client, hook_server):
     """리뷰 3차 R10 — 응답 유실 재시도: 동일 dispatch+회차(세션) 종료 보고는
     한 번만 접수된다(200 멱등). 새 회차(다른 세션)는 정상 접수된다."""
