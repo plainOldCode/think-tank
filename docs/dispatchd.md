@@ -1,49 +1,49 @@
-# dispatchd — TT 자율 디스패치 설계 (M3PEVTDH-5CCS)
+# dispatchd — TT autonomous dispatch design (M3PEVTDH-5CCS)
 
-상태: 설계 확정 v1 (2026-09-29, M3PG5Q9W-30KP). 구현은 5R5B 이하 카드.
+Status: design finalized v1 (2026-09-29, M3PG5Q9W-30KP). Implementation is under the 5R5B-or-below cards.
 
-## 결정 요약
-- mini launchd 잡 `com.tt.dispatchd` (tt-server와 동거, TT_URL=http://127.0.0.1:7800), 30초 루프.
-- **public HTTP API만 소비, 서버 무수정, 사설 state 없음** — 판단 근거는 전부 카드·dispatches 이력에 반영(재생 산출 가능).
-- 실행 라운드는 **비상주 원샷**(현 dispatch 프로토콜 그대로). "이어짐"은 카드 그래프(sibling/child 우선)와 3단계 보고로 보장. 상주 LLM 세션은 범위 밖(관측 후 별도 결정).
-- dispatchd는 상태 머신이 아니라 **판순 함수 + 실행기**: 라운드 입력( 스냅샷 ) → 결정 목록. 정책은 순수 함수로 TDD.
+## Decision summary
+- A mini launchd job `com.tt.dispatchd` (co-resident with tt-server, TT_URL=http://127.0.0.1:7800), 30-second loop.
+- **Consumes only the public HTTP API, no server changes, no private state** — all judgment grounds land on cards and dispatch history (replayable).
+- Execution rounds are **non-resident one-shots** (the current dispatch protocol as-is). "Continuity" is guaranteed by the card graph (sibling/child first) and three-stage reporting. Resident LLM sessions are out of scope (a separate decision after observation).
+- dispatchd is not a state machine but a **judgment function + executor**: round input (a snapshot) → a list of decisions. Policy is TDD'd as pure functions.
 
-## API 표면 (실측 어서션, 2026-09-29 app.py/openapi)
-| 용도 | 실 라우트 | 규약·주의 |
+## API surface (measured assertions, 2026-09-29 app.py/openapi)
+| purpose | real route | convention · caveats |
 |---|---|---|
-| 후보 조회 | `GET /issues?state=todo&label=auto&limit=200` | 필터: state/parent/label/assignee/q/app.py:242-256. pull의 원자력 SQL과 동일 조건(`state='todo' AND assignee=''`, app.py:350-352) |
-| 특정 카드 claim | `POST /issues/{id}/claim {agent}` | state≠todo 409(app.py:302), 타인 assignee 409, agent당 lease 2한도(app.py:348 — max_leases 공통) — **claim 시 attempt+1·계약 고정·in_progress** |
-| dispatch 전달 | `POST /issues/{id}/dispatch {agent, message}` | message 필수(422), agent 등록+enabled 필수(902-911). dispatch는 수령이 아니라 **전달** — claim과 반드시 분리(app.py:902, api.md 규약) |
-| 수동 수령(대체) | `POST /pull {agent, require_label}` | ID 지정 불가(풀 방식). dispatchd는 **claim 우선 사용** — W1DP 함정 회피 |
-| 라운드 이력 | `GET /issues/{id}/dispatches` | 시도 카운트의 진원(app.py:729) |
-| release_ready | `GET /issues/{id}`(why-blocked 투영) | blocked+dependency의 의존 전부 done/cancelled → release_ready(app.py:619-622, 695-696). **pull/claim 후보에 blocked는 없음(app.py:350) — 재개는 todo 전이가 필수** |
-| agent 목록 | `GET /agents` | base_url(hook), enabled, release_hook/notify_hook — dispatch 대상은 enabled 러너만(app.py:826-836) |
-| 진행 관찰(선택) | `GET /agents/active` | FXWQ — 라운드 진행 판단 보조 |
+| Candidate query | `GET /issues?state=todo&label=auto&limit=200` | Filters: state/parent/label/assignee/q app.py:242-256. Same conditions as pull's atomic SQL (`state='todo' AND assignee=''`, app.py:350-352) |
+| Claim a specific card | `POST /issues/{id}/claim {agent}` | state≠todo 409 (app.py:302), someone else's assignee 409, 2-lease limit per agent (app.py:348 — max_leases shared) — **on claim: attempt+1, contract pinned, in_progress** |
+| Dispatch delivery | `POST /issues/{id}/dispatch {agent, message}` | message required (422), agent registered+enabled required (902-911). dispatch is **delivery**, not claiming — must be separated from claim (app.py:902, api.md convention) |
+| Manual claim (alternative) | `POST /pull {agent, require_label}` | Cannot target an ID (pull-style). dispatchd **prefers claim** — avoids the W1DP pitfall |
+| Round history | `GET /issues/{id}/dispatches` | The epicenter of attempt counting (app.py:729) |
+| release_ready | `GET /issues/{id}` (why-blocked projection) | For blocked+dependency, when all deps are done/cancelled → release_ready (app.py:619-622, 695-696). **blocked is never a pull/claim candidate (app.py:350) — resumption requires a todo transition** |
+| Agent list | `GET /agents` | base_url (hook), enabled, release_hook/notify_hook — dispatch targets are enabled runners only (app.py:826-836) |
+| Run observation (optional) | `GET /agents/active` | FXWQ — assists round-progress judgment |
 
-## 라운드 알고리즘 (판순 함수 decide(snapshot) → actions[])
-1. kill: env `TT_AUTO_DISPATCH != 1` → 아무 동작도 하지 않는다(로그 1회/10분).
-2. 유휴 판정: 등록 agent별 활성 lease(`GET /issues?assignee=<agent>&state=in_progress`) — 유휴 agent만. dispatchd 정책은 **agent당 1 카드**(직렬). 서버 한도(2)보다 보수적.
-3. 대상 탐색 우선순위:
-   a. 직전 완료 카드(`assignee=<agent>`, state=done)의 **todo 자식**(미완료, deps clear) → 같은 흐름 연속.
-   b. 그 카드의 parent의 **todo 형제**.
-   c. **blocked+dependency+release_ready** → (승인 근거: 서버 기계 판정 app.py:619-622) PATCH state=todo 후 4로.
-   d. 후보 풀 `state=todo&label=auto` 중 **의존 clear** + 우선순위 낮은 순(숫자 우선순위 정렬은 확장점).
-4. 예산 게이트(실패 루프 차단): 대상 카드의 dispatches 기록 ≥ 2이고 state≠done → dispatch하지 않고 `needs-human` 라벨 + note. `execution_attempt ≥ 2`도 동일.
-5. 실행: claim → dispatch(message: 카드 제목/본문 + 수령· heartbeat·3단계 보고 지시) → note `[auto] dispatch`. claim 409(선점)은 조용히 스킵.
-6. 실패 시: dispatch webhook 5xx/타임아웃 → exponential backoff(30→300s 상한), 카드 state는 건드리지 않음(원샷 재시도는 다음 라운드, 단 예산 게이트 내).
-7. 스 킵은 침묵(로그만) — dispatch/needs-human/재개 결정만 카드 note(노이즈 통제).
+## Round algorithm (the judgment function decide(snapshot) → actions[])
+1. Kill: if env `TT_AUTO_DISPATCH != 1` → do nothing (log once per 10 minutes).
+2. Idle judgment: per registered agent, active leases (`GET /issues?assignee=<agent>&state=in_progress`) — only idle agents. dispatchd policy is **1 card per agent** (serial), more conservative than the server limit (2).
+3. Target-search priority:
+   a. The **todo children** (unfinished, deps clear) of the agent's last completed card (`assignee=<agent>`, state=done) → continuity of the same flow.
+   b. **todo siblings** of that card's parent.
+   c. **blocked+dependency+release_ready** → (approval basis: the server's machine judgment app.py:619-622) PATCH state=todo, then go to 4.
+   d. From the candidate pool `state=todo&label=auto`, those with **clear dependencies**, lowest priority first (numeric priority sorting is an extension point).
+4. Budget gate (blocks failure loops): if the target card has ≥ 2 dispatch records and state≠done → do not dispatch; add a `needs-human` label + note. `execution_attempt ≥ 2` is the same.
+5. Execute: claim → dispatch (message: card title/body + claim/heartbeat/three-stage-report instructions) → note `[auto] dispatch`. A claim 409 (preempted) is silently skipped.
+6. On failure: dispatch webhook 5xx/timeout → exponential backoff (30→300 s cap), card state untouched (one-shot retry happens next round, within the budget gate).
+7. Skips are silent (log only) — only dispatch/needs-human/resume decisions become card notes (noise control).
 
-## 실패 기준 (틀리면 반박되는 표)
-- 라운드 간 세션/기억 없음 — state는 요청 직전 스냅샷만. cache 없음.
-- pull(풀) 미사용 — 특정 카드는 claim만.
-- 2회 시도 카드(done 아님) 재dispatch 없음 — needs-human. 자동화 runaway 원천 차단.
-- dispatchd는 dispatch/note/(release_ready 카드의) todo 전이만 한다. done/review/cancelled 변경 불가.
-- 서버 장애 시 쓰기 0(백오프), lease는 TTL로 자연 해금(만료 시 다른 agent가 steal — 카드 1회 비용).
-- 첫 dispatchd 자체는 사람이 구현·등록(bootstrap 예외). BKXA에서 실 runner 1개 E2E.
+## Failure criteria (a table that is refuted if wrong)
+- No session/memory across rounds — state is only the snapshot right before a request. No cache.
+- pull (pool-style) is unused — specific cards are claim-only.
+- No re-dispatch of a twice-attempted card (not done) — needs-human. Blocks automation runaway at the source.
+- dispatchd only performs dispatch/note/(for release_ready cards) todo transitions. It cannot change done/review/cancelled.
+- On server failure: zero writes (backoff); leases unlock naturally via TTL (on expiry another agent steals — a one-round card cost).
+- The first dispatchd itself is implemented and registered by a human (bootstrap exception). One real-runner E2E in BKXA.
 
-## 구현 카드 매핑
-- 5R5B: 코어(decide 순수 함수 + 실행기 + launchd plist + backoff) — 판순 함수 8~10 판정표 TDD.
-- Z1CY: (a)(b) continuation 규칙의 그래프 탐색 정밀화 — 5R5B 기본 구현 후 확장.
-- TKXA: 예산 게이트(4)·kill switch(1) — 결정표에 흡수되므로 5R5B에 병합 취소 가능(5R5B가 판정).
-- MCW3: 로그/노트 포맷 — 5R5B에 흡수 예상(중복 판정 가능).
-- BKXA: 실 runner E2E.
+## Implementation card mapping
+- 5R5B: the core (decide pure function + executor + launchd plist + backoff) — TDD with an 8–10 row judgment table for the decision function.
+- Z1CY: refining the graph walk of the (a)(b) continuation rules — an extension after 5R5B's basic implementation.
+- TKXA: the budget gate (4) and kill switch (1) — absorbed into the decision table, so it can be merged/cancelled into 5R5B (5R5B decides).
+- MCW3: log/note formats — expected to be absorbed into 5R5B (duplication can be judged).
+- BKXA: a real-runner E2E.

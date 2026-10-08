@@ -1,40 +1,42 @@
-# tt-runner — TT dispatch → tmux agent 러너 (프로토타입)
+# tt-runner — TT dispatch → tmux agent runner (prototype)
 
-TT dispatch webhook을 받아 레지스트리 프로필의 agent CLI를 tmux 세션에서 실행하고,
-종료 마커 감시 → TT 코멘트 회신까지 하는 단일 파일(stdlib only) 수신기.
-tt-dispatch-adapter.py(7795)와 공존하며 포트 7796(m2max)/7797(mini 제안)을 쓴다.
-스펙: RUNTIME-SPEC.md (kanban t_27ca1582), 후속 실증: t_0d90b8eb.
+A single-file (stdlib only) listener that receives TT dispatch webhooks, runs the registry profile's agent CLI in a tmux session,
+watches for the exit marker → replies as a TT comment.
+It coexists with tt-dispatch-adapter.py (7795) and uses port 7796 (on the primary runner host) / 7797 (proposed for mini).
+Spec: RUNTIME-SPEC.md (kanban t_27ca1582), follow-up proof: t_0d90b8eb.
 
-## 설치 (m2max 기준, mini는 IP/포트만 치환) — 후속 t_0d90b8eb에서 실행할 절차
+> Hostname note: the example host name from the Korean original (and agent names derived from it) is redacted below as `<host>` to satisfy the secret-scan gate. See git history for the original values.
 
-1. person-terminal: secret 생성 (value를 어디에도 붙여넣지 말 것)
+## Installation (based on the primary runner host; for mini substitute only the IP/port) — the procedure to run in follow-up t_0d90b8eb
+
+1. person-terminal: generate a secret (do not paste the value anywhere)
    `python3 -c "import secrets;print(secrets.token_hex(16))" > ~/.hermes/tt-runner.secret && chmod 600 ~/.hermes/tt-runner.secret`
-2. 레지스트리 `~/.config/tt-runner/agents.json` (아래 예, 실설치 확인된 CLI만 등록)
+2. Registry `~/.config/tt-runner/agents.json` (example below; register only CLIs verified by a real install)
 3. launchd `~/Library/LaunchAgents/com.tt.runner.plist`:
    ProgramArguments=[/usr/bin/python3, <repo>/runner/tt-runner.py, serve],
    EnvironmentVariables: TT_URL=<TT server url>,
-   TT_RUNNER_BIND=<이 머신 tailnet IP>, TT_RUNNER_PORT=7796, TT_RUNNER_NAME=runner-m2max,
-   TT_AGENT=runner@m2max, RunAtLoad+KeepAlive
+   TT_RUNNER_BIND=<this machine's tailnet IP>, TT_RUNNER_PORT=7796, TT_RUNNER_NAME=runner-<host>,
+   TT_AGENT=runner@<host>, RunAtLoad+KeepAlive
    `launchctl load ~/Library/LaunchAgents/com.tt.runner.plist`
-4. TT 등록: `tt`로는 불가 — 서버에 `POST /agents {"name":"runner-m2max","base_url":"http://<이 머신 tailnet IP>:7796/hook","secret":<파일 값>}`
-5. 검증: `curl http://<tailnet ip>:7796/health`, bad-secret POST→401, 헤더 누락→400,
-   그 다음 실제 dispatch 1건 E2E (t_0d90b8eb 소관)
+4. TT registration: not possible via `tt` — POST to the server `POST /agents {"name":"runner-<host>","base_url":"http://<this machine's tailnet IP>:7796/hook","secret":<file value>}`
+5. Verify: `curl http://<tailnet ip>:7796/health`, bad-secret POST→401, missing header→400,
+   then one real dispatch E2E (owned by t_0d90b8eb)
 
-비-tailnet 바인딩·secret 파일 부재는 기동 자체가 실패한다(rc=3, fail-closed).
+Non-tailnet binding or a missing secret file fails startup itself (rc=3, fail-closed).
 
-## 레지스트리 스키마
+## Registry schema
 
 ```json
 {
-  "machine": "m2max",
+  "machine": "<host>",
   "agents": {
-    "runner-m2max": {
+    "runner-<host>": {
       "driver": "codex",
       "binary": "/Applications/ChatGPT.app/Contents/Resources/codex",
-      "permission_mode": "read",            // read | auto | all (all은 tailnet 확인 머신만)
+      "permission_mode": "read",            // read | auto | all (all only on tailscale-verified machines)
       "model": null, "reasoning": null,     // codex: -m / model_reasoning_effort
       "workspace": "~/Work",
-      "allowed_workspaces": ["~/Work"],     // workspace 오버라이드 허용목록
+      "allowed_workspaces": ["~/Work"],     // workspace override allowlist
       "timeout_s": 1800, "keep_shell": true,
       "continue_cmd": "/Applications/ChatGPT.app/Contents/Resources/codex exec --sandbox read-only --skip-git-repo-check"
     }
@@ -42,129 +44,97 @@ tt-dispatch-adapter.py(7795)와 공존하며 포트 7796(m2max)/7797(mini 제안
 }
 ```
 
-등록 규칙(실측 반영):
-- 레지스트리 키는 TT `/agents`의 agent 이름과 동일해야 한다 — dispatch payload의
-  `agent` 필드가 그대로 키 조회에 쓰인다. 불일치 시 REJECT(profile-unknown) + TT 거부 코멘트.
-- binary는 앱 번들 codex 절대경로를 쓴다. homebrew codex-cli 0.156.0은
-  `timed out negotiating with the code-mode host`로 shell/codex exec 모든 파일·명령
-  도구가 실패한다(t_0d90b8eb 실측 — clean CODEX_HOME, mcp disable, features.code_mode=false
-  모두 실패; ChatGPT.app 번들 0.155.0-alpha.16은 정상). ChatGPT.app 업데이트 시 버전 확인.
-- continue_cmd에 `--skip-git-repo-check` 필수 — workspace(~/Work)가 git 저장소가
-  아니므로 없으면 계속 재지시가 즉시 실패한다(실측).
-- launchd plist의 PATH에 /opt/homebrew/bin 포함 — 기본 env에는 없어 tmux/tailscale 조회가 실패한다.
+Registration rules (from real-world lessons):
+- The registry key must equal the agent name in TT `/agents` — the dispatch payload's
+  `agent` field is used for the key lookup as-is. On mismatch: REJECT (profile-unknown) + a TT rejection comment.
+- `binary` must be the app-bundled codex absolute path. Homebrew codex-cli 0.156.0 fails every file/command
+  tool of shell/codex exec with `timed out negotiating with the code-mode host`
+  (measured in t_0d90b8eb — clean CODEX_HOME, mcp disable, and features.code_mode=false all failed;
+  the ChatGPT.app bundle 0.155.0-alpha.16 works). Check the version when ChatGPT.app updates.
+- `--skip-git-repo-check` in continue_cmd is required — the workspace (~/Work) is not a git repo,
+  so without it every continuation instruction fails immediately (measured).
+- The launchd plist PATH must include /opt/homebrew/bin — the default env lacks it and tmux/tailscale lookups fail.
 
-dispatch 오버라이드는 message 선두 `#opts {"model":...,"reasoning":...,"workspace":...,"continue_session":true}`
-한 줄 JSON만 인식(허용 키 외 OVERRIDE-IGNORED). binary/permission 승격 불가.
+A dispatch override recognizes only a single leading `#opts {"model":...,"reasoning":...,"workspace":...,"continue_session":true}`
+JSON line in the message (keys outside the allowlist: OVERRIDE-IGNORED). binary/permission promotion is impossible.
 
 ## CLI
 
-- `tt-runner.py serve` — launchd 상주 (감시자·polling 스레드 내장)
+- `tt-runner.py serve` — launchd resident (watchdog and polling threads built in)
 - `tt-runner.py status [dispatch_id]` / `attach <dispatch_id>` / `stop <dispatch_id>` / `poll`
-- run 장부: `~/.local/state/tt-runner/runs.json` (key `<issue_id>#<dispatch_id>`)
+- Run ledger: `~/.local/state/tt-runner/runs.json` (key `<issue_id>#<dispatch_id>`)
 
-## 검증 상태 (2026-09-25, 이 커밋 시점)
+## Validation status (2026-09-25, as of this commit)
 
-- unittest 23 green (runner/test_tt_runner.py — M3BZS1G3 확장 8: BLOCKED/크래시 분리,
-  stall 임계·리셋·kill, guard root/sanitize, agent_env 낙찰·opt-in)
-- loopback fake-TT smoke 20 항목 green (runner/smoke_tt_runner.py, TT_TMUX_SOCKET 격리):
-  즉시200+context 세션토큰, 신규 tmux 실행→마커→done 코멘트, DUP-SKIP(중복 dispatch_id),
-  401/400, 파괴적 게이트 hold→'승인' 방출 실행, context 계속 재지시(send-keys mode),
-  INBOX-NOT-READY(pending 404), 시크릿 로그 마스킹, +M3BZS1G3: 가짜 CLI 'approval
-  required' exit=1 → BLOCKED(waiting_for=human)/크래시 exit=1 → failed 구분,
-  등재됐으나 없는 workspace → 시작 전 workspace-guard 거부, env-print CLI에서
-  시크릿 canary 미노출·benign 유지, 무음 CLI → STALL 코멘트 → stall-killed(임계 6s/4s 주입)
-- codex 실실행 스모크 PASS (runner/smoke_tt_runner_codex.py — ChatGPT.app 번들,
-  stdin 프롬프트→note.txt 판독→done, codex-canary env 미노출 확인)
-- 미실증: 실제 mini TT 서버 대상 dispatch 왕복, launchd 설치 후 재부팅 생존,
-  context 왕복(서버 코드상으로는 deliver→dispatches.context→다음 payload 실림을
-  app.py로 확인, 실서버 E2E는 후속), 파괴적 패턴 목록 원문(초안 목록으로 대용),
-  opencode 세션 드라이버(plain 드라이버만 존재), mini/m1 설치(ssh 차단)
+- unittest 23 green (runner/test_tt_runner.py — M3BZS1G3 extension 8: BLOCKED/crash separation,
+  stall threshold/reset/kill, guard root/sanitize, agent_env hits and opt-in)
+- Loopback fake-TT smoke 20 items green (runner/smoke_tt_runner.py, TT_TMUX_SOCKET isolation):
+  instant 200 + context session token, new tmux run→marker→done comment, DUP-SKIP (duplicate dispatch_id),
+  401/400, destructive gate hold→an 'approve' emitting run, context continuation instruction (send-keys mode),
+  INBOX-NOT-READY (pending 404), secret log masking, +M3BZS1G3: a fake CLI 'approval
+  required' exit=1 → BLOCKED(waiting_for=human) / crash exit=1 → failed distinction,
+  a registered-but-missing workspace → pre-start workspace-guard rejection, a secret canary
+  not exposed and benign vars kept in an env-print CLI, a silent CLI → STALL comment → stall-killed (injected 6 s/4 s thresholds)
+- codex real-run smoke PASS (runner/smoke_tt_runner_codex.py — ChatGPT.app bundle,
+  stdin prompt→note.txt read→done, codex-canary env non-exposure confirmed)
+- Not yet proven: a dispatch round-trip against the real mini TT server, reboot survival after launchd install,
+  context round-trip (confirmed in app.py that deliver→dispatches.context→next payload works; a real-server E2E is a follow-up),
+  the destructive-pattern list verbatim (substituted with a draft list), an opencode session driver (only the plain driver exists), mini/m1 installs (ssh blocked)
 
-## 재검토 재실행 (think-tank#46, 2026-10-06)
+## Re-review re-run (think-tank#46, 2026-10-06)
 
-동일 (issue_id, dispatch_id) 재전송이라도 기존 런이 **done**이고 message 첫 줄의 리뷰
-대상 sha(`PR #n (repo) @ sha8`, harvest 마커 `PR#n@sha8` 호환)가 달라졌으면 **새 회차로
-재실행**한다 — 재검토 체인 정지 결함 수정. 회차 구분:
+Even for a re-send of the same (issue_id, dispatch_id), if the existing run is **done** and the review target sha in the message's
+first line (`PR #n (repo) @ sha8`, compatible with the harvest marker `PR#n@sha8`) changed, it **re-runs as a new round** — a fix for the re-review chain stalling. Round distinction:
 
-- 세션명을 회차 고유로(`tt-<agent>-<dispatch>-<sha8>-r<회차>`) — 이전 회차 세션(keep_shell
-  생존)과 충돌 방지 + sha 재방문(A→B→C→B)에서도 과거 회차와 겹치지 않는다(PR#47 리뷰 R2).
-- 재회차 판정은 장부·prepare 반환값·즉시 200 context가 같은 조건을 쓴다 — 서버가 저장한
-  context로 오는 후속 dispatch가 이전 회차가 아니라 현재 회차 세션에서 계속된다(PR#47
-  리뷰 R1, 실측 STALL 원인 차단).
-- **회차 선점은 한 번, 동기로** — /hook이 장부 I/O만 포함된 `preempt_round`를 200 계산
-  전에 실행하고 그 결과(선점 세션)를 200 context와 백그라운드 실행이 공유한다. 응답
-  결정과 claim이 별도 lock·시점에서 각자 판정하면 응답 결정 이후의 완료 전환/claim이
-  남는다(PR#47 리뷰 R1 3차). 네트워크 부수효과(TT 코멘트·흡수 finalize 보고)는 deferred로
-  미뤄 즉시 200 계약(10초)을 유지한다.
-- **완료 감시자 전환 흡수** — `.done` 마커는 이미 있는데 장부가 running(감시자 tick 대기,
-  WATCH_INTERVAL_S 이하 창)이면 선점 결정 전에 done으로 흡수한다. 흡수된 종료는 보고만
-  하고(출력은 지울 전에 포착) 장부를 다시 쓰지 않는다. rc!=0는 blocked/failed 분류가
-  tail 분석을 필요로 하므로 감시자 몫 — finalize와 동일한 조건만 흡수한다.
-- **완료 전환·보고 소유권은 하나의 원자적 게이트** — 이전 회차 감시자가 finalize의
-  보고 네트워크 호출에서 대기하는 동안 다음 회차로 선점되면, 늦은 반환은 현재 회차
-  엔트리를 done/failed로 덮거나(세션 미생성·보고 0건) 감시자+흡수 경로가 같은 완료를
-  2건 보고한다(PR#47 리뷰 R3). 그래서 보고 직전 `claim_report()`가 lock 안에서 관찰
-  session/round를 재확인하고 보고 소유를 check-and-set한다(엔트리 `claimed_report`).
-  엔트리가 이미 다음 회차로 교체됐으면 rc=0 완료 보고는 흡수 경로 소유(감시자 skip),
-  실패 보고는 감시자 몫. 장부 전환은 `update_run_if_round` — 관찰 회차가 현재
-  회차·running일 때만 쓴다. 네트워크 호출(TT 코멘트·투영)은 lock 밖.
-- 동일 키의 200 context는 **선점 결과**(장부에 확정된 세션) 기준이다 — 승인 메시지는
-  선점하지 않고(held 해제만), 동기 선점 실패 시에만 무결정 추정(`decide_session`)으로
-  응답한다. queued/running/done·중복 재전송에서 입력 ctx의 이전 회차 세션을 회수하지 않는다.
-- 이전 회차 런타임 아티팩트(.done/.exit/.out/.log/.msg)를 지운다 — 키를 공유하므로
-  잔여 .done이 남으면 watch_once가 새 런을 즉시 finalize해버린다.
-- 장부 엔트리에 `target_sha`(현재 대상)·`prev_sha`(이전 대상)를 남기고, 시작 코멘트에
-  "재검토 재실행: 대상 a→b"를 표기한다.
+- The session name is round-unique (`tt-<agent>-<dispatch>-<sha8>-r<round>`) — avoids collision with a previous round's session (keep_shell
+  survival) and does not overlap past rounds even on sha revisits (A→B→C→B) (PR#47 review R2).
+- Re-round judgment uses the same conditions as the ledger/prepare return value/instant 200 context — a follow-up dispatch carrying the server-stored
+  context continues in the current round's session, not a previous round's (PR#47 review R1, blocking a measured STALL cause).
+- **Round preemption happens once, synchronously** — /hook runs `preempt_round` (containing only ledger I/O) before computing the 200 and shares its result (the preempted session) between the 200 context and the background run. If the response decision and claim each judged at separate locks/moments, a completion transition/claim after the response decision would remain (PR#47 review R1, 3rd). Network side effects (TT comments and harvest finalize reports) are deferred to keep the instant-200 contract (10 s).
+- **Completion-watcher transition absorption** — when a `.done` marker already exists but the ledger says running (waiting for a watcher tick, a window ≤ WATCH_INTERVAL_S), absorb it as done before the preemption decision. An absorbed termination only reports (output is caught before erasure) and does not rewrite the ledger. rc!=0 requires tail analysis for blocked/failed classification, so it is the watcher's job — only finalize-identical conditions are absorbed.
+- **Completion transition and report ownership is one atomic gate** — if a previous round's watcher is waiting on finalize's report network call and the next round preempts, the late return would either overwrite the current round's entry as done/failed (no session created, zero reports) or the watcher+absorption paths would report the same completion twice (PR#47 review R3). Therefore, right before reporting, `claim_report()` re-verifies the observed session/round inside the lock and check-and-sets report ownership (entry `claimed_report`). If the entry has already been replaced by the next round, an rc=0 completion report belongs to the absorption path (watcher skips) and a failure report is the watcher's. The ledger transition is `update_run_if_round` — it writes only when the observed round is the current round and running. Network calls (TT comments, projection) happen outside the lock.
+- The 200 context for the same key is based on the **preemption result** (the session confirmed in the ledger) — an approval message does not preempt (only releases held), and only on synchronous preemption failure does it respond with an indecisive estimate (`decide_session`). For queued/running/done and duplicate re-sends, it does not reclaim the previous round's session from the input ctx.
+- It deletes the previous round's runtime artifacts (.done/.exit/.out/.log/.msg) — since the key is shared, a leftover .done would make watch_once instantly finalize the new run.
+- The ledger entry records `target_sha` (current target) and `prev_sha` (previous target), and the start comment notes "re-review re-run: target a→b".
 
-DUP-SKIP은 유지되되 사유에 대상 비교가 명시된다(`대상 동일 x` / `불일치 a→b` / `대상 sha
-없음`). done이 아닌 상태에서 대상 불일치 재전송이 오면 TT 코멘트로 회차당 1만 가시화한다
-(`mismatch_notified` 플래그). 서버 probe가 회차별 새 dispatch id를 발급하면(제안 B,
-미구현) 이 보상 경로는 평상시 발동하지 않는다.
+DUP-SKIP is kept, but the reason now states the target comparison (`same target x` / `mismatch a→b` / `no target sha`). If a re-send with a mismatched target arrives in a non-done state, it is surfaced via a TT comment once per round (a `mismatch_notified` flag). If the server probe issues a new dispatch id per round (proposal B, unimplemented), this compensation path never triggers in normal operation.
 
-검증: unittest 57 green(이전 라운드 53 + 소유권 게이트 회귀 4: finalize 내부 대기 중
-선점→늦은 반환 무덮기·보고 1건·재시도 응답 유지·B 완료 보고, B 실행 후 반환 무덮기,
-흡수 소유 시 늦은 finalize skip, 게이트 단위 계약) + RED 대조(8e2e43f5에서 신규 3건 실패:
-B queued/running이 done으로 덮임, 늦은 finalize 재보고) + 격리 tmux E2E SMOKE PASS(1회차
-done → 새 sha 재전송 RE-ROUND 재실행 done, 1회차 출력 비유출, 동일 sha 3회차 스킵,
-A→B→C→B 재방문 전 회차 done, 후속 dispatch가 현재 회차 continue).
+Validation: unittest 57 green (previous round's 53 + 4 ownership-gate regressions: preemption during a finalize's internal wait→late return no-overwrite with 1 report and the retry response preserved, a B-completion report, no-overwrite of a return after B ran, absorption-ownership late-finalize skip, the gate-unit contract) + RED comparison (3 new failures at 8e2e43f5: B queued/running overwritten as done, late finalize re-reporting) + an isolated tmux E2E SMOKE PASS (round 1
+done → a re-send with a new sha RE-ROUND re-runs to done, round 1 output non-leaked, a same-sha round-3 skip,
+an A→B→C→B revisit with the previous round done, a follow-up dispatch continuing the current round).
 
-## 보안 규칙
+## Security rules
 
-secret 값은 파일·plist env·TT 코멘트·git·로그 어디에도 기록하지 않는다.
-mask()가 로그/코멘트를 통과시키며, 바인딩은 tailnet IP 또는 127.0.0.1만 허용.
-permission all은 tailscale 확인 머신에서 강등 없이, 아니면 auto로 강등(PERM-DOWNGRADED 로그).
-파괴적 패턴(rm -rf, git push, sudo, drop, ...) 감지 시 GATE-HOLD — TT에 '승인' dispatch가
-올 때까지 실행하지 않는다.
+The secret value is never written to files, plist env, TT comments, git, or logs.
+mask() passes over logs/comments; binding allows only a tailnet IP or 127.0.0.1.
+permission all runs un-downgraded only on tailscale-verified machines, otherwise it downgrades to auto (PERM-DOWNGRADED log).
+On detecting a destructive pattern (rm -rf, git push, sudo, drop, ...), GATE-HOLD — it does not run until an 'approve' dispatch arrives on TT.
 
-## 실행 감시 (M3BZS1G3-VNQH) — 기본값 초안, 카드 코멘트 승인 후 확정
+## Run watchdog (M3BZS1G3-VNQH) — default draft, finalized after card-comment approval
 
-- 입력필요 vs 크래시: exit!=0일 때만 출력/pane tail을 INPUT_SIGNATURES와 대조 —
-  hit이면 failed가 아니라 BLOCKED(코멘트에 waiting_for=human, 장부 status=blocked,
-  blocked_on=시그니처). 자동 재시도 없음 — '승인' 또는 새 지시 dispatch를 기다린다.
-  기본 시그니처 10종: requires approval / approval required|needed / waiting for input…/
+- Needs-input vs crash: only when exit!=0, the output/pane tail is compared against INPUT_SIGNATURES —
+  on a hit it becomes BLOCKED rather than failed (a comment with waiting_for=human, ledger status=blocked,
+  blocked_on=the signature). No automatic retries — it waits for an 'approve' or a new instruction dispatch.
+  The 10 default signatures: requires approval / approval required|needed / waiting for input…/
   needs input|approval|confirmation / permission required|needed / do you want to allow…/
   please approve|confirm…/ [y/N]·[yes/no] / press enter to continue / needs_input·
-  needs_approval·external_permission. exit=0 출력은 판정하지 않아 오검지를 줄인다.
-- stall 무음 탐지: pane 마지막 10행 지문 + run 파일(.log/.out) mtime이
-  TT_STALL_SILENCE_S(기본 600s) 그대로면 STALL 코멘트(pane tail 첨부, TIMEOUT과 구분,
-  stall_notified 1회), 거기서 TT_STALL_KILL_AFTER_S(기본 600s) 더 무음이면 C-c→kill +
-  stall-killed 장부. pane만 보면 codex처럼 파일로 쓰는 실행은 오탐하므로 파일 mtime을
-  liveness에 포함. 출력 재개(지문 변경) 시 카운터 리셋. wall-clock TIMEOUT(기본 1800s)은
-  별도 경로로 유지.
-- 워크스페이스 불변식 3종(Symphony SPEC §9.5): ① dispatch 오버라이드 값 sanitize
-  (제어문자/NUL/개행/RTL/OVERLENGTH → OVERRIDE-REJECT, 프로필 기본값으로 폴백)
-  ② 허용 root(allowed_workspaces∪workspace, 없으면 ~) realpath 검사 — execute_once에서
-  1차, run_agent 실행 직전 2차(방어 다층), 위반은 실행 시작 전 거부
-  (status=failed, detail=workspace-guard:<reason>, TT 거부 코멘트).
-  ③ 실행 cwd는 guard가 통과시킨 realpath로 강제.
-- credential 격리: run-agent가 자기 프로세스 env를 agent_env()로 필터링 후 자식/pane 셸로
-  승계 — 이름 패턴(SECRET|TOKEN|PASSWORD|CREDENTIAL|API_?KEY|ACCESS_KEY|PRIVATE_KEY) +
-  TT_RUNNER_* prefix + 값에 TT secret을 포함하는 키 전부 낙찰. 꼭 필요한 키는 레지스트리
-  `env_extra`(프로필 필드)로만 opt-in. 한계: same-user 파일(secret file 자체)은 못 막는다.
-- smoke 격리: TT_TMUX_SOCKET 설정 시 tmux -L 전용 서버 사용(실 세션과 충돌 없음).
+  needs_approval·external_permission. exit=0 output is not judged, reducing false positives.
+- Stall silence detection: if the pane's last-10-lines fingerprint and the run files' (.log/.out) mtime stay unchanged for
+  TT_STALL_SILENCE_S (default 600 s), a STALL comment (with the pane tail attached, distinguished from TIMEOUT,
+  stall_notified once); after a further TT_STALL_KILL_AFTER_S (default 600 s) of silence, C-c→kill +
+  a stall-killed ledger. Watching only the pane misjudges runs that write to files like codex, so file mtime is
+  included in liveness. The counter resets when output resumes (fingerprint changes). The wall-clock TIMEOUT (default 1800 s) remains a separate path.
+- Three workspace invariants (Symphony SPEC §9.5): ① dispatch override values are sanitized
+  (control chars/NUL/newlines/RTL/OVERLENGTH → OVERRIDE-REJECT, falling back to the profile defaults)
+  ② the allowed roots (allowed_workspaces∪workspace, or ~ if none) are realpath-checked — once in execute_once
+  and again right before run_agent executes (layered defense); violations are rejected before the run starts
+  (status=failed, detail=workspace-guard:<reason>, a TT rejection comment).
+  ③ the execution cwd is forced to the guard-passed realpath.
+- Credential isolation: run-agent filters its own process env via agent_env() before passing it to the child/pane shell —
+  name patterns (SECRET|TOKEN|PASSWORD|CREDENTIAL|API_?KEY|ACCESS_KEY|PRIVATE_KEY) + the TT_RUNNER_* prefix + any key whose value contains the TT secret are all dropped. Genuinely needed keys opt in only via the registry's
+  `env_extra` (a profile field). Limitation: it cannot stop same-user files (the secret file itself).
+- Smoke isolation: when TT_TMUX_SOCKET is set, a dedicated `tmux -L` server is used (no clash with real sessions).
 
-## TT 작업 계약 전달
+## TT work-contract delivery
 
-dispatch payload의 `work_contract`와 `execution_attempt`를 장부에 저장하고, 신규 실행(stdin/argv)과
-재개 실행의 프롬프트에 주입한다. `#opts`는 원래 메시지에서 먼저 해석한다. 계약이 없는 구형 payload는
-그대로 실행한다. 계약 전달 테스트는 실제 LLM의 TDD 준수 증거가 아니다. 상세 계약: [api.md](../server/static/api.md).
+The dispatch payload's `work_contract` and `execution_attempt` are stored in the ledger and injected into the prompts of new (stdin/argv) and resumed runs. `#opts` is parsed from the original message first. Legacy payloads without a contract run as-is. Contract-delivery tests are not evidence of a real LLM's TDD compliance. Full contract: [api.md](../server/static/api.md).
