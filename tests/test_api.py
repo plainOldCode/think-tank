@@ -534,6 +534,72 @@ def test_dispatch_report_dedup_interleaved_sessions(client, hook_server):
     assert len([c for c in got["comments"] if "done exit=0" in c["body"]]) == 2
 
 
+def test_dispatch_projection_without_comment_leaves_report_session(client, hook_server):
+    """리뷰 5차 R11 — 코멘트 없는 종료 투영(STALL-kill·TIMEOUT·release)은
+    report_session을 기록하지 않는다: 접수 증거는 코멘트 접수와만 연결."""
+    import sqlite3 as _sq
+    i = mk(client, title="무코멘트 투영")
+    client.post("/agents", json={"name": "demo", "base_url": hook_server})
+    d = client.post(f"/issues/{i['id']}/dispatch", json={"agent": "demo", "message": "m"}).json()
+    url = f"/issues/{i['id']}/dispatches/{d['id']}/progress"
+    assert client.post(url, json={"state": "failed", "exit": 1, "session": "s1"}).status_code == 200
+    con = _sq.connect(client.app.state.ctx.db_path)
+    con.row_factory = _sq.Row
+    row = con.execute("SELECT run_state, report_session FROM dispatches WHERE id=?", (d["id"],)).fetchone()
+    con.close()
+    assert row["run_state"] == "failed"
+    assert row["report_session"] is None  # 접수 증거 아님
+
+
+def test_dispatch_dedup_retry_keeps_current_projection(client, hook_server):
+    """리뷰 5차 R13 — 접수 이력 중복인 이전 세션 재시도는 투영(run_state/ended_at/
+    session)을 갱신하지 않는다: A 접수 → B-r2 running 투영 → A 재시도 → 서버는
+    여전히 B-r2 running(/agents/active에 B 존재)."""
+    i = mk(client, title="재시도 투영 보존")
+    client.post("/agents", json={"name": "demo", "base_url": hook_server})
+    d = client.post(f"/issues/{i['id']}/dispatch", json={"agent": "demo", "message": "m"}).json()
+    url = f"/issues/{i['id']}/dispatches/{d['id']}/progress"
+    pa = {"state": "finished", "exit": 0,
+          "comment": "runner:x dispatch#%d done exit=0 session=A" % d["id"],
+          "session": "tt-x-1-sha1-r1"}
+    pb = {"state": "running", "session": "tt-x-1-sha2-r2"}
+    assert client.post(url, json=pa).status_code == 200   # A 접수
+    assert client.post(url, json=pb).status_code == 200   # B-r2 running 투영
+    assert client.post(url, json=pa).status_code == 200   # A 응답 유실 재시도
+    active = client.get("/agents/active").json()
+    assert any(a["dispatch_id"] == d["id"] for a in active)  # B-r2 running 유지
+    got = client.get(f"/issues/{i['id']}").json()
+    assert len([c for c in got["comments"] if "done exit=0" in c["body"]]) == 1
+
+
+def test_claim_redelivery_requires_fresh_lease_for_both_statuses():
+    """리뷰 5차 R4 — 선점 헬퍼 단위: error/queued 모두 신선 lease 보유 행은
+    선점 실패(None — 기수락), 무 lease/만료만 성공. 충돌·기존 진입점이 이
+    함수 하나를 공유하므로 INSERT 충돌 경계도 동일하게 차단된다."""
+    import sqlite3 as _sq
+    from datetime import datetime, timedelta
+    from server.routers.agents import _claim_redelivery, DELIVERY_RECOVER_S
+    from server import db as dbmod
+    con = _sq.connect(":memory:")
+    con.row_factory = _sq.Row
+    con.execute("CREATE TABLE dispatches (id INTEGER PRIMARY KEY, status TEXT, delivery_lease TEXT, context TEXT)")
+    con.execute("INSERT INTO dispatches (id, status, delivery_lease, context) VALUES (1, 'error', NULL, 'ctx-1')")
+    con.execute("INSERT INTO dispatches (id, status, delivery_lease, context) VALUES (2, 'queued', NULL, 'ctx-2')")
+    fresh = datetime.now().astimezone().strftime("%Y-%m-%dT%H:%M:%S%z")
+    stale = (datetime.now().astimezone() - timedelta(seconds=DELIVERY_RECOVER_S + 5)).strftime("%Y-%m-%dT%H:%M:%S%z")
+    con.execute("INSERT INTO dispatches (id, status, delivery_lease, context) VALUES (3, 'error', ?, 'ctx-3')", (fresh,))
+    con.execute("INSERT INTO dispatches (id, status, delivery_lease, context) VALUES (4, 'queued', ?, 'ctx-4')", (fresh,))
+    con.execute("INSERT INTO dispatches (id, status, delivery_lease, context) VALUES (5, 'error', ?, 'ctx-5')", (stale,))
+    con.execute("INSERT INTO dispatches (id, status, delivery_lease, context) VALUES (6, 'ok', NULL, 'ctx-6')")
+    assert _claim_redelivery(con, con.execute("SELECT * FROM dispatches WHERE id=1").fetchone()) == {"context": "ctx-1"}
+    assert _claim_redelivery(con, con.execute("SELECT * FROM dispatches WHERE id=2").fetchone()) == {"context": "ctx-2"}
+    assert _claim_redelivery(con, con.execute("SELECT * FROM dispatches WHERE id=3").fetchone()) is None  # 신선 error
+    assert _claim_redelivery(con, con.execute("SELECT * FROM dispatches WHERE id=4").fetchone()) is None  # 신선 queued
+    assert _claim_redelivery(con, con.execute("SELECT * FROM dispatches WHERE id=5").fetchone()) == {"context": "ctx-5"}
+    assert _claim_redelivery(con, con.execute("SELECT * FROM dispatches WHERE id=6").fetchone()) is None  # 자격 없음
+    con.close()
+
+
 def test_dispatch_progress_terminal_report_dedup(client, hook_server):
     """리뷰 3차 R10 — 응답 유실 재시도: 동일 dispatch+회차(세션) 종료 보고는
     한 번만 접수된다(200 멱등). 새 회차(다른 세션)는 정상 접수된다."""
