@@ -1,69 +1,67 @@
-# 리뷰 게이트 (review gate) 스펙 — POC (N0AN)
+# Review gate spec — POC (N0AN)
 
-v0.1 · 2026-10-04 · 상위: M425EVXW-N0AN · 구현: probe(M428RMBY-XC0K) + 리뷰어 실행기(M428RMG7-2HZF)
+v0.1 · 2026-10-04 · Parent: M425EVXW-N0AN · Implementation: probe (M428RMBY-XC0K) + reviewer runner (M428RMG7-2HZF)
 
-## 목적
+## Purpose
 
-CI green만으로 머지되던 경로에 **리뷰어 승인 조건**을 추가한다. 게이트는 TT 코멘트에서
-강제한다(POC — GitHub 브랜치 프로텍션 미사용).
+Add a **reviewer-approval condition** to the path that used to merge on CI green alone. The gate is enforced via TT comments (POC — no GitHub branch protection).
 
-## 역할
+## Roles
 
-| 역할 | 담당 | 비고 |
+| role | who | notes |
 |---|---|---|
-| 작성 에이전트 | 카드 claim 에이전트 | 브랜치 push, completion report |
-| 리뷰어 | hermes kanban triage (MoA: gpt-6.1-sol + astra + opus-5.5) | PR diff + repo context 리뷰 |
-| 후속 수정 에이전트 | **agent-agnostic** | context가 repo+PR 자체이므로 TT dispatch 표준 인터페이스만 지키면 누구든 |
+| Authoring agent | the card's claim agent | branch push, completion report |
+| Reviewer | hermes kanban triage (MoA: gpt-6.1-sol + astra + opus-5.5) | reviews the PR diff + repo context |
+| Follow-up fix agent | **agent-agnostic** | the context is the repo+PR itself, so anyone obeying the standard TT dispatch interface works |
 
-## 리뷰 코멘트 형식 (계약)
+## Review comment format (contract)
 
-리뷰어는 **두 곳에 동일 내용**을 남긴다: GitHub PR 코멘트 + TT 카드 코멘트.
+The reviewer leaves **the same content in two places**: a GitHub PR comment + a TT card comment.
 
-TT 코멘트 (author = 리뷰 에이전트명):
+TT comment (author = the review agent's name):
 
 ```
 review: approve | review: request-changes
-PR#<번호>@<head sha 8자리>
-<발견사항·사유>
+PR#<number>@<head sha, 8 chars>
+<findings and reasons>
 ```
 
-- 1행: 판정 마커. 정확히 `review: approve` 또는 `review: request-changes`
-- 2행: 판정 대상 커밋 명시. probe가 PR 현재 head와 비교해 **불일치면 무효(stale)**
-- 3행 이하: 자유 서술 (체크리스트 결과)
-- GitHub 쪽은 `gh pr comment`(코멘트만). self-approve가 GitHub상 불가하므로
-  승인 API(`gh pr review --approve`)는 POC에서 미사용 — 승인 판정의 유일한
-  근거는 **TT 코멘트**다
+- Line 1: the verdict marker. Exactly `review: approve` or `review: request-changes`
+- Line 2: names the commit the verdict applies to. probe compares it with the PR's current head — on **mismatch the verdict is void (stale)**
+- Line 3 and below: free text (checklist results)
+- On the GitHub side, only `gh pr comment` (comments only). Since self-approval is impossible on GitHub, the approval API (`gh pr review --approve`) is unused in the POC — the sole basis for an approval verdict is the **TT comment**
 
-## probe 게이트 (decide ⓪ 변경)
+## probe gate (decide ⓪ change)
 
-merge 후보(카드 연결 + work_contract + attempt≥1 + non-draft + repo 일치 + CI green)에 대해:
+For merge candidates (card link + work_contract + attempt≥1 + non-draft + repo match + CI green):
 
-1. **미리뷰** (현재 head에 유효한 리뷰 코멘트 없음):
-   merge 대신 `review-request` 액션 — 리뷰어 에이전트에 dispatch.
-   마커 `[review-req #<pr>/<sha8>]`로 PR·커밋 단위 dedup(회차 1회).
-2. **request-changes** (현재 head에 유효):
-   merge 보류 + 카드 review 반납 + 수정 지시를 배정 에이전트에 dispatch.
-   마커 `[review-fix #<pr>/<sha8>]`.
-3. **approve** (현재 head에 유효):
-   기존 merge 경로 그대로 — 병합 후 verify-in-merge(M3R7M0ZR-YF99) 포함.
-4. 새 커밋 push → head 변경 → 기존 리뷰는 stale → 1로 회귀(재리뷰).
+1. **Unreviewed** (no valid review comment on the current head):
+   instead of merging, a `review-request` action — dispatch to the reviewer agent.
+   Deduplicated per PR+commit with the marker `[review-req #<pr>/<sha8>]` (once per round).
+2. **request-changes** (valid on the current head):
+   hold the merge + return the card to review + dispatch a fix instruction to the assigned agent.
+   Marker `[review-fix #<pr>/<sha8>]`.
+3. **approve** (valid on the current head):
+   the existing merge path as-is — including verify-in-merge after the merge (M3R7M0ZR-YF99).
+4. A new commit push → head changes → the existing review is stale → back to 1 (re-review).
 
-- 리뷰 코멘트 유효성: TT 코멘트 중 author가 리뷰어와 일치하고
-  `PR#<n>@<sha8>`의 n·sha8이 현재 PR과 일치하는 것만 인정.
-- 리뷰어: env `TT_REVIEW_AGENT` 단일 에이전트명. **미설정이면 게이트 off**
-  (기존 동작 — TT_PROBE_INTERVAL과 같은 기본 off 안전 패턴). mini 활성화는
-  launchd plist env 추가 시점부터(리뷰어 실행기 2HZF 준비 후).
-- 리뷰 게이트로 merge 제외된 카드는 ⓪b needs-merge 코멘트 대상에서 **제외**(소음 방지).
-- CI red는 기존 ci-fix가 우선 — 리뷰는 green 이후에만.
+- Review comment validity: among TT comments, only those whose author matches the reviewer AND whose `PR#<n>@<sha8>` n and sha8 match the current PR count.
+- Reviewer: a single agent name in env `TT_REVIEW_AGENT`. **Unset = gate off**
+  (existing behavior — the same default-off safety pattern as TT_PROBE_INTERVAL). mini activation starts
+  when the launchd plist env is added (after the reviewer runner 2HZF is ready).
+- Cards excluded from merge by the review gate are **excluded** from the ⓪b needs-merge comment targets (noise prevention).
+- CI red is handled by the existing ci-fix first — review only comes after green.
 
-## POC 제약 (의도된 단순화)
+## POC constraints (intentional simplifications)
 
-- 별도 GitHub 계정 없음: 리뷰 코멘트도 plainOldCode 토큰으로 남김.
-- 게이트 강제 주체는 probe 하나 — probe 비활성/버그 시 게이트 없음(사람이 직접
-  머지하는 경로는 항상 열려 있음). 하드 게이트(브랜치 프로텍션+리뷰 계정)는
-  POC 검증 후 후속.
+- No separate GitHub account: review comments are also left with the plainOldCode token.
+- probe is the sole enforcing subject — if probe is disabled/buggy there is no gate (the path where a human
+  merges directly is always open). A hard gate (branch protection + a review account) is a follow-up
+  after POC validation.
 
-## 리뷰어 dispatch 지시 템플릿
+## Reviewer dispatch instruction template
+
+(Server-emitted literal; kept in Korean. The live template now lives in `server/probe/core.py`.)
 
 ```
 [auto review] PR #<n> (<repo>) @ <sha8> — 카드 <card-id> 리뷰 요청.
@@ -74,32 +72,32 @@ merge 후보(카드 연결 + work_contract + attempt≥1 + non-draft + repo 일�
 첫 줄 'review: approve' 또는 'review: request-changes', 둘째 줄 'PR#<n>@<sha8>'.
 ```
 
-- 리뷰어 working copy: m2max shallow clone + `git fetch` 유지. 리뷰어 LLM은
-  /opt/homebrew/bin/{codex,claude} — 코어 건 교차 리뷰, 사소한 건 단일.
+- Reviewer working copy: a shallow clone on the review host (hostname redacted per secret-scan — see the Korean original), kept updated with `git fetch`. Reviewer LLMs are
+  /opt/homebrew/bin/{codex,claude} — cross-review for core changes, single for minor ones.
 
-## 리뷰어 판정 기준 (체크리스트)
+## Reviewer verdict criteria (checklist)
 
-1. 계약 v2.1 준수 — 보고 3블록(design/implementation/verification)
-2. 시크릿·키·토큰 노출 여부
-3. 테스트 유무·적절성 (사이드이펙트 1차 방어는 CI 200 테스트 — 리뷰어는 그 밖)
-4. 변경 심볼의 호출자 영향 (에이전트 자율 탐색)
-5. 스펙·카드 본문 대비 동작 일치
+1. Contract v2.1 compliance — the three report blocks (design/implementation/verification)
+2. Exposure of secrets, keys, tokens
+3. Presence and adequacy of tests (the first line of defense against side effects is the CI's 200 tests — the reviewer covers what lies beyond)
+4. Caller impact of changed symbols (agent-autonomous exploration)
+5. Behavior matches the spec and the card body
 
-## 상태 흐름 요약
+## State flow summary
 
 ```
-PR push → CI green → probe: 리뷰 없음 → [review-req] dispatch → 리뷰어 리뷰
-  ├─ approve (TT+PR 코멘트) → probe: merge → verify → done
-  └─ request-changes → probe: 카드 review 반납 + [review-fix] dispatch
-       → 수정 에이전트 push → head 변경 → 재리뷰 [review-req] …
+PR push → CI green → probe: no review → [review-req] dispatch → reviewer reviews
+  ├─ approve (TT+PR comments) → probe: merge → verify → done
+  └─ request-changes → probe: card back to review + [review-fix] dispatch
+       → fix agent pushes → head changes → re-review [review-req] …
 ```
 
-## 리뷰어 엔진 실측 (2026-10-04)
+## Reviewer engine measurements (2026-10-04)
 
-| 엔진 | 소요 | 비고 |
+| engine | time | notes |
 | --- | --- | --- |
-| codex (tt-runner) | ~12분 | 실제 결함 지적(템플릿 재리뷰 fetch non-fast-forward) |
-| claude (tt-runner) | ~4분 | 심층 판정 — 중복·CONFLICTING·회귀 규명 |
-| hermes MoA | ~80분 | 작업기용 — 리뷰어로는 과속 |
+| codex (tt-runner) | ~12 min | pointed out a real defect (template re-review fetch non-fast-forward) |
+| claude (tt-runner) | ~4 min | deep verdict — identified duplicates, CONFLICTING, regressions |
+| hermes MoA | ~80 min | built for work, too slow as a reviewer |
 
-게이트 운영: `TT_REVIEW_AGENT=codex`. claude는 교차 리뷰 엔진, hermes는 리뷰 dispatch 대상 제외.
+Gate operation: `TT_REVIEW_AGENT=codex`. claude is the cross-review engine; hermes is excluded from review dispatch targets.
