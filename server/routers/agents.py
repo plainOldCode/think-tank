@@ -185,10 +185,13 @@ def dispatch(issue_id: str, p: DispatchIn, request: Request, ctx: Ctx = Depends(
             # 이후 다른 dispatch가 유입돼도 최신 행 조회로 대체하지 않는다.
             prev = {"context": existing["context"] or ""}
             # R4: 전달 소유권을 조건부 갱신으로 선점 — 동시 재전송은 하나만 웹훅을
-            # 호출한다(나머지는 기수락 200). 선점 실패 = 누군가 전달 진행 중.
+            # 호출한다(나머지는 기수락 200). 자격(status)과 lease를 같은 조건에 넣어
+            # 완료 경계도 차단: A가 복구 전달을 끝내 status=ok로 확정한 뒤 B의 늦은
+            # 선점은 실패한다(2차 리뷰 R4). 선점 실패 = 이미 전달됐거나 전달 진행 중.
             res = c.execute(
-                "UPDATE dispatches SET delivery_lease=? WHERE id=? AND "
-                "(delivery_lease IS NULL OR delivery_lease < ?)",
+                "UPDATE dispatches SET delivery_lease=? WHERE id=? AND ("
+                "status='error' OR (status='queued' AND "
+                "(delivery_lease IS NULL OR delivery_lease < ?)))",
                 (dbmod.now(), did,
                  (datetime.now().astimezone() - timedelta(seconds=DELIVERY_RECOVER_S))
                  .strftime("%Y-%m-%dT%H:%M:%S%z")))
@@ -276,12 +279,20 @@ def dispatch_progress(issue_id: str, dispatch_id: int, p: DispatchProgress, requ
                         409, f"stale round report: dispatch#{dispatch_id} attempt={row['attempt']} "
                              f"< issue current execution_attempt — 이전 회차 종료 보고 거부")
                 if p.comment:
-                    # 종료 투영과 완료 보고를 같은 트랜잭션에 접수 (R3: CAS 통과 후
-                    # 별도 /comments 사이 회차 변경 창 제거 — 409면 코멘트도 없다).
-                    # 접수 코어 공유로 버전 갱신·blocked 알림 부수효과 보존 (R9)
-                    service.record_comment(c, issue_id,
-                                           (p.author or "runner").strip() or "runner",
-                                           p.comment[:4000])
+                    # 원자적 dedup (R10): 응답 유실 재시도 — 첫 요청이 커밋됐어도
+                    # 같은 회차(세션) 보고는 다시 INSERT하지 않는다(200 멱등).
+                    # 새 회차는 세션명이 달라(report_session 불일치) 정상 접수된다.
+                    dup = c.execute(
+                        "UPDATE dispatches SET report_session=? WHERE id=? "
+                        "AND (report_session IS NULL OR report_session != ?)",
+                        (p.session or "", dispatch_id, p.session or ""))
+                    if dup.rowcount:
+                        # 종료 투영과 완료 보고를 같은 트랜잭션에 접수 (R3: CAS 통과 후
+                        # 별도 /comments 사이 회차 변경 창 제거 — 409면 코멘트도 없다).
+                        # 접수 코어 공유로 버전 갱신·blocked 알림 부수효과 보존 (R9)
+                        service.record_comment(c, issue_id,
+                                               (p.author or "runner").strip() or "runner",
+                                               p.comment[:4000])
             else:
                 fields["run_state"] = p.state
                 if p.state in ("running", "stalled"):

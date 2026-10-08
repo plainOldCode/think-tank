@@ -96,6 +96,7 @@ R.TT = "http://127.0.0.1:7799"
 
 # ---- fake TT 서버 ----
 ISSUE = {"id": "SMOKE-1", "title": "smoke", "comments": []}
+PROGRESS_SEEN = set()  # (dispatch_id, session) — 통합 접수 dedup 시뮬레이션
 _next = [0]
 
 class FakeTT(BaseHTTPRequestHandler):
@@ -117,6 +118,17 @@ class FakeTT(BaseHTTPRequestHandler):
         if self.path == "/issues/SMOKE-1/comments":
             ISSUE["comments"].append(p)
             return self._j(201, p)
+        # 통합 종료 접수(요구 2): /issues/<id>/dispatches/<did>/progress — 종료 상태+
+        # comment면 서버와 동일하게 접수 코멘트로 기록 (R10 dedup: 동일 did+session 1회)
+        if "/dispatches/" in self.path and self.path.endswith("/progress"):
+            did = self.path.rstrip("/").split("/")[-2]
+            if p.get("state") in ("finished", "failed") and p.get("comment"):
+                marker = (str(did), p.get("session") or "")
+                if marker not in PROGRESS_SEEN:
+                    PROGRESS_SEEN.add(marker)
+                    ISSUE["comments"].append({"author": p.get("author") or "runner",
+                                              "body": p["comment"]})
+            return self._j(200, {"ok": True})
         return self._j(404, {"detail": "nf"})
 
     def log_message(self, *a):

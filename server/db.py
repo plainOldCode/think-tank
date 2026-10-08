@@ -111,7 +111,8 @@ CREATE TABLE IF NOT EXISTS dispatches (
   ended_at TEXT,
   model TEXT NOT NULL DEFAULT '',
   idem_key TEXT,
-  delivery_lease TEXT
+  delivery_lease TEXT,
+  report_session TEXT
 );
 """
 
@@ -185,7 +186,8 @@ def connect(path):
     for col in ("model TEXT NOT NULL DEFAULT ''",
                 "idem_key TEXT",
                 "attempt INTEGER",
-                "delivery_lease TEXT"):
+                "delivery_lease TEXT",
+                "report_session TEXT"):
         try:
             con.execute(f"ALTER TABLE dispatches ADD COLUMN {col}")
         except sqlite3.OperationalError:

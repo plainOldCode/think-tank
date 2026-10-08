@@ -474,6 +474,48 @@ def test_dispatch_fresh_lease_dedupes_concurrent_resend(client, hook_server):
     assert row["delivery_lease"] is None  # 전달 완료 후 lease 해제
 
 
+def test_dispatch_recovery_completion_boundary(client, hook_server):
+    """리뷰 3차 R4 — 복구 전달 완료 후 늦은 재전송: 자격(status)과 lease를 같은
+    조건에 넣어 완료 경계 차단. error 행 복구 전달(ok 확정) 뒤의 재전송은
+    웹훅을 다시 치지 않는다."""
+    import sqlite3 as _sq
+    i = mk(client, title="완료 경계")
+    client.post("/agents", json={"name": "demo", "base_url": hook_server})
+    payload = {"agent": "demo", "message": "경계 대상"}
+    d1 = client.post(f"/issues/{i['id']}/dispatch", json=payload).json()
+    con = _sq.connect(client.app.state.ctx.db_path)
+    con.execute("UPDATE dispatches SET status='error', detail='HTTP 500' WHERE id=?", (d1["id"],))
+    con.commit()
+    con.close()
+    Hook.received.clear()
+    # A: 복구 재전달 — 웹훅 1회, ok 확정
+    dA = client.post(f"/issues/{i['id']}/dispatch", json=payload)
+    assert dA.status_code == 200 and len(Hook.received) == 1
+    # B: A 확정 뒤의 늦은 재전송 — 선점 실패, 웹훅 추가 없음
+    dB = client.post(f"/issues/{i['id']}/dispatch", json=payload)
+    assert dB.status_code == 200 and dB.json()["id"] == d1["id"]
+    assert len(Hook.received) == 1
+
+
+def test_dispatch_progress_terminal_report_dedup(client, hook_server):
+    """리뷰 3차 R10 — 응답 유실 재시도: 동일 dispatch+회차(세션) 종료 보고는
+    한 번만 접수된다(200 멱등). 새 회차(다른 세션)는 정상 접수된다."""
+    i = mk(client, title="보고 dedup")
+    client.post("/agents", json={"name": "demo", "base_url": hook_server})
+    d = client.post(f"/issues/{i['id']}/dispatch", json={"agent": "demo", "message": "m"}).json()
+    body = "runner:tp13 dispatch#%d done exit=0 session=s1" % d["id"]
+    p = {"state": "finished", "exit": 0, "comment": body, "session": "s1"}
+    url = f"/issues/{i['id']}/dispatches/{d['id']}/progress"
+    assert client.post(url, json=p).status_code == 200
+    assert client.post(url, json=p).status_code == 200  # 응답 유실 재시도
+    got = client.get(f"/issues/{i['id']}").json()
+    assert len([c for c in got["comments"] if "done exit=0" in c["body"]]) == 1
+    # 새 회차 — 세션명이 달라 report_session 불일치 → 정상 접수
+    assert client.post(url, json=dict(p, session="s1-abc1234-r2")).status_code == 200
+    got = client.get(f"/issues/{i['id']}").json()
+    assert len([c for c in got["comments"] if "done exit=0" in c["body"]]) == 2
+
+
 def test_dispatch_progress_comment_bumps_version(client, hook_server):
     """리뷰 R9 — 통합 종료 접수가 코멘트 접수 코어를 공유: issues.version/
     updated_at 갱신이 보존된다(/comments와 동일 의미)."""

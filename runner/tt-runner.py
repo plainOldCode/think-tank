@@ -18,6 +18,7 @@ tmux agent 실행으로 바꾼 단일 파일 러너다. 표준 라이브러리�
 """
 import fcntl
 import hashlib
+import glob
 import json
 import os
 import re
@@ -245,6 +246,47 @@ def _project_with_retry(ent, state, comment):
         if i < 2:
             time.sleep(0.5)
     return proj
+
+
+def _pending_path(key):
+    return os.path.join(RUNTIME_DIR, key.replace("#", "_") + ".pending.json")
+
+
+def _store_pending_report(key, state, comment, ent):
+    """종료 보고 접수 실패 시 로컬 보관 (리뷰 R3) — 기존 best-effort /comments
+    폴백은 CAS를 우회해 이전 회차 보고를 새 회차에 접수할 수 있다(403/404/5xx도
+    False에 포함). 대신 대상 식별자(issue/dispatch/session)를 파일로 보존하고
+    watch_once가 CAS 경유(progress)로 재전송한다. 접수되거나(200) 회차 이동으로
+    거부되면(409) 파일을 정리한다. 장부 엔트리와 독립 — 소실·재회차와 무관하게
+    서버 CAS가 유일 판정이다."""
+    with open(_pending_path(key), "w") as f:
+        json.dump({"key": key, "state": state, "comment": comment,
+                   "issue_id": ent.get("issue_id"),
+                   "dispatch_id": ent.get("dispatch_id"),
+                   "session": ent.get("session") or "",
+                   "ts": time.time()}, f, ensure_ascii=False)
+    log("REPORT-PENDING key=%s — 종료 보고 접수 실패, CAS 재전송 대기" % key)
+
+
+def _flush_pending_reports():
+    """보관된 종료 보고 재전송 (리뷰 R3) — 반드시 progress(CAS) 경로로만.
+    200(접수) 또는 409(stale — 회차 이동, 억제가 옳음)면 파일 정리,
+    여전히 실패면 다음 순회에 재시도한다."""
+    for path in glob.glob(os.path.join(RUNTIME_DIR, "*.pending.json")):
+        try:
+            with open(path) as f:
+                p = json.load(f)
+            ent = {"issue_id": p.get("issue_id"), "dispatch_id": p.get("dispatch_id"),
+                   "session": p.get("session") or ""}
+            if not ent["issue_id"] or not ent["dispatch_id"]:
+                os.remove(path)
+                continue
+            proj = progress_projection(ent, p["state"], comment=p["comment"])
+            if proj is True or proj == "stale":
+                os.remove(path)
+                log("REPORT-FLUSH key=%s proj=%s" % (p["key"], proj))
+        except Exception as e:
+            log("REPORT-FLUSH-ERROR %s: %s" % (os.path.basename(path), type(e).__name__))
 
 
 def _terminal_recorded(ent, state):
@@ -1225,7 +1267,8 @@ def finalize(runs_dir_name, key, ent, exit_code, tail="", summary=None, write=Tr
         if proj is False and _terminal_recorded(ent, "finished"):
             proj = True  # 응답 유실 — 서버 기록 확인, 코멘트 중복 발행 금지
         if proj is not True:
-            tt_comment(issue, body)
+            # CAS 우회 폴백 제거 (리뷰 R3) — 로컬 보관 후 progress 경유 재전송
+            _store_pending_report(key, "finished", body, ent)
         log("DONE dispatch#%s exit=0 session=%s" % (did, session))
         if write:
             update_run_if_round(key, ent, status="done", exit=exit_code, ended=time.time())
@@ -1244,7 +1287,8 @@ def finalize(runs_dir_name, key, ent, exit_code, tail="", summary=None, write=Tr
         if proj is False and _terminal_recorded(ent, "failed"):
             proj = True
         if proj is not True:
-            tt_comment(issue, bbody)
+            # CAS 우회 폴백 제거 (리뷰 R3) — 로컬 보관 후 progress 경유 재전송
+            _store_pending_report(key, "failed", bbody, ent)
         log("BLOCKED dispatch#%s signature=%s exit=%s session=%s" % (did, sig, exit_code, session))
         if write:
             update_run_if_round(key, ent, status="blocked", exit=exit_code,
@@ -1258,7 +1302,8 @@ def finalize(runs_dir_name, key, ent, exit_code, tail="", summary=None, write=Tr
     if proj is False and _terminal_recorded(ent, "failed"):
         proj = True
     if proj is not True:
-        tt_comment(issue, fbody)
+        # CAS 우회 폴백 제거 (리뷰 R3) — 로컬 보관 후 progress 경유 재전송
+        _store_pending_report(key, "failed", fbody, ent)
     log("FAILED dispatch#%s exit=%s" % (did, exit_code))
     if write:
         update_run_if_round(key, ent, status="failed", exit=exit_code, ended=time.time())
@@ -1328,9 +1373,14 @@ def heartbeat_pass():
             # 관찰 불가(세션 부재 등) — 직전 관찰을 보존하되 ok=False로 기록한다(리뷰
             # R6). stall_check는 유효 관찰이 없는 순회의 판정을 스킵하므로 과거 지문이
             # 신선한 heartbeat처럼 동작해 현재 세션을 kill하는 부류가 불가능하다.
+            # 이전 회차 관찰자의 늦은 쓰기 + 동일 지문 조합도 무음을 승계하지 않게
+            # 회차 가드 적용 (리뷰 R7): 이전 관찰이 다른 회차/세션이면 지문·무음 폐기.
+            same_round = (prev.get("round") == _round_id(cur)
+                          and prev.get("session") == session)
             rec = {"ts": time.time(), "round": _round_id(cur), "ok": False,
                    "dispatch_id": cur.get("dispatch_id"), "session": session,
-                   "pane_fp": prev.get("pane_fp"), "pane_ts": prev.get("pane_ts")}
+                   "pane_fp": prev.get("pane_fp") if same_round else None,
+                   "pane_ts": prev.get("pane_ts") if same_round else None}
             write_heartbeat(key, rec)
             continue
         # 지문은 회차 ID가 아니라 회차 간 같을 수 있다(R7) — 이전 관찰이 다른
@@ -1395,6 +1445,7 @@ def stall_check(key, ent, now):
 
 def watch_once():
     heartbeat_pass()  # 관찰 선(先) — 판정은 상태파일 근거 (요구 4)
+    _flush_pending_reports()  # 접수 실패 종료 보고 CAS 재전송 (리뷰 R3)
     runs = load_runs()
     for key, ent in list(runs.items()):
         if ent.get("status") not in run_state.STALLABLE:

@@ -4,6 +4,7 @@
 실행: TT_RUNNER_STATE=<tmp> TT_RUNNER_SECRET=<tmpfile> TT_URL=http://127.0.0.1:1 \
      python3 -m unittest discover -s runner -p 'test_*.py' (repo root)
 """
+import glob
 import http.client
 import importlib.util as _ilu
 import json
@@ -406,7 +407,15 @@ class TestProgressProjection(unittest.TestCase):
         self.comments = []
         self._orig_progress = R.tt_progress
         self._orig_comment = R.tt_comment
-        R.tt_progress = lambda iid, did, payload: self.calls.append((str(iid), did, payload))
+        # 이전 클래스가 남긴 pending 보고 정리(공유 RUNTIME_DIR — 호출 순서 단정 보호)
+        for f in glob.glob(os.path.join(R.RUNTIME_DIR, "*.pending.json")):
+            os.remove(f)
+
+        def _prog(iid, did, payload):
+            self.calls.append((str(iid), did, payload))
+            return True  # 서버 200 — 통합 접수 성공 (코멘트는 payload에 실려간다)
+
+        R.tt_progress = _prog
         R.tt_comment = lambda iid, body: self.comments.append((str(iid), body))
         R.save_runs({"P-1#501": {"status": "running", "issue_id": "P-1",
                                  "dispatch_id": 501, "session": "tt-p-501",
@@ -432,7 +441,9 @@ class TestProgressProjection(unittest.TestCase):
             f.write("ERROR: approval required before proceeding\n")
         R.finalize(None, "P-5#505", R.get_run("P-5#505"), 1)
         self.assertEqual(self._states(), ["failed"])
-        self.assertEqual(self.comments[-1][0], "P-5")
+        # 완료 보고는 progress payload에 통합 접수된다(R3) — 별도 /comments 없음
+        p5 = [c for c in self.calls if c[0] == "P-5"][-1]
+        self.assertIn("BLOCKED", p5[2].get("comment", ""))
 
     def test_stall_check_projects_stalled_once_and_kill_failed(self):
         ent = R.get_run("P-1#301") if R.get_run("P-1#301") else None
@@ -860,14 +871,22 @@ class TestCompletionTransitionRace(unittest.TestCase):
         self.orig_alive = R.session_alive
         self.orig_exec = R.execute_once
         self.orig_comment = R.tt_comment
+        self.orig_prog = R.tt_progress
         self.comments = []
         self.executed = []
         R.tt_comment = lambda issue, body: self.comments.append((issue, body))
+        # 통합 접수 시뮬레이션(R3): 종료 보고는 progress payload의 comment로 도착
+        def _prog(iid, did, payload):
+            if payload.get("comment"):
+                self.comments.append((str(iid), payload["comment"]))
+            return True
+        R.tt_progress = _prog
 
     def tearDown(self):
         R.session_alive = self.orig_alive
         R.execute_once = self.orig_exec
         R.tt_comment = self.orig_comment
+        R.tt_progress = self.orig_prog
 
     def _p(self, message, did=None, context=""):
         return {"dispatch_id": did or self.DID, "issue_id": self.issue,
@@ -1018,6 +1037,13 @@ class TestFinalizeOwnershipGate(unittest.TestCase):
         self.orig_alive = R.session_alive
         self.orig_exec = R.execute_once
         self.orig_comment = R.tt_comment
+        self.orig_prog = R.tt_progress
+        # 통합 접수 시뮬레이션(R3): 종료 보고는 progress payload의 comment로 도착
+        def _prog(iid, did, payload):
+            if payload.get("comment"):
+                self.comments.append((str(iid), payload["comment"]))
+            return True
+        R.tt_progress = _prog
         self.comments = []  # 전달(반환)된 코멘트만 기록
         self.executed = []
         self.gate_entered = threading.Event()
@@ -1045,11 +1071,19 @@ class TestFinalizeOwnershipGate(unittest.TestCase):
         return s1
 
     def _gate_comment(self, issue, body):
-        """finalize 내부 대기 재현: 이 카드의 보고 네트워크 호출에서 블록."""
-        if "dispatch#%d" % self.DID in body:
+        """finalize 내부 대기 재현: 이 카드의 보고 네트워크 호출에서 블록.
+        (R3 — 보고는 progress 경유이므로 tt_progress 게이트 _gate_prog 사용)"""
+        self.gate_entered.set()
+        self.gate_release.wait(timeout=10)
+        self.comments.append((issue, body))
+
+    def _gate_prog(self, iid, did, payload):
+        """finalize 내부 대기 재현 — 통합 보고(progress) 호출에서 블록."""
+        if str(did) == str(self.DID) and payload.get("comment"):
             self.gate_entered.set()
             self.gate_release.wait(timeout=10)
-        self.comments.append((issue, body))
+            self.comments.append((str(iid), payload["comment"]))
+        return True
 
     def _recorder_comment(self, issue, body):
         self.comments.append((issue, body))
@@ -1088,7 +1122,7 @@ class TestFinalizeOwnershipGate(unittest.TestCase):
     # ① codex 재현 경로 1: 감시자가 보고 호출에서 대기 중 B 선점 → 늦은 반환
     def test_late_watcher_return_does_not_clobber_preempted_round(self):
         s1 = self._prepare_running_a()
-        R.tt_comment = self._gate_comment
+        R.tt_progress = self._gate_prog
         wt = threading.Thread(target=R.watch_once, daemon=True)
         wt.start()
         self.assertTrue(self.gate_entered.wait(timeout=5),
@@ -1122,7 +1156,7 @@ class TestFinalizeOwnershipGate(unittest.TestCase):
     # ② codex 재현 경로 2: B 실행 중에 감시자 반환 — running 되덮기 금지 + B 보고 생존
     def test_late_watcher_return_after_b_started_keeps_round_and_report(self):
         s1 = self._prepare_running_a()
-        R.tt_comment = self._gate_comment
+        R.tt_progress = self._gate_prog
         wt = threading.Thread(target=R.watch_once, daemon=True)
         wt.start()
         self.assertTrue(self.gate_entered.wait(timeout=5),
@@ -1444,10 +1478,14 @@ class TestStaleReportSuppression(unittest.TestCase):
 
     def test_network_failure_still_reports_best_effort(self):
         snap = self._seed()
-        self.prog = [False]  # 타임아웃·오프라인 — 보고 진행
+        self.prog = [False]  # 타임아웃·오프라인 — 보고는 pending 보관 후 재전송(R3)
         outcome = R.finalize(None, self.KEY, snap, 0)
         self.assertEqual(outcome, "done")
-        self.assertEqual(len(self.comments), 1)  # done 코멘트 존재
+        self.assertEqual(self.comments, [])  # CAS 우회 폴백 없음
+        self.assertTrue(os.path.exists(R._pending_path(self.KEY)))
+        self.prog = [True]  # 서버 회복 — CAS 경유 재전송
+        R._flush_pending_reports()
+        self.assertFalse(os.path.exists(R._pending_path(self.KEY)))
         self.assertEqual(R.get_run(self.KEY)["status"], "done")
 
     def test_replaced_entry_rejects_stale_terminal_write(self):
@@ -1543,13 +1581,45 @@ class TestReviewEdgeRegressions(unittest.TestCase):
         outcome = R.finalize(None, self.KEY, R.get_run(self.KEY), 0)
         self.assertEqual(outcome, "done")
         self.assertEqual(self.comments, [])
-        # 응답 유실 + 서버 미기록(진짜 다운) → 기존 best-effort 발행 1회
+        # 응답 유실 + 서버 미기록(진짜 다운) → CAS 우회 폴백 제거(R3): 코멘트 발행
+        # 없이 pending 보관, 회복 후 watch_once가 progress 경유 재전송
         R.save_runs({self.KEY: dict(snap, status="running")})
         self.prog = [False]
         R.tt_http_raw = lambda m, p, payload=None: {"HTTP": 0, "detail": "conn refused"}
         outcome = R.finalize(None, self.KEY, R.get_run(self.KEY), 0)
         self.assertEqual(outcome, "done")
-        self.assertEqual(len(self.comments), 1)
+        self.assertEqual(self.comments, [])  # /comments 폴백 없음 — CAS 우회 차단
+        self.assertTrue(os.path.exists(R._pending_path(self.KEY)))
+        # 서버 회복 — CAS 경유 재전송 성공, 파일 정리 (코멘트 경로 아님)
+        self.prog = [True]
+        R._flush_pending_reports()
+        self.assertFalse(os.path.exists(R._pending_path(self.KEY)))
+        self.assertEqual(self.comments, [])
+
+    def test_r7_observation_failure_discards_cross_round_silence(self):
+        """리뷰 3차 R7 — 관찰 실패 분기도 회차 가드: 이전 회차 관찰자의 늦은 쓰기
+        (동일 지문) 뒤 새 회차 첫 캡처가 실패하면 이전 무음을 승계하지 않는다."""
+        now = time.time()
+        R.save_runs({"R7B#902": {"status": "running", "issue_id": "R7B",
+                                 "dispatch_id": 902, "session": "tt-x-902", "round": 2}})
+        orig_fp = R.pane_fingerprint
+        try:
+            # 이전 회차 관찰자의 늦은 쓰기 모사 — round 1 + 오래된 pane_ts + 동일 지문
+            R.write_heartbeat("R7B#902", {"ts": now, "round": 1, "ok": True,
+                                          "dispatch_id": 902, "session": "tt-x-902",
+                                          "pane_fp": "fp-x", "pane_ts": now - 900})
+            R.pane_fingerprint = lambda name, key=None: None  # 새 회차 첫 관찰 실패
+            R.heartbeat_pass()
+            hb = R.read_heartbeat("R7B#902")
+            self.assertIsNone(hb["pane_fp"])  # 회차 불일치 — 지문 폐기
+            self.assertIsNone(hb["pane_ts"])
+            # 다음 관찰(성공, 동일 지문) — 무음 기준 새로 시작(오래된 pane_ts 승계 없음)
+            R.pane_fingerprint = lambda name, key=None: "fp-x"
+            R.heartbeat_pass()
+            hb2 = R.read_heartbeat("R7B#902")
+            self.assertGreater(hb2["pane_ts"], now - 600)
+        finally:
+            R.pane_fingerprint = orig_fp
 
     def test_r6_capture_failure_never_kills(self):
         """R6 — 관찰 실패(ok=False) 순회는 과거 지문이 임계를 넘어도 판정 스킵."""
