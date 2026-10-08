@@ -24,7 +24,7 @@ def test_claim_and_pull_deliver_the_published_contract(client):
     assert response.status_code == 200
     contract = response.json()
     assert contract["version"] and "TDD" in contract["instructions"]
-    assert "실패" in contract["instructions"] and "검증" in contract["instructions"]
+    assert "fail" in contract["instructions"] and "verification" in contract["instructions"]
     assert contract["instructions"] in client.get("/api.md").text
     claimed = start(client)
     assert claimed["work_contract"] == contract
@@ -395,7 +395,7 @@ def test_env_switch_serves_v2_contract(tmp_path, monkeypatch):
     c = TestClient(create_app(str(tmp_path / "v2.db")))
     contract = c.get("/work-contract").json()
     assert contract["version"].startswith("tt-tdd-v2:")
-    assert "3단계" in contract["instructions"]
+    assert "three stages" in contract["instructions"]
     issue = c.post("/issues", json={"title": "v2 flow"}).json()
     claimed = c.post(f"/issues/{issue['id']}/claim", json={"agent": "worker"}).json()
     assert claimed["work_contract"]["version"].startswith("tt-tdd-v2:")
