@@ -170,6 +170,7 @@ backlog ──→ todo ──(pull/claim)──→ in_progress ──→ done
 ```
 tt pull [--label auto]       tt heartbeat ID          tt note ID "로그"    tt done ID "요약"
 tt new "제목" -P p1 -l infra [-p PARENT]        tt list [state]
+# 주의: tt new에 제목 뒤 여분의 위치 인자(예: 구분자 '-')를 넘기면 제목이 조용히 그 값으로 덮어써진다. 생성 후 tt show 첫 줄로 제목 확인.
 tt show ID                 tt tree ID           tt state ID blocked
 tt search "쿼리"           # 제목+본문 검색 (중복 이슈 확인에 먼저)
 tt archive ID|auto         tt unarchive ID
@@ -213,6 +214,31 @@ tt agent release|notify NAME on|off  # 능력 플래그: release=종지 명령, 
 검토 대기는 `tt verify ID --report report.json`. API는 PATCH `{state:"done", completion_report:{...}}`
 또는 POST verify `{verifier:"agent", completion_report:{...}}`. 대체 검증은 `method:"alternative"`와
 `reason`을 넣고 RED 필드는 생략한다. 보고는 이슈의 `completion_report`에 보관된다.
+
+**계약 v2.1 구조화 보고(서버 422 실측)**: 위 예시는 v1 플랫 형식이다. v2.1 계약 서버는 세 단계
+블록 객체를 요구하며 플랫 필드를 섞으면 거부한다.
+
+```json
+{
+  "contract_version": "<claim 응답의 work_contract.version>",
+  "attempt": 2,
+  "method": "planned",
+  "design": { "criteria": "...", "verification": "..." },
+  "implementation": { "summary": "...", "commands": "..." },
+  "verification": { "commands": "...", "evidence": [ { "command": "...", "exit_code": 0, "output_snippet": "..." } ] },
+  "result": "passed",
+  "limitations": "..."
+}
+```
+
+- `method`는 v2에서 `"planned"` — `"alternative"`는 `Value error, v2 uses planned instead of alternative`로 거부.
+- `design`은 `criteria`+`verification` 필수, 임의 키(`summary`/`scope`)는 `extra_forbidden`.
+- `implementation`은 `commands` 필수, `summary` 등 부가 키는 허용.
+- `implementation.commands`와 `verification.commands`는 **단일 문자열** — 문자열 배열을 넣으면 `Input should be a valid string` 422 (2026-10-05 실측). 여러 명령은 번호 매기기 한 줄로.
+- `verification.evidence`는 블록 객체 배열 `[{command, exit_code, output_snippet, note?}]` 또는 **단일 문자열** — 일반 문자열의 배열은 거부.
+- `attempt`는 **claim이 올린 현재 회차** — `tt show ID --json`의 `work_contract.execution_attempt`에서 복사(수령 응답 값과 동일). 이전 카드 보고에서 재사용하면 `stale completion report: refresh issue contract and execution_attempt` 422.
+- 최상위 `reason` 등 v1 플랫 필드 금지 — `Value error, v2 reports replace flat fields with the three stage blocks`. 대체 검증 사유는 `design.verification` 문장에 포함.
+- 흐름: `tt done --report`(→review) 후 `tt verify --report`(→done, `verification_status=reported`).
 
 계약은 `/api.md`의 공통 방법론 원문과 보고 정책을 해시한 버전으로 관리된다.
 claim/pull 응답과 dispatch payload에 `work_contract`, `execution_attempt`가 추가된다.
