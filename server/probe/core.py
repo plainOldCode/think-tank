@@ -68,7 +68,8 @@ def pr_card_id(pr):
 
 def collect_repos(issues):
     """PR 수집 repo 풀 — 알려진 repo(REPO_CARDS+TT_REPO_SCAN_EXTRA)는 항시, 카드 repo 표기는 동적.
-    review 카드 포함(GBE5 사고) + repo 미표기 카드도known repo에서 브랜치/제목 ID로 발견된다(사용자 지시)."""
+    review 카드 포함(GBE5 사고) + repo 미표기 카드도 known repo에서 브랜치/제목 ID로 발견된다(사용자 지시).
+    review 카드 코멘트의 PR URL도 편입(HG5S) — 스캔은 무해하고 실제 카드 연결은 pr_card_id 조인이 검증."""
     out = sorted(set(REPO_CARDS.values()))
     for extra in os.environ.get("TT_REPO_SCAN_EXTRA", "").split(","):
         if extra.strip():
@@ -78,6 +79,8 @@ def collect_repos(issues):
             r = card_repo(i)
             if r:
                 out.append(r)
+        if i["state"] == "review" and i.get("comments"):
+            out.extend(repo for repo, _ in _comment_pr_repos(i))
     return out
 
 
@@ -87,6 +90,26 @@ def _review_grace_min():
         return max(0, int(os.getenv("TT_REVIEW_GRACE_MIN", "20")))
     except ValueError:
         return 20
+
+
+def _stale_act(i, att, now):
+    """'PR 없음' review 카드 스탈 공지 액션 — 연령 기반(attempt당 마커 1회). 기본 24h.
+    (needs-merge 노트가 attempt당 1회 dedup이라 사이클 카운트는 불가 → 연령으로 판정)"""
+    try:
+        stale_h = max(0, float(os.getenv("TT_PROBE_STALE_HOURS", "24")))
+    except ValueError:
+        stale_h = 24.0
+    if not stale_h:
+        return None
+    smarker = f"[stale-notify a{att}]"
+    if _probe_marker(i, smarker):
+        return None
+    age = _age_min(now, i.get("updated_at") or "")
+    if age is None or age < stale_h * 60:
+        return None
+    return {"agent": "probe", "issue": i["id"], "action": "stale-notify",
+            "marker": smarker,
+            "reason": f"PR 없음 {int(age // 60)}시간 지속 — 사람 판단 대기 공지"}
 
 
 REVIEW_LINE = re.compile(r"^review:\s*(approve|request-changes)\b", re.I)
@@ -273,11 +296,28 @@ def decide(snap):
         if not i.get("work_contract") or (i.get("execution_attempt") or 0) < 1:
             continue
         att = i.get("execution_attempt") or 0
+        prs_for = [p for p in snap.get("prs") or [] if pr_card_id(p) == i["id"]]
+        # 코멘트 PR URL 역기입(HG5S) — needs-merge 마커와 독립 판정(codex P1: 마커가
+        # 채택·재시도를 차단해서는 안 된다). 본문 변경 없이 collect_repos가 풀에 편입.
+        if not prs_for and not card_repo(i):
+            for repo, prn in _comment_pr_repos(i):
+                amarker = f"[pr-adopted {prn}/{repo}]"
+                if _probe_marker(i, amarker):
+                    continue  # 이미 채택 기록 — 다음 후보 검사(codex P2)
+                actions.append({"agent": "probe", "issue": i["id"], "action": "pr-adopt",
+                                "repo": repo, "pr": prn, "marker": amarker,
+                                "reason": f"코멘트 PR URL 역기입 — {repo}#{prn} 채택"})
+                break
         marker = f"[needs-merge a{att}]"
         if any(marker in (c.get("body") or "") for c in (i.get("comments") or [])
                if c.get("author") == "probe"):
+            # 이미 needs-merge 노트 발행 — PR이 여전히 없을 때만 스탈 재평가 후 무음
+            # (codex P2: PENDING/FAILURE/draft PR 관측 중엔 'PR 없음' 공지 금지).
+            if not prs_for:
+                sa = _stale_act(i, att, snap.get("now") or "")
+                if sa:
+                    actions.append(sa)
             continue
-        prs_for = [p for p in snap.get("prs") or [] if pr_card_id(p) == i["id"]]
         drafts = [p for p in prs_for if p.get("isDraft")]
         if drafts and len(drafts) == len(prs_for):
             # 전부 draft — 병합·ci-fix 판정 불가. ready 요청 1회(마커 dedup) 후 무음.
@@ -321,6 +361,11 @@ def decide(snap):
             age = _age_min(snap.get("now") or "", i.get("updated_at") or "")
             if age is None or age < _review_grace_min():
                 continue  # PR 생성 유예 — 성급한 'PR 없음' 코멘트 금지
+            # 스탈 공지: 'PR 없음' review 카드가 N시간 지속 — 사일런트 반복 방지.
+            # (needs-merge 노트는 attempt당 1회 dedup이라 사이클 카운트 불가 → 연령 기반)
+            sa = _stale_act(i, att, snap.get("now") or "")
+            if sa:
+                actions.append(sa)
             reason = "PR 없음"
         actions.append({"agent": "probe", "issue": i["id"], "action": "review-note",
                         "reason": f"{reason} — 사람 판단 대기"})
@@ -360,6 +405,18 @@ REPO_CARDS = {
 REPO = os.environ.get("TT_REPO_SLUG", "plainOldCode/think-tank")
 
 CARD_REPO = re.compile(r"repo:\s*([\w.-]+/[\w.-]+)")
+PR_URL = re.compile(r"https://github\.com/([\w.-]+/[\w.-]+)/pull/(\d+)")
+
+
+def _comment_pr_repos(issue):
+    """카드 코멘트의 github PR URL → [(owner/repo, pr_no)] — 등장 순 중복 제거."""
+    seen = []
+    for c in issue.get("comments") or []:
+        for m in PR_URL.finditer(c.get("body") or ""):
+            t = (m.group(1), int(m.group(2)))
+            if t not in seen:
+                seen.append(t)
+    return seen
 
 
 def card_repo(issue):
@@ -628,6 +685,29 @@ def execute(url, act):
         api(url, f"/issues/{act['issue']}/comments", "POST",
             {"author": "probe", "body": f"{marker} {act['reason']} — "
                                         "tt verify로 done 확정 또는 review→todo 재작업"})
+    elif kind == "pr-adopt":
+        # 채택 기록만 남긴다. 본문 PATCH는 scope_changed로 처리되어 완료 보고를
+        # 삭제하고 attempt를 올린다(codex P1-2) — 하지 않는다. 실제 스캔 풀 편입은
+        # collect_repos가 review 카드 코멘트의 PR URL을 읽는다.
+        cur = api(url, f"/issues/{act['issue']}")
+        marker = act.get("marker") or ""
+        if any(marker in (c.get("body") or "") for c in (cur.get("comments") or [])):
+            return
+        api(url, f"/issues/{act['issue']}/comments", "POST",
+            {"author": "probe",
+             "body": f"{marker} 코멘트의 PR URL 채택 — 스캔 풀 편입(다음 사이클 관측)"})
+    elif kind == "stale-notify":
+        # 'PR 없음' 지속 review 카드 — 메시지 보드 공지(멘션은 assignee 등록 에이전트에만 기록됨) + 카드 마커.
+        cur = api(url, f"/issues/{act['issue']}")
+        marker = act.get("marker") or ""
+        if any(marker in (c.get("body") or "") for c in (cur.get("comments") or [])):
+            return
+        who = cur.get("assignee") or ""
+        api(url, "/messages", "POST",
+            {"author": "probe",
+             "body": (f"@{who} " if who else "") + f"[stale] 카드 {act['issue']} — {act['reason']}"})
+        api(url, f"/issues/{act['issue']}/comments", "POST",
+            {"author": "probe", "body": f"{marker} {act['reason']}"})
     elif kind == "resume":
         api(url, f"/issues/{act['issue']}", "PATCH", {"state": "todo", "version": v})
     elif kind == "needs-human":
