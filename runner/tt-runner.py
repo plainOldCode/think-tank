@@ -84,6 +84,7 @@ INPUT_SIGNATURES = [
 ]
 # stall 무음 임계 (M3BZS1G3-VNQH ②): wall-clock TIMEOUT과 별개.
 # 기본 600s 무음 → STALL 코멘트(+pane tail), 거기서 600s 더 무음 → kill.
+HEARTBEAT_DIR = os.path.join(RUNTIME_DIR, "heartbeats")
 STALL_SILENCE_S = int(os.environ.get("TT_STALL_SILENCE_S", "600"))
 STALL_KILL_AFTER_S = int(os.environ.get("TT_STALL_KILL_AFTER_S", "600"))
 # credential 격리 (M3BZS1G3-VNQH ④): agent CLI 자식 env에서 제거할 이름 패턴 —
@@ -361,6 +362,10 @@ def _clear_round_artifacts(key):
     즉시 finalize해버리고 .log/.out은 회차 출력을 섞는다.
     """
     base = os.path.join(RUNTIME_DIR, key.replace("#", "_"))
+    try:
+        os.remove(heartbeat_path(key))
+    except OSError:
+        pass
     for suffix in (".done", ".exit", ".out", ".log", ".msg"):
         try:
             os.remove(base + suffix)
@@ -515,6 +520,25 @@ def set_status(key, new, **fields):
             return False
         try:
             run_state.transition(ent, new, **fields)
+        except run_state.IllegalTransition as e:
+            log("ILLEGAL-TRANSITION key=%s %s (요청 무시)" % (key, e))
+            return False
+        save_runs(runs)
+        return True
+
+
+def set_status_if_round(key, snap, new, **fields):
+    """회차 가드 상태 전이 — 관찰 스냅샷(snap)이 여전히 현재 회차일 때만 전이한다.
+
+    stale 감시자의 STALL 판정이 재회차 엔트리를 오염하지 않게 한다(TT 개선#1
+    요구 4 — update_run_if_round의 비종단 짝). 반환: 썼으면 True."""
+    with ledger_lock():
+        runs = load_runs()
+        cur = runs.get(key)
+        if cur is None or not _observes_round(cur, snap):
+            return False
+        try:
+            run_state.transition(cur, new, **fields)
         except run_state.IllegalTransition as e:
             log("ILLEGAL-TRANSITION key=%s %s (요청 무시)" % (key, e))
             return False
@@ -1190,22 +1214,79 @@ def pane_fingerprint(name, key=None):
         return None
 
 
+def heartbeat_path(key):
+    return os.path.join(HEARTBEAT_DIR, key.replace("#", "_") + ".hb.json")
+
+
+def write_heartbeat(key, rec):
+    os.makedirs(HEARTBEAT_DIR, exist_ok=True)
+    tmp = heartbeat_path(key) + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(rec, f)
+    os.replace(tmp, heartbeat_path(key))
+
+
+def read_heartbeat(key):
+    try:
+        with open(heartbeat_path(key)) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def heartbeat_pass():
+    """상태파일 heartbeat 캡처 (TT 개선#1 요구 4) — 관찰과 판정의 분리.
+
+    라이브 런(STALLABLE)마다 관찰 레코드 {ts, round, dispatch_id, session,
+    pane_fp, pane_ts}를 상태파일에 기록한다. STALL 판정(stall_check)은 감시자
+    스냅샷 ent가 아니라 이 파일을 근거로 한다. 관찰은 항상 신선한 장부 재판독
+    기준이므로 파일의 round가 현재 회차를 나타낸다 — 스냅샷이 낡은 감시자는
+    round 불일치로 스킵되어 이전 회차가 현재 회차 세션을 STALL-kill할 수 없다
+    (A→B→C→B 구조적 방어). 지문 불변이면 pane_ts를 유지해 무음을 누적하고,
+    변경되면 갱신한다. 복구(stalled→running)도 이 지점에서 관찰 기준으로 판정.
+    """
+    for key, cur in load_runs().items():
+        if cur.get("status") not in run_state.STALLABLE:
+            continue
+        session = cur.get("session") or ""
+        fp = pane_fingerprint(session, key)
+        prev = read_heartbeat(key) or {}
+        if fp is None:
+            # 관찰 불가(세션 부재 등) — 직전 관찰을 유지해 판정 연속성 확보
+            if prev:
+                prev["ts"] = time.time()
+                write_heartbeat(key, prev)
+            continue
+        changed = prev.get("pane_fp") != fp
+        rec = {"ts": time.time(), "round": _round_id(cur),
+               "dispatch_id": cur.get("dispatch_id"), "session": session,
+               "pane_fp": fp,
+               "pane_ts": time.time() if changed else (prev.get("pane_ts") or time.time())}
+        write_heartbeat(key, rec)
+        if changed and cur.get("status") == "stalled":
+            # 복구: 진행 신호 재관찰 → running 복귀 (전이표 stalled→running, 회차 가드)
+            if set_status_if_round(key, cur, "running", stall_notified=False):
+                log("STALL-RECOVER dispatch#%s session=%s — 진행 신호 재관찰, running 복귀"
+                    % (cur.get("dispatch_id"), session))
+
+
 def stall_check(key, ent, now):
-    """(M3BZS1G3 ②) 무음 stall: pane 출력이 임계 이상 그대로면 STALL 코멘트(+pane tail),
-    그 후에도 계속 무음이면 kill. wall-clock TIMEOUT과 구분되는 이벤트.
-    반환 True면 이번 순회 추가 판정 생략."""
-    session = ent.get("session", "")
-    fp = pane_fingerprint(session, key)
-    if fp is None:
+    """(M3BZS1G3 ② → TT 개선#1 요구 4) STALL 판정 — 상태파일 heartbeat 프로토콜.
+
+    판정 근거는 감시자 스냅샷이 아니라 heartbeat_pass가 기록한 상태파일이다:
+    - 파일 부재·관찰 불가(pane_fp None) → 판정 스킵(보수적).
+    - 파일 round ≠ 스냅샷 round → 낡은 회차의 감시자 — 스킵(재회차 방어).
+    - 무음 누적(pane_ts 기준)이 임계를 넘으면 STALL 통지(+pane tail 진단) → kill.
+    모든 장부 쓰기는 회차 가드(set_status_if_round/update_run_if_round) — stale
+    감시자가 재회차 엔트리를 failed로 덮는 부류가 불가능하다. wall-clock TIMEOUT과
+    구분되는 이벤트. 반환 True면 이번 순회 추가 판정 생략."""
+    hb = read_heartbeat(key)
+    if hb is None or hb.get("pane_fp") is None:
         return False
-    if fp != ent.get("pane_fp"):
-        update_run(key, pane_fp=fp, pane_ts=now)
-        if ent.get("status") == "stalled":
-            set_status(key, "running", stall_notified=False)
-            log("STALL-RECOVER dispatch#%s session=%s — 진행 신호 재관찰, running 복귀"
-                % (ent.get("dispatch_id"), session))
+    if hb.get("round") is not None and hb.get("round") != _round_id(ent):
         return False
-    silent_for = now - (ent.get("pane_ts") or ent.get("started") or now)
+    session = hb.get("session") or ent.get("session") or ""
+    silent_for = now - (hb.get("pane_ts") or ent.get("started") or now)
     if silent_for > STALL_SILENCE_S + STALL_KILL_AFTER_S:
         try:
             tmux_run("send-keys", "-t", session, "C-c", capture_output=True)
@@ -1214,10 +1295,11 @@ def stall_check(key, ent, now):
         except Exception:
             pass
         progress_projection(ent, "failed")  # kill 사유 코멘트는 아래 tt_comment(기존 관례)
-        tt_comment(ent["issue_id"], "runner:%s dispatch#%s STALL-killed — %ds 이상 pane 무음(exit와 무관) session=%s"
+        tt_comment(ent["issue_id"], "runner:%s dispatch#%s STALL-killed — %ds 이상 진행 신호 없음(exit과 무관) session=%s"
                    % (machine_name(), ent["dispatch_id"], int(silent_for), session))
         log("STALL-KILL dispatch#%s silent=%ds session=%s" % (ent["dispatch_id"], int(silent_for), session))
-        set_status(key, "failed", detail="stall-killed", ended=time.time())
+        if not update_run_if_round(key, ent, status="failed", detail="stall-killed", ended=time.time()):
+            log("STALL-KILL-SKIP dispatch#%s — 회차 가드 거부(이미 재회차)" % ent["dispatch_id"])
         return True
     if silent_for > STALL_SILENCE_S and not ent.get("stall_notified"):
         progress_projection(ent, "stalled")  # stalled 판정 소유권: 오직 이 지점(서버 재계산 금지)
@@ -1226,12 +1308,13 @@ def stall_check(key, ent, now):
                    % (machine_name(), ent["dispatch_id"], int(silent_for), STALL_KILL_AFTER_S,
                       session_tail(session, 800)))
         log("STALL dispatch#%s silent=%ds session=%s" % (ent["dispatch_id"], int(silent_for), session))
-        set_status(key, "stalled", stall_notified=True)
+        set_status_if_round(key, ent, "stalled", stall_notified=True)
         return True
     return False
 
 
 def watch_once():
+    heartbeat_pass()  # 관찰 선(先) — 판정은 상태파일 근거 (요구 4)
     runs = load_runs()
     for key, ent in list(runs.items()):
         if ent.get("status") not in run_state.STALLABLE:
@@ -1268,17 +1351,17 @@ def watch_once():
             set_status(key, "failed", detail="timeout", ended=time.time())
             continue
         # 진행 투영 tick (TT M3EREF97-FXWQ): 지문 변경 = 진행, 변경 없어도 PROGRESS_S 주기마다
-        # 갱신 POST(last_progress_at 전진). stalled/복구 판정은 stall_check 소유 —
-        # stall 임계 초과 무음에서는 스킵(running으로 되돌림 없음; 같은 순회 stall_check가 선행).
-        fp = pane_fingerprint(session, key)
-        if fp is None:
+        # 갱신 POST(last_progress_at 전진). 근거는 상태파일 heartbeat(요구 4) —
+        # stall 임계 초과 무음에서는 스킵(같은 순회 stall_check가 선행).
+        hb = read_heartbeat(key)
+        if hb is None or hb.get("pane_fp") is None:
             continue
         now_ts = time.time()
-        silent_for = now_ts - (ent.get("pane_ts") or ent.get("started") or now_ts)
+        silent_for = now_ts - (hb.get("pane_ts") or now_ts)
         if silent_for > STALL_SILENCE_S:
             continue
-        if fp != ent.get("progress_fp") or now_ts - (ent.get("progress_sent") or 0) > PROGRESS_S:
-            update_run(key, progress_fp=fp, progress_sent=now_ts)
+        if hb.get("pane_fp") != ent.get("progress_fp") or now_ts - (ent.get("progress_sent") or 0) > PROGRESS_S:
+            update_run(key, progress_fp=hb.get("pane_fp"), progress_sent=now_ts)
             progress_projection(ent, "running", tail=progress_tail(key, session))
 
 

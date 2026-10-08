@@ -146,37 +146,89 @@ class TestWatchUpgrade(unittest.TestCase):
         self.assertEqual(outcome, "failed")
 
     # ② stall
-    def test_stall_fingerprint_and_kill_thresholds(self):
+    # ② stall — 상태파일 heartbeat 프로토콜 (TT 개선#1 요구 4)
+    def _hb(self, key, fp, pane_ts, round_no=1, session="tt-x-301"):
+        R.write_heartbeat(key, {"ts": time.time(), "round": round_no,
+                                "dispatch_id": 301, "session": session,
+                                "pane_fp": fp, "pane_ts": pane_ts})
+
+    def test_stall_heartbeat_thresholds(self):
         R.save_runs({"T-4#301": {"status": "running", "issue_id": "T-4",
-                                 "dispatch_id": 301, "session": "tt-x-301"}})
+                                 "dispatch_id": 301, "session": "tt-x-301", "round": 1}})
         now = time.time()
         killed = []
         R.tmux_run = lambda *a, **k: killed.append(a) or subprocess.CompletedProcess(a, 0)
-        orig_cap = R.pane_fingerprint
-        R.pane_fingerprint = lambda name, key=None: "fixedfp"
+        # heartbeat 부재 → 판정 스킵(보수적)
+        self.assertFalse(R.stall_check("T-4#301", R.get_run("T-4#301"), now))
+        # 임계 내 무음: 아무 일 없음
+        self._hb("T-4#301", "fixedfp", now - 30)
+        self.assertFalse(R.stall_check("T-4#301", R.get_run("T-4#301"), now))
+        # 임계 초과: STALL 코멘트 1회 + 장부 stalled(회차 가드)
+        self._hb("T-4#301", "fixedfp", now - R.STALL_SILENCE_S - 5)
+        self.assertTrue(R.stall_check("T-4#301", R.get_run("T-4#301"), now))
+        self.assertEqual(R.get_run("T-4#301")["status"], "stalled")
+        # 같은 스냅샷 재판정 — stall_notified 세팅으로 재통지 없음
+        self._hb("T-4#301", "fixedfp", now - R.STALL_SILENCE_S - 10)
+        self.assertFalse(R.stall_check("T-4#301", R.get_run("T-4#301"), now))
+        # kill 임계 초과 → kill + stall-killed 장부
+        self._hb("T-4#301", "fixedfp", now - R.STALL_SILENCE_S - R.STALL_KILL_AFTER_S - 5)
+        self.assertTrue(R.stall_check("T-4#301", R.get_run("T-4#301"), now))
+        self.assertEqual(R.get_run("T-4#301")["detail"], "stall-killed")
+
+    def test_stall_heartbeat_round_mismatch_skips(self):
+        """stale 감시자 방어 — 파일 round ≠ 스냅샷 round면 판정 자체를 스킵한다.
+
+        이전 회차 감시자가 현재 회차 세션을 STALL-kill하는 부류의 구조적 차단."""
+        now = time.time()
+        R.save_runs({"T-4#301": {"status": "running", "issue_id": "T-4",
+                                 "dispatch_id": 301, "session": "tt-x-301", "round": 1}})
+        stale_snap = R.get_run("T-4#301")
+        # 재회차 — 장부가 round 2로 교체, heartbeat도 현재 회차(2) 기준
+        R.save_runs({"T-4#301": {"status": "running", "issue_id": "T-4",
+                                 "dispatch_id": 301, "session": "tt-x-301-r2", "round": 2}})
+        self._hb("T-4#301", "fixedfp", now - R.STALL_SILENCE_S * 3, round_no=2)
+        # round 1 스냅샷의 늦은 판정 → 스킵 (킬도 코멘트도 없음)
+        self.assertFalse(R.stall_check("T-4#301", stale_snap, now))
+        self.assertEqual(R.get_run("T-4#301")["status"], "running")
+
+    def test_stall_kill_write_round_guarded(self):
+        """킬 직전 재회차가 끼어들면 장부 쓰기는 거부된다(세션 킬은 물리 행위)."""
+        now = time.time()
+        R.save_runs({"T-4#301": {"status": "running", "issue_id": "T-4",
+                                 "dispatch_id": 301, "session": "tt-x-301", "round": 1}})
+        snap = R.get_run("T-4#301")
+        self._hb("T-4#301", "fixedfp", now - R.STALL_SILENCE_S - R.STALL_KILL_AFTER_S - 5)
+        # 판정과 쓰기 사이 재회차 발생 — update_run_if_round가 거부
+        R.save_runs({"T-4#301": {"status": "queued", "issue_id": "T-4",
+                                 "dispatch_id": 301, "session": "tt-x-301-r2", "round": 2}})
+        self.assertTrue(R.stall_check("T-4#301", snap, now))
+        self.assertEqual(R.get_run("T-4#301")["status"], "queued")  # 훼손 없음
+
+    def test_heartbeat_pass_captures_and_accumulates_silence(self):
+        R.save_runs({"T-4#301": {"status": "running", "issue_id": "T-4",
+                                 "dispatch_id": 301, "session": "tt-x-301", "round": 1}})
+        orig_fp = R.pane_fingerprint
         try:
-            # 첫 관측: baseline 기록
-            self.assertFalse(R.stall_check("T-4#301", R.get_run("T-4#301"), now))
-            ent = R.get_run("T-4#301")
-            self.assertEqual(ent["pane_fp"], "fixedfp")
-            # 임계 내 무음: 아무 일 없음
-            self.assertFalse(R.stall_check("T-4#301", ent, now + R.STALL_SILENCE_S - 30))
-            # 임계 초과: STALL 코멘트 1회
-            self.assertTrue(R.stall_check("T-4#301", R.get_run("T-4#301"), now + R.STALL_SILENCE_S + 5))
-            self.assertTrue(R.get_run("T-4#301")["stall_notified"])
-            self.assertFalse(R.stall_check("T-4#301", R.get_run("T-4#301"), now + R.STALL_SILENCE_S + 10))
-            # 재지문 변경(출력 재개) → 카운터 리셋
-            R.pane_fingerprint = lambda name, key=None: "newfp"
-            self.assertFalse(R.stall_check("T-4#301", R.get_run("T-4#301"), now + R.STALL_SILENCE_S + 20))
-            # kill 임계 초과 → kill + stall-killed 장부
-            R.pane_fingerprint = lambda name, key=None: "newfp"
-            ent = R.get_run("T-4#301")
-            self.assertTrue(R.stall_check("T-4#301",
-                                          dict(ent, pane_ts=now),
-                                          now + R.STALL_SILENCE_S + R.STALL_KILL_AFTER_S + 5))
-            self.assertEqual(R.get_run("T-4#301")["detail"], "stall-killed")
+            R.pane_fingerprint = lambda name, key=None: "fp1"
+            R.heartbeat_pass()
+            hb1 = R.read_heartbeat("T-4#301")
+            self.assertEqual(hb1["pane_fp"], "fp1")
+            self.assertEqual(hb1["round"], 1)
+            # 지문 불변 — pane_ts 유지(무음 누적)
+            R.heartbeat_pass()
+            hb2 = R.read_heartbeat("T-4#301")
+            self.assertEqual(hb2["pane_ts"], hb1["pane_ts"])
+            # 지문 변경 — pane_ts 갱신 + stalled 복구
+            R.update_run("T-4#301", status="stalled", stall_notified=True)
+            R.pane_fingerprint = lambda name, key=None: "fp2"
+            R.heartbeat_pass()
+            hb3 = R.read_heartbeat("T-4#301")
+            self.assertEqual(hb3["pane_fp"], "fp2")
+            self.assertGreater(hb3["pane_ts"], hb2["pane_ts"])
+            self.assertEqual(R.get_run("T-4#301")["status"], "running")
         finally:
-            R.pane_fingerprint = orig_cap
+            R.pane_fingerprint = orig_fp
+
 
     # ③ 워크스페이스 불변식
     def test_guard_workspace_roots(self):
@@ -368,15 +420,20 @@ class TestProgressProjection(unittest.TestCase):
         orig_cap = R.pane_fingerprint
         R.pane_fingerprint = lambda name, key=None: "fp-fixed"
         try:
+            def hb(pane_ts):
+                R.write_heartbeat("P-2#502", {"ts": now, "round": None, "dispatch_id": 502,
+                                              "session": "tt-p-502", "pane_fp": "fp-fixed",
+                                              "pane_ts": pane_ts})
             e2 = R.get_run("P-2#502")
-            R.stall_check("P-2#502", e2, now)  # baseline
+            hb(now)  # 관찰 baseline(pane_ts=now) — 이후 판정 시각만 앞선다
+            R.stall_check("P-2#502", e2, now)
             R.stall_check("P-2#502", R.get_run("P-2#502"), now + R.STALL_SILENCE_S + 5)
             self.assertEqual(self._states(), ["stalled"])  # STALL 코멘트와 1:1, 중복 갱신 없음
             self.calls.clear()
             R.stall_check("P-2#502", R.get_run("P-2#502"), now + R.STALL_SILENCE_S + 10)
             self.assertEqual(self._states(), [])
-            e2 = dict(R.get_run("P-2#502"), pane_ts=now)
-            R.stall_check("P-2#502", e2, now + R.STALL_SILENCE_S + R.STALL_KILL_AFTER_S + 5)
+            R.stall_check("P-2#502", R.get_run("P-2#502"),
+                          now + R.STALL_SILENCE_S + R.STALL_KILL_AFTER_S + 5)
             self.assertEqual(self._states(), ["failed"])  # STALL-kill → failed
             # 투영은 별도 경로: STALL 코멘트는 존재하지만 진행 코멘트는 없다
             self.assertTrue(any("STALL" in b for _, b in self.comments))
@@ -1147,14 +1204,12 @@ class TestRunStateMachine(unittest.TestCase):
 
 
 class TestStalledLedgerState(unittest.TestCase):
-    """TT 개선#1 요구 1·4 — STALL 통지 시 장부 stalled, 진행 재관찰 시 running 복귀."""
+    """TT 개선#1 요구 1·4 — stalled 장부 상태와 완료 보고 상호작용."""
 
     def setUp(self):
-        self.n = str(self.id()).rsplit(".", 1)[-1]
-        self.issue = "STL-" + self.n
-        self.key = "%s#911" % self.issue
+        self.key = "STL-X#911"
+        self.issue = "STL-X"
         self.orig_comment = R.tt_comment
-        self.orig_fp = R.pane_fingerprint
         self.orig_tmux = R.tmux_run
         self.comments = []
         R.tt_comment = lambda i, b: self.comments.append((i, b))
@@ -1162,45 +1217,14 @@ class TestStalledLedgerState(unittest.TestCase):
 
     def tearDown(self):
         R.tt_comment = self.orig_comment
-        R.pane_fingerprint = self.orig_fp
         R.tmux_run = self.orig_tmux
 
-    def _seed_running(self):
-        R.save_runs({self.key: {"status": "running", "issue_id": self.issue,
+    def test_stalled_entry_still_reportable(self):
+        R.save_runs({self.key: {"status": "stalled", "issue_id": self.issue,
                                 "dispatch_id": 911, "session": "tt-stl-911",
-                                "round": 1, "started": time.time()}})
-
-    def test_stall_notify_sets_stalled_ledger_state(self):
-        self._seed_running()
-        R.pane_fingerprint = lambda name, key=None: "fixedfp"
-        now = time.time()
-        self.assertFalse(R.stall_check(self.key, R.get_run(self.key), now))
-        self.assertTrue(R.stall_check(self.key, R.get_run(self.key),
-                                      now + R.STALL_SILENCE_S + 5))
-        ent = R.get_run(self.key)
-        self.assertEqual(ent["status"], "stalled")
-        self.assertTrue(ent["stall_notified"])
-
-    def test_progress_recovery_returns_to_running(self):
-        self._seed_running()
-        R.pane_fingerprint = lambda name, key=None: "fixedfp"
-        now = time.time()
-        R.stall_check(self.key, R.get_run(self.key), now)
-        R.stall_check(self.key, R.get_run(self.key), now + R.STALL_SILENCE_S + 5)
-        self.assertEqual(R.get_run(self.key)["status"], "stalled")
-        # 진행 신호 재관찰(지문 변경) → running 복귀
-        R.pane_fingerprint = lambda name, key=None: "newfp"
-        self.assertFalse(R.stall_check(self.key, R.get_run(self.key), now + 10))
-        self.assertEqual(R.get_run(self.key)["status"], "running")
-
-    def test_stalled_entry_still_reportable_and_killable(self):
-        self._seed_running()
-        R.pane_fingerprint = lambda name, key=None: "fixedfp"
-        now = time.time()
-        R.stall_check(self.key, R.get_run(self.key), now)
-        R.stall_check(self.key, R.get_run(self.key), now + R.STALL_SILENCE_S + 5)
-        # stalled에서도 물리 완료 보고 가능 (REPORTABLE)
+                                "round": 1, "stall_notified": True}})
         snap = R.get_run(self.key)
+        # stalled에서도 물리 완료 보고 가능 (REPORTABLE)
         self.assertTrue(R.update_run_if_round(self.key, snap, status="done",
                                               exit=0, ended=time.time()))
         self.assertEqual(R.get_run(self.key)["status"], "done")
