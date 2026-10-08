@@ -70,7 +70,7 @@ JSON line in the message (keys outside the allowlist: OVERRIDE-IGNORED). binary/
   stall threshold/reset/kill, guard root/sanitize, agent_env hits and opt-in)
 - Loopback fake-TT smoke 20 items green (runner/smoke_tt_runner.py, TT_TMUX_SOCKET isolation):
   instant 200 + context session token, new tmux run→marker→done comment, DUP-SKIP (duplicate dispatch_id),
-  401/400, destructive gate hold→an 'approval' emitting run, context continuation instruction (send-keys mode),
+  401/400, destructive gate hold→an 'approve' emitting run, context continuation instruction (send-keys mode),
   INBOX-NOT-READY (pending 404), secret log masking, +M3BZS1G3: a fake CLI 'approval
   required' exit=1 → BLOCKED(waiting_for=human) / crash exit=1 → failed distinction,
   a registered-but-missing workspace → pre-start workspace-guard rejection, a secret canary
@@ -108,13 +108,13 @@ an A→B→C→B revisit with the previous round done, a follow-up dispatch cont
 The secret value is never written to files, plist env, TT comments, git, or logs.
 mask() passes over logs/comments; binding allows only a tailnet IP or 127.0.0.1.
 permission all runs un-downgraded only on tailscale-verified machines, otherwise it downgrades to auto (PERM-DOWNGRADED log).
-On detecting a destructive pattern (rm -rf, git push, sudo, drop, ...), GATE-HOLD — it does not run until an 'approval' dispatch arrives on TT.
+On detecting a destructive pattern (rm -rf, git push, sudo, drop, ...), GATE-HOLD — it does not run until an 'approve' dispatch arrives on TT.
 
 ## Run watchdog (M3BZS1G3-VNQH) — default draft, finalized after card-comment approval
 
 - Needs-input vs crash: only when exit!=0, the output/pane tail is compared against INPUT_SIGNATURES —
   on a hit it becomes BLOCKED rather than failed (a comment with waiting_for=human, ledger status=blocked,
-  blocked_on=the signature). No automatic retries — it waits for an 'approval' or a new instruction dispatch.
+  blocked_on=the signature). No automatic retries — it waits for an 'approve' or a new instruction dispatch.
   The 10 default signatures: requires approval / approval required|needed / waiting for input…/
   needs input|approval|confirmation / permission required|needed / do you want to allow…/
   please approve|confirm…/ [y/N]·[yes/no] / press enter to continue / needs_input·
