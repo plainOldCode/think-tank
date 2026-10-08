@@ -230,6 +230,29 @@ class TestWatchUpgrade(unittest.TestCase):
             R.pane_fingerprint = orig_fp
 
 
+    def test_heartbeat_round_change_resets_silence_baseline(self):
+        """리뷰 R7 — 지문은 회차 ID가 아니다: 회차 교체 후 동일 지문이어도 이전
+        회차 무음을 승계하면 안 된다(새 회차 = 새 기준)."""
+        R.save_runs({"T-4#302": {"status": "running", "issue_id": "T-4",
+                                 "dispatch_id": 302, "session": "tt-x-302", "round": 1}})
+        orig_fp = R.pane_fingerprint
+        try:
+            R.pane_fingerprint = lambda name, key=None: "fp-same"
+            R.heartbeat_pass()
+            hb1 = R.read_heartbeat("T-4#302")
+            self.assertEqual(hb1["round"], 1)
+            # 회차 교체(새 엔트리 기록 — 러너 재회차 경로와 동일한 모양)
+            ent = R.get_run("T-4#302")
+            ent.update({"round": 2, "session": "tt-x-302-fp-same-r2"})
+            R.save_runs({"T-4#302": ent})
+            R.heartbeat_pass()
+            hb2 = R.read_heartbeat("T-4#302")
+            self.assertEqual(hb2["round"], 2)
+            # 지문이 같아도 회차가 바뀌었으므로 pane_ts는 새로 시작
+            self.assertGreater(hb2["pane_ts"], hb1["pane_ts"])
+        finally:
+            R.pane_fingerprint = orig_fp
+
     # ③ 워크스페이스 불변식
     def test_guard_workspace_roots(self):
         prof = {"workspace": TMP, "allowed_workspaces": [TMP]}
@@ -518,6 +541,8 @@ class TestDupSkipReRound(unittest.TestCase):
         R.tt_comment = self.orig_comment
 
     def _done(self):
+        # 합법 전이 체인(R8: update_run도 전이표 경유) — queued→running→done
+        R.update_run(self.key, status="running", started=time.time())
         R.update_run(self.key, status="done", exit=0, ended=time.time())
 
     def test_target_sha_extracts_first_line_only(self):
@@ -560,7 +585,9 @@ class TestDupSkipReRound(unittest.TestCase):
     def test_mismatch_while_not_done_flags_visibility_once(self):
         comments = []
         R.tt_comment = lambda issue, body: comments.append((issue, body))
-        R.update_run(self.key, status="running")  # done이 아니면 재실행 없음
+        ent = R.get_run(self.key)  # done→running은 전이표상 불법(R8) — 직접 재시드
+        ent["status"] = "running"
+        R.save_runs({self.key: ent})  # done이 아니면 재실행 없음
         p2 = dict(self.p1, message=self.msg_b)
         _, fresh = R.prepare(p2)
         self.assertFalse(fresh)
@@ -612,6 +639,8 @@ class TestRoundSessionContext(unittest.TestCase):
                 "agent": "p-read", "message": message, "context": context}
 
     def _done(self):
+        # 합법 전이 체인(R8: update_run도 전이표 경유) — queued→running→done
+        R.update_run(self.key, status="running", started=time.time())
         R.update_run(self.key, status="done", exit=0, ended=time.time())
 
     # R1: 장부·prepare 반환값·HTTP 200 context가 현재 회차 세션으로 일치
@@ -692,6 +721,8 @@ class TestHookClaimFirstContext(unittest.TestCase):
                 "agent": "p-read", "message": message, "context": context}
 
     def _done(self):
+        # 합법 전이 체인(R8: update_run도 전이표 경유) — queued→running→done
+        R.update_run(self.key, status="running", started=time.time())
         R.update_run(self.key, status="done", exit=0, ended=time.time())
 
     # ① 실제 /hook 선점 선행 순서: claim이 먼저 장부를 바꾼 뒤 200을 계산해도 현재 회차
@@ -1144,14 +1175,60 @@ class TestFinalizeOwnershipGate(unittest.TestCase):
         self.assertTrue(R.update_run_if_round(self.key, snap, status="done", exit=0))
         self.assertEqual(R.get_run(self.key)["status"], "done")
         # 다음 회차 교체 후 — 이전 회차의 전환·완료 claim은 거부, 엔트리 무훼손
-        R.update_run(self.key, status="running", round=2,
-                     session=s1 + "-07bcc393-r2", claimed_report=None)
+        # (done→running은 전이표상 불법(R8) — 회차 교체 시드는 직접 기록)
+        ent2 = R.get_run(self.key)
+        ent2.update({"status": "running", "round": 2,
+                     "session": s1 + "-07bcc393-r2", "claimed_report": None})
+        R.save_runs({self.key: ent2})
         self.assertFalse(R.update_run_if_round(self.key, snap, status="failed", exit=1))
         ent = R.get_run(self.key)
         self.assertEqual(ent["status"], "running")
         self.assertEqual(ent["round"], 2)
         self.assertFalse(R.claim_report(self.key, snap, 0))  # 완료 보고는 흡수 경로 소유
         self.assertTrue(R.claim_report(self.key, snap, 1))   # 실패 보고는 감시자 몫
+
+
+class TestStopAndUpdateRunGuards(unittest.TestCase):
+    """리뷰 R8 — 상태 쓰기의 유일 결정 지점 강제."""
+
+    KEY = "T-8#801"
+
+    def test_update_run_rejects_illegal_status_transition(self):
+        R.save_runs({self.KEY: {"status": "done", "issue_id": "T-8", "dispatch_id": 801}})
+        R.update_run(self.KEY, status="running", started=time.time())  # done→running 불법
+        ent = R.get_run(self.KEY)
+        self.assertEqual(ent["status"], "done")  # 무훼손
+        self.assertNotIn("started", ent)  # 절반 적용도 없음
+
+    def test_update_run_allows_legal_transition_and_fields(self):
+        R.save_runs({self.KEY: {"status": "queued", "issue_id": "T-8", "dispatch_id": 801}})
+        R.update_run(self.KEY, status="running", started=time.time())
+        ent = R.get_run(self.KEY)
+        self.assertEqual(ent["status"], "running")
+        self.assertIn("started", ent)
+
+    def test_cmd_stop_on_terminal_entry_keeps_state(self):
+        R.save_runs({self.KEY: {"status": "done", "issue_id": "T-8",
+                                "dispatch_id": 801, "session": "tt-x-801"}})
+        orig = R.tmux_run
+        try:
+            R.tmux_run = lambda *a, **k: subprocess.CompletedProcess([], 0)
+            R.cmd_stop(self.KEY)
+        finally:
+            R.tmux_run = orig
+        self.assertEqual(R.get_run(self.KEY)["status"], "done")  # 종단 재지정 없음
+
+    def test_cmd_stop_on_running_entry_transitions_via_table(self):
+        R.save_runs({self.KEY: {"status": "running", "issue_id": "T-8",
+                                "dispatch_id": 801, "session": "tt-x-801"}})
+        orig = R.tmux_run
+        try:
+            R.tmux_run = lambda *a, **k: subprocess.CompletedProcess([], 0)
+            R.cmd_stop(self.KEY)
+        finally:
+            R.tmux_run = orig
+        self.assertEqual(R.get_run(self.KEY)["status"], "failed")
+        self.assertEqual(R.get_run(self.KEY).get("detail"), "stopped-by-cli")
 
 
 class TestRunStateMachine(unittest.TestCase):
@@ -1324,9 +1401,15 @@ class TestStaleReportSuppression(unittest.TestCase):
         self.orig_comment = R.tt_comment
         self.orig_prog = R.tt_progress
         self.comments = []
-        self.prog_results = []
+        self.prog = [True]
+        self.prog_calls = []
         R.tt_comment = lambda i, b: self.comments.append((i, b))
-        R.tt_progress = lambda *a, **k: self.prog_results.pop(0)
+
+        def _prog(*a, **k):
+            self.prog_calls.append(k.get("comment") if "comment" in k else (a[2] if len(a) > 2 else None))
+            return self.prog.pop(0) if len(self.prog) > 1 else self.prog[0]
+
+        R.tt_progress = _prog
 
     def tearDown(self):
         R.tt_comment = self.orig_comment
@@ -1343,7 +1426,7 @@ class TestStaleReportSuppression(unittest.TestCase):
 
     def test_stale_409_suppresses_done_comment_and_marks_ledger(self):
         snap = self._seed()
-        self.prog_results.append("stale")
+        self.prog = ["stale"]
         outcome = R.finalize(None, self.KEY, snap, 0)
         self.assertEqual(outcome, "stale")
         self.assertEqual(self.comments, [])  # 코멘트 억제
@@ -1353,7 +1436,7 @@ class TestStaleReportSuppression(unittest.TestCase):
 
     def test_stale_409_suppresses_failed_report(self):
         snap = self._seed()
-        self.prog_results.append("stale")
+        self.prog = ["stale"]
         outcome = R.finalize(None, self.KEY, snap, 1, tail="segfault")
         self.assertEqual(outcome, "stale")
         self.assertEqual(self.comments, [])
@@ -1361,7 +1444,7 @@ class TestStaleReportSuppression(unittest.TestCase):
 
     def test_network_failure_still_reports_best_effort(self):
         snap = self._seed()
-        self.prog_results.append(False)  # 타임아웃·오프라인 — 보고 진행
+        self.prog = [False]  # 타임아웃·오프라인 — 보고 진행
         outcome = R.finalize(None, self.KEY, snap, 0)
         self.assertEqual(outcome, "done")
         self.assertEqual(len(self.comments), 1)  # done 코멘트 존재
@@ -1370,13 +1453,13 @@ class TestStaleReportSuppression(unittest.TestCase):
     def test_replaced_entry_rejects_stale_terminal_write(self):
         self._seed()
         snap = R.get_run(self.KEY)
-        self.prog_results.append("stale")
+        self.prog = ["stale"]
         R.finalize(None, self.KEY, snap, 0, write=False)  # 보고만 — 장부 무시
         # 재회차 선점이 엔트리를 교체한 뒤 늦은 억제 종결 시도 → 전이표가 거부
         R.save_runs({self.KEY: {"status": "queued", "issue_id": self.ISSUE,
                                 "dispatch_id": 801, "session": "tt-stale-801-r2",
                                 "round": 2}})
-        self.prog_results.append("stale")
+        self.prog = ["stale"]
         outcome = R.finalize(None, self.KEY, R.get_run(self.KEY), 0)
         self.assertEqual(outcome, "stale")
         self.assertEqual(R.get_run(self.KEY)["status"], "queued")  # 훼손 없음
@@ -1393,9 +1476,15 @@ class TestReviewEdgeRegressions(unittest.TestCase):
         self.orig_prog = R.tt_progress
         self.orig_raw = R.tt_http_raw
         self.comments = []
-        self.prog_results = []
+        self.prog = [True]
+        self.prog_calls = []
         R.tt_comment = lambda i, b: self.comments.append((i, b))
-        R.tt_progress = lambda *a, **k: self.prog_results.pop(0)
+
+        def _prog(*a, **k):
+            self.prog_calls.append(k.get("comment") if "comment" in k else (a[2] if len(a) > 2 else None))
+            return self.prog.pop(0) if len(self.prog) > 1 else self.prog[0]
+
+        R.tt_progress = _prog
 
     def tearDown(self):
         R.tt_comment = self.orig_comment
@@ -1429,17 +1518,26 @@ class TestReviewEdgeRegressions(unittest.TestCase):
         self.assertEqual(ent["status"], "running")  # B 무훼손
         self.assertEqual(self.comments, [])
 
+    def test_r3_combined_acceptance_retries_transient_failure(self):
+        """리뷰 R3 후속 — 통합 접수 재시도: 1~2회 순단은 폴백 코멘트 없이 회복.
+        서버가 잠깐 응답 실패해도 CAS 경유 접수가 이뤄진다(claim 창 제거)."""
+        snap = self._seed()
+        self.prog = [False, True]  # 1회 순단 → 2회차 성공
+        outcome = R.finalize(None, self.KEY, snap, 0)
+        self.assertEqual(outcome, "done")
+        self.assertEqual(self.comments, [])  # 폴백 없음
+
     def test_r3_comment_combined_on_success_and_recheck_on_loss(self):
         """R3 — 투영 성공 시 별도 /comments 발행 없음(서버가 원자 접수);
         응답 유실(False)이지만 서버 기록 재확인되면 역시 발행 없음."""
         snap = self._seed()
-        self.prog_results.append(True)
+        self.prog = [True]
         outcome = R.finalize(None, self.KEY, snap, 0)
         self.assertEqual(outcome, "done")
         self.assertEqual(self.comments, [])  # 통합 접수 — 이중 코멘트 없음
         # 응답 유실 + 서버 기록 확인 → 역시 발행 없음
         R.save_runs({self.KEY: dict(snap, status="running")})
-        self.prog_results = [False]
+        self.prog = [False]
         R.tt_http_raw = lambda m, p, payload=None: [  # GET dispatches 응답 모사
             {"id": 901, "run_state": "finished"}]
         outcome = R.finalize(None, self.KEY, R.get_run(self.KEY), 0)
@@ -1447,7 +1545,7 @@ class TestReviewEdgeRegressions(unittest.TestCase):
         self.assertEqual(self.comments, [])
         # 응답 유실 + 서버 미기록(진짜 다운) → 기존 best-effort 발행 1회
         R.save_runs({self.KEY: dict(snap, status="running")})
-        self.prog_results = [False]
+        self.prog = [False]
         R.tt_http_raw = lambda m, p, payload=None: {"HTTP": 0, "detail": "conn refused"}
         outcome = R.finalize(None, self.KEY, R.get_run(self.KEY), 0)
         self.assertEqual(outcome, "done")

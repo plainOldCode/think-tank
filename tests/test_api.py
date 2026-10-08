@@ -438,6 +438,76 @@ def test_dispatch_crashed_queued_recovery(client, hook_server):
     assert len(Hook.received) == 0  # 진행 중 — 재전달 없음
 
 
+def test_dispatch_fresh_lease_dedupes_concurrent_resend(client, hook_server):
+    """리뷰 R4 — 전달 소유권(lease): 신선 lease 보유 queued 행의 재전송은 기수락
+    (이중 웹훅 방지), 만료 lease만 복구 재전달 + 전달 완료 후 lease 해제."""
+    import sqlite3 as _sq
+    from datetime import datetime
+    i = mk(client, title="lease 경합")
+    client.post("/agents", json={"name": "demo", "base_url": hook_server})
+    payload = {"agent": "demo", "message": "lease 대상"}
+    d1 = client.post(f"/issues/{i['id']}/dispatch", json=payload).json()
+    assert d1["status"] == "ok"
+    con = _sq.connect(client.app.state.ctx.db_path)
+    # 전달 전 크래시 시뮬레이션 — queued + 신선 lease(전달 진행 중)
+    con.execute("UPDATE dispatches SET status='queued', detail='', delivery_lease=? WHERE id=?",
+                (datetime.now().astimezone().strftime("%Y-%m-%dT%H:%M:%S%z"), d1["id"]))
+    con.commit()
+    con.close()
+    Hook.received.clear()
+    d2 = client.post(f"/issues/{i['id']}/dispatch", json=payload)
+    assert d2.status_code == 200
+    assert len(Hook.received) == 0  # 신선 lease — 이중 웹훅 없음
+    # lease 만료 — 복구 재전달
+    con = _sq.connect(client.app.state.ctx.db_path)
+    con.execute("UPDATE dispatches SET delivery_lease=? WHERE id=?",
+                ("2020-01-01T00:00:00+0900", d1["id"]))
+    con.commit()
+    con.close()
+    d3 = client.post(f"/issues/{i['id']}/dispatch", json=payload)
+    assert d3.status_code == 200 and d3.json()["id"] == d1["id"]
+    assert len(Hook.received) == 1
+    con = _sq.connect(client.app.state.ctx.db_path)
+    con.row_factory = _sq.Row
+    row = con.execute("SELECT delivery_lease FROM dispatches WHERE id=?", (d1["id"],)).fetchone()
+    con.close()
+    assert row["delivery_lease"] is None  # 전달 완료 후 lease 해제
+
+
+def test_dispatch_progress_comment_bumps_version(client, hook_server):
+    """리뷰 R9 — 통합 종료 접수가 코멘트 접수 코어를 공유: issues.version/
+    updated_at 갱신이 보존된다(/comments와 동일 의미)."""
+    i = mk(client, title="버전 갱신")
+    client.post("/agents", json={"name": "demo", "base_url": hook_server})
+    d = client.post(f"/issues/{i['id']}/dispatch", json={"agent": "demo", "message": "m"}).json()
+    before = client.get(f"/issues/{i['id']}").json()["version"]
+    r = client.post(f"/issues/{i['id']}/dispatches/{d['id']}/progress", json={
+                                       "state": "finished", "exit": 0,
+                                       "comment": "runner:tp13 dispatch#%d done exit=0 session=s" % d["id"]})
+    assert r.status_code == 200
+    after = client.get(f"/issues/{i['id']}").json()
+    assert after["version"] == before + 1
+    got = client.get(f"/issues/{i['id']}").json()
+    assert any("done exit=0" in cm["body"] for cm in got["comments"])
+
+
+def test_dispatch_progress_blocked_comment_escalates(client, hook_server):
+    """리뷰 R9 — 통합 접수가 blocked 카드의 human 알림을 유발(waiting_for=human
+    마커 + blocked 상태 → escalate_blocked_human)."""
+    i = mk(client, title="통합 블록 알림")
+    client.post("/agents", json={"name": "demo", "base_url": hook_server})
+    d = client.post(f"/issues/{i['id']}/dispatch", json={"agent": "demo", "message": "m"}).json()
+    # 카드를 blocked로 — waiting_for=human 마커 코멘트와 함께 통합 접수
+    client.post(f"/issues/{i['id']}/comments", json={"author": "runner:x", "body": "blocked"})
+    client.patch(f"/issues/{i['id']}", json={"state": "blocked"})
+    client.post(f"/issues/{i['id']}/dispatches/{d['id']}/progress", json={
+                                   "state": "failed", "exit": 2,
+                                   "comment": "runner:tp13 dispatch#%d BLOCKED — 승인 요구 exit=2 session=s "
+                                              "waiting_for=human." % d["id"]})
+    after = client.get(f"/issues/{i['id']}").json()
+    assert after["blocked_notified_at"], "blocked 카드 알림 미발동"
+
+
 def test_dispatch_redelivery_keeps_resume_context(client, hook_server):
     """리뷰 R5 — error 재전달이 원래 resume context를 잃지 않는다:
     성공(토큰) → 실패 → 재전달 시 payload.context == 앞선 토큰."""

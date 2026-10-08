@@ -231,6 +231,22 @@ def progress_projection(ent, state, tail=None, session=None, comment=None):
     return tt_progress(ent["issue_id"], ent["dispatch_id"], payload)
 
 
+def _project_with_retry(ent, state, comment):
+    """통합 종료 접수 재시도(R3 후속) — 완료 코멘트는 반드시 CAS 경유 접수를 우선
+    시도한다. 순단성 통신 실패가 claim 창을 만들지 않게 3회까지 재시도하고, 모두
+    실패(서버 다운)했을 때만 기존 best-effort 코멘트로 폴백한다. 서버 다운 구간에는
+    claim도 불가하므로 폴백이 증거를 오염할 창은 서버가 그 사이 정확히 회복되는
+    경우뿐이다(문서화된 잔여 위험)."""
+    proj = False
+    for i in range(3):
+        proj = progress_projection(ent, state, comment=comment)
+        if proj is not False:
+            return proj
+        if i < 2:
+            time.sleep(0.5)
+    return proj
+
+
 def _terminal_recorded(ent, state):
     """종료 투영이 서버에 기록됐는지 재확인(R3) — 응답 유실(타임아웃 후 커밋) 시
     완료 코멘트 중복 발행을 막는다. 서버 200 + run_state 일치 시 True."""
@@ -522,10 +538,25 @@ def run_deferred(deferred):
 
 
 def update_run(key, **fields):
+    """일반 필드 갱신. status는 전이표 경유만 허용된다(리뷰 R8 — 유일 결정 지점):
+    불법 전이거나 종단 상태에서의 재지정이면 상태 변경 없이 로그만 남기고 전체
+    갱신을 스킵한다. 상태 변경이 필요한 호출자는 set_status/set_status_if_round/
+    update_run_if_round를 쓸 것."""
     with ledger_lock():
         runs = load_runs()
-        if key in runs:
-            runs[key].update(fields)
+        ent = runs.get(key)
+        if ent is None:
+            return
+        new_status = fields.pop("status", None)
+        if new_status is not None:
+            try:
+                run_state.transition(ent, new_status)
+            except run_state.IllegalTransition as e:
+                log("ILLEGAL-TRANSITION key=%s %s (update_run — 갱신 스킵)" % (key, e))
+                return
+        if fields:
+            ent.update(fields)
+        if fields or new_status is not None:
             save_runs(runs)
 
 
@@ -1188,7 +1219,7 @@ def finalize(runs_dir_name, key, ent, exit_code, tail="", summary=None, write=Tr
         # 중복 발행을 막는다.
         body = ("runner:%s dispatch#%s done exit=0 session=%s\n%s"
                 % (machine_name(), did, session, mask(summary)))
-        proj = progress_projection(ent, "finished", comment=body)
+        proj = _project_with_retry(ent, "finished", body)
         if proj == "stale":
             return _stale_suppressed(key, ent, exit_code, "done", write)
         if proj is False and _terminal_recorded(ent, "finished"):
@@ -1207,7 +1238,7 @@ def finalize(runs_dir_name, key, ent, exit_code, tail="", summary=None, write=Tr
         bbody = ("runner:%s dispatch#%s BLOCKED — 입력/승인 요구 감지(%s) exit=%s session=%s "
                  "waiting_for=human. 재지시('승인' 또는 지시)를 기다림; 자동 재시도 없음.\n%s"
                  % (machine_name(), did, sig, exit_code, session, mask(combined[-1500:])))
-        proj = progress_projection(ent, "failed", comment=bbody)
+        proj = _project_with_retry(ent, "failed", bbody)
         if proj == "stale":
             return _stale_suppressed(key, ent, exit_code, "blocked", write)
         if proj is False and _terminal_recorded(ent, "failed"):
@@ -1221,7 +1252,7 @@ def finalize(runs_dir_name, key, ent, exit_code, tail="", summary=None, write=Tr
         return "blocked"
     fbody = ("runner:%s dispatch#%s failed exit=%s session=%s\n%s"
              % (machine_name(), did, exit_code, session, mask(tail or summary)))
-    proj = progress_projection(ent, "failed", comment=fbody)
+    proj = _project_with_retry(ent, "failed", fbody)
     if proj == "stale":
         return _stale_suppressed(key, ent, exit_code, "failed", write)
     if proj is False and _terminal_recorded(ent, "failed"):
@@ -1302,7 +1333,11 @@ def heartbeat_pass():
                    "pane_fp": prev.get("pane_fp"), "pane_ts": prev.get("pane_ts")}
             write_heartbeat(key, rec)
             continue
-        changed = prev.get("pane_fp") != fp
+        # 지문은 회차 ID가 아니라 회차 간 같을 수 있다(R7) — 이전 관찰이 다른
+        # 회차/세션 것이면 무음 기준을 승계하지 않고 새로 시작한다.
+        same_round = (prev.get("round") == _round_id(cur)
+                      and prev.get("session") == session)
+        changed = (not same_round) or prev.get("pane_fp") != fp
         rec = {"ts": time.time(), "round": _round_id(cur), "ok": True,
                "dispatch_id": cur.get("dispatch_id"), "session": session,
                "pane_fp": fp,
@@ -1595,7 +1630,10 @@ def cmd_stop(key):
         print("run not found: %s" % key)
         return 1
     tmux_run("kill-session", "-t", ent["session"], capture_output=True)
-    update_run(ent["_key"], status="failed", detail="stopped-by-cli", ended=time.time())
+    if ent.get("status") not in run_state.TERMINAL:
+        # 실행 중 런의 중지는 전이표 경유(리뷰 R8). 종단 항목(keep_shell 생존 셸 등)은
+        # 셸 정리만 — 상태는 이미 확정되어 재지정하지 않는다.
+        set_status(ent["_key"], "failed", detail="stopped-by-cli", ended=time.time())
     print("killed %s" % ent["session"])
 
 

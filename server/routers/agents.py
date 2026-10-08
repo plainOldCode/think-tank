@@ -2,6 +2,7 @@
 import hashlib
 import json
 import sqlite3
+from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -15,22 +16,25 @@ from service import Ctx
 router = APIRouter()
 
 
-DELIVERY_RECOVER_S = 30  # webhook 타임아웃(10s)의 3배 — 진행 중 전달과 크래시 잔재 구분
+DELIVERY_RECOVER_S = 30  # webhook 타임아웃(10s)의 3배 — 전달 lease 만료 기준 (R4)
 
 
 def _redeliver_wanted(row) -> bool:
-    """기수락 예외 판정 (R4): error 행은 항상 재전달, queued 행은 접수 후
-    DELIVERY_RECOVER_S가 지나도록 미전달이면 전달 전 크래시로 보고 복구한다.
-    진행 중(최근 queued) 재전송은 기수락 — 이중 webhook 방지."""
+    """기수락 예외 판정 (R4): error 행은 항상 재전달. queued 행은 전달 lease가
+    없거나 만료됐을 때만 — lease는 "전달 소유권"으로, 진행 중 재전송(신선한
+    lease)은 기수락, 전달 전 크래시 잔재(무 lease·만료)는 복구 대상이다."""
     if row["status"] == "error":
         return True
     if row["status"] != "queued":
         return False
+    lease = row["delivery_lease"]
+    if not lease:
+        return True
     try:
         from datetime import datetime
-        age = (datetime.now().astimezone() - datetime.fromisoformat(row["ts"])).total_seconds()
+        age = (datetime.now().astimezone() - datetime.fromisoformat(lease)).total_seconds()
     except ValueError:
-        return False
+        return True
     return age > DELIVERY_RECOVER_S
 
 
@@ -160,10 +164,11 @@ def dispatch(issue_id: str, p: DispatchIn, request: Request, ctx: Ctx = Depends(
             # 전달 성공 시에만 웹훅 응답 token으로 갱신된다.
             inh_ctx = prev["context"] if prev else ""
             try:
-                did = c.execute("INSERT INTO dispatches (issue_id, agent, author, message, context, status, ts, model, idem_key, attempt) "
-                                "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                did = c.execute("INSERT INTO dispatches (issue_id, agent, author, message, context, status, ts, model, idem_key, attempt, delivery_lease) "
+                                "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                                 (issue_id, p.agent, p.author, p.message, inh_ctx, "queued", dbmod.now(),
-                                 ag["model"] or "", idem, issue["execution_attempt"])).lastrowid
+                                 ag["model"] or "", idem, issue["execution_attempt"],
+                                 dbmod.now())).lastrowid
             except sqlite3.IntegrityError:
                 # 동시 중복 POST — 유니크 인덱스가 원자적으로 승자를 결정한다.
                 c.rollback()
@@ -176,8 +181,20 @@ def dispatch(issue_id: str, p: DispatchIn, request: Request, ctx: Ctx = Depends(
                 did = row["id"]  # 크래시 잔재 queued — 재전달 경로로 계속
         else:
             did = existing["id"]
-            prev = c.execute("SELECT context FROM dispatches WHERE issue_id=? AND agent=? "
-                             "ORDER BY id DESC LIMIT 1", (issue_id, p.agent)).fetchone()
+            # R5: 재전달 payload의 resume context는 이 행에 보존된 접수 시점 값 —
+            # 이후 다른 dispatch가 유입돼도 최신 행 조회로 대체하지 않는다.
+            prev = {"context": existing["context"] or ""}
+            # R4: 전달 소유권을 조건부 갱신으로 선점 — 동시 재전송은 하나만 웹훅을
+            # 호출한다(나머지는 기수락 200). 선점 실패 = 누군가 전달 진행 중.
+            res = c.execute(
+                "UPDATE dispatches SET delivery_lease=? WHERE id=? AND "
+                "(delivery_lease IS NULL OR delivery_lease < ?)",
+                (dbmod.now(), did,
+                 (datetime.now().astimezone() - timedelta(seconds=DELIVERY_RECOVER_S))
+                 .strftime("%Y-%m-%dT%H:%M:%S%z")))
+            if res.rowcount != 1:
+                row = c.execute("SELECT * FROM dispatches WHERE id=?", (did,)).fetchone()
+                return JSONResponse(status_code=200, content=dict(row))
         tail = dbmod.comments_of(c, issue_id)[-20:]
         c.commit()
     payload = _dispatch_payload(issue, ag, p, did, issue_id, request, ctx, prev, tail)
@@ -191,10 +208,10 @@ def dispatch(issue_id: str, p: DispatchIn, request: Request, ctx: Ctx = Depends(
     with ctx.con() as c:
         # 실패(error) 시 context는 생성 시 상속값을 보존(R5) — 성공 시에만 응답 token으로 갱신
         if status == "ok":
-            c.execute("UPDATE dispatches SET status=?, detail=?, context=? WHERE id=?",
+            c.execute("UPDATE dispatches SET status=?, detail=?, context=?, delivery_lease=NULL WHERE id=?",
                       (status, detail, dctx, did))
         else:
-            c.execute("UPDATE dispatches SET status=?, detail=? WHERE id=?",
+            c.execute("UPDATE dispatches SET status=?, detail=?, delivery_lease=NULL WHERE id=?",
                       (status, detail, did))
         c.execute("UPDATE agents SET last_ok=?, last_err=? WHERE name=?",
                   (dbmod.now() if status == "ok" else ag["last_ok"],
@@ -260,10 +277,11 @@ def dispatch_progress(issue_id: str, dispatch_id: int, p: DispatchProgress, requ
                              f"< issue current execution_attempt — 이전 회차 종료 보고 거부")
                 if p.comment:
                     # 종료 투영과 완료 보고를 같은 트랜잭션에 접수 (R3: CAS 통과 후
-                    # 별도 /comments 사이 회차 변경 창 제거 — 409면 코멘트도 없다)
-                    c.execute("INSERT INTO comments (issue_id, author, body, ts) VALUES (?,?,?,?)",
-                              (issue_id, (p.author or "runner").strip() or "runner",
-                               p.comment[:4000], dbmod.now()))
+                    # 별도 /comments 사이 회차 변경 창 제거 — 409면 코멘트도 없다).
+                    # 접수 코어 공유로 버전 갱신·blocked 알림 부수효과 보존 (R9)
+                    service.record_comment(c, issue_id,
+                                           (p.author or "runner").strip() or "runner",
+                                           p.comment[:4000])
             else:
                 fields["run_state"] = p.state
                 if p.state in ("running", "stalled"):
