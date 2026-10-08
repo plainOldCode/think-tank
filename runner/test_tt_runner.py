@@ -1286,5 +1286,77 @@ class TestLateDoneRoundRegression(unittest.TestCase):
 
 
 
+class TestStaleReportSuppression(unittest.TestCase):
+    """TT 개선#1 요구 2 — 서버 CAS 409(stale) 시 완료 보고 억제 + 로컬 조용한 종결.
+
+    finalize는 투영(CAS) 선(先) → 코멘트 후(後) 순서다. 409는 "이 회차는 이미
+    재점유됐다"는 서버 최종 판정 — 코멘트·장부 보고를 억제하고 물리 종료만 기록.
+    기타 실패(타임아웃·오프라인)는 기존 best-effort대로 보고를 진행한다."""
+
+    ISSUE = "STALE-1"
+    KEY = "STALE-1#801"
+
+    def setUp(self):
+        self.orig_comment = R.tt_comment
+        self.orig_prog = R.tt_progress
+        self.comments = []
+        self.prog_results = []
+        R.tt_comment = lambda i, b: self.comments.append((i, b))
+        R.tt_progress = lambda *a, **k: self.prog_results.pop(0)
+
+    def tearDown(self):
+        R.tt_comment = self.orig_comment
+        R.tt_progress = self.orig_prog
+
+    def _seed(self, status="running", round_no=1):
+        R.save_runs({self.KEY: {"status": status, "issue_id": self.ISSUE,
+                                "dispatch_id": 801, "session": "tt-stale-801",
+                                "round": round_no}})
+        base = os.path.join(R.RUNTIME_DIR, self.KEY.replace("#", "_"))
+        with open(base + ".log", "w") as f:
+            f.write("작업 완료 출력")
+        return R.get_run(self.KEY)
+
+    def test_stale_409_suppresses_done_comment_and_marks_ledger(self):
+        snap = self._seed()
+        self.prog_results.append("stale")
+        outcome = R.finalize(None, self.KEY, snap, 0)
+        self.assertEqual(outcome, "stale")
+        self.assertEqual(self.comments, [])  # 코멘트 억제
+        ent = R.get_run(self.KEY)
+        self.assertEqual(ent["status"], "done")
+        self.assertEqual(ent["detail"], "stale-suppressed")
+
+    def test_stale_409_suppresses_failed_report(self):
+        snap = self._seed()
+        self.prog_results.append("stale")
+        outcome = R.finalize(None, self.KEY, snap, 1, tail="segfault")
+        self.assertEqual(outcome, "stale")
+        self.assertEqual(self.comments, [])
+        self.assertEqual(R.get_run(self.KEY)["detail"], "stale-suppressed")
+
+    def test_network_failure_still_reports_best_effort(self):
+        snap = self._seed()
+        self.prog_results.append(False)  # 타임아웃·오프라인 — 보고 진행
+        outcome = R.finalize(None, self.KEY, snap, 0)
+        self.assertEqual(outcome, "done")
+        self.assertEqual(len(self.comments), 1)  # done 코멘트 존재
+        self.assertEqual(R.get_run(self.KEY)["status"], "done")
+
+    def test_replaced_entry_rejects_stale_terminal_write(self):
+        self._seed()
+        snap = R.get_run(self.KEY)
+        self.prog_results.append("stale")
+        R.finalize(None, self.KEY, snap, 0, write=False)  # 보고만 — 장부 무시
+        # 재회차 선점이 엔트리를 교체한 뒤 늦은 억제 종결 시도 → 전이표가 거부
+        R.save_runs({self.KEY: {"status": "queued", "issue_id": self.ISSUE,
+                                "dispatch_id": 801, "session": "tt-stale-801-r2",
+                                "round": 2}})
+        self.prog_results.append("stale")
+        outcome = R.finalize(None, self.KEY, R.get_run(self.KEY), 0)
+        self.assertEqual(outcome, "stale")
+        self.assertEqual(R.get_run(self.KEY)["status"], "queued")  # 훼손 없음
+
+
 if __name__ == "__main__":
     unittest.main()

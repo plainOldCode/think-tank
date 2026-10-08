@@ -137,10 +137,10 @@ def dispatch(issue_id: str, p: DispatchIn, request: Request, ctx: Ctx = Depends(
             c.execute("INSERT INTO comments (issue_id, author, body, ts) VALUES (?,?,?,?)",
                       (issue_id, p.author, p.message, dbmod.now()))
             try:
-                did = c.execute("INSERT INTO dispatches (issue_id, agent, author, message, context, status, ts, model, idem_key) "
-                                "VALUES (?,?,?,?,?,?,?,?,?)",
+                did = c.execute("INSERT INTO dispatches (issue_id, agent, author, message, context, status, ts, model, idem_key, attempt) "
+                                "VALUES (?,?,?,?,?,?,?,?,?,?)",
                                 (issue_id, p.agent, p.author, p.message, "", "queued", dbmod.now(),
-                                 ag["model"] or "", idem)).lastrowid
+                                 ag["model"] or "", idem, issue["execution_attempt"])).lastrowid
             except sqlite3.IntegrityError:
                 # 동시 중복 POST — 유니크 인덱스가 원자적으로 승자를 결정한다.
                 c.rollback()
@@ -209,6 +209,20 @@ def dispatch_progress(issue_id: str, dispatch_id: int, p: DispatchProgress, requ
         fields: dict = {}
         ts = p.ts if p.ts else dbmod.now()
         if p.state is not None:
+            # 완료 전환 최종 판정 — 서버 attempt CAS (TT 개선#1 요구 2, if-match).
+            # 종료 상태(finished/failed)는 dispatch가 생성된 회차(attempt 스냅샷)와
+            # 이슈의 현재 execution_attempt가 일치할 때만 받는다. 이슈가 재claim·재회차로
+            # attempt가 앞서 있으면 이전 회차 감시자의 늦은 종료 보고는 409로 거부된다 —
+            # "이전 회차가 현재 회차를 덮는" 부류가 구조적으로 사라진다. attempt 스냅샷이
+            # 없는 구형 행(NULL)은 기존 동작 유지. running/stalled 등 비종료 진행은
+            # last-write-wins 그대로(러너 stall_check 소유 — 서버 재계산 금지).
+            if p.state in ("finished", "failed") and row["attempt"] is not None:
+                cur_att = c.execute("SELECT execution_attempt FROM issues WHERE id=?",
+                                    (issue_id,)).fetchone()
+                if cur_att and (cur_att["execution_attempt"] or 0) > row["attempt"]:
+                    raise HTTPException(
+                        409, f"stale round report: dispatch#{dispatch_id} attempt={row['attempt']} "
+                             f"< issue execution_attempt={cur_att['execution_attempt']}")
             fields["run_state"] = p.state
             if p.state in ("running", "stalled"):
                 # 진행 병기 허용 상태: ts/tail 유무와 무관하게 liveness 시각 갱신

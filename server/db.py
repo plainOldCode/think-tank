@@ -182,7 +182,8 @@ def connect(path):
         except sqlite3.OperationalError:
             pass
     for col in ("model TEXT NOT NULL DEFAULT ''",
-                "idem_key TEXT"):
+                "idem_key TEXT",
+                "attempt INTEGER"):
         try:
             con.execute(f"ALTER TABLE dispatches ADD COLUMN {col}")
         except sqlite3.OperationalError:

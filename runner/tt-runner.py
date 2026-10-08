@@ -187,7 +187,7 @@ def tt_progress(issue_id, dispatch_id, payload):
     deliver()의 헤더 규약 상속(X-Tt-Dispatch + Bearer 자기 secret). best-effort —
     200만 성공으로 보고 나머지(HTTP 4xx/타임아웃/오프라인)는 조용히 무시·무재시도."""
     if not TT:
-        return
+        return False
     try:
         data = json.dumps(payload, ensure_ascii=False).encode()
         req = urllib.request.Request(
@@ -200,18 +200,27 @@ def tt_progress(issue_id, dispatch_id, payload):
             req.add_header("authorization", "Bearer " + sec)
         with urllib.request.urlopen(req, timeout=10) as r:
             r.read()
+        return True
+    except urllib.error.HTTPError as e:
+        if e.code == 409:
+            return "stale"  # 서버 attempt CAS 거부 — 이전 회차 보고 (TT 개선#1 요구 2)
+        return False  # 기타 4xx/5xx — best-effort 무시(기존 규약)
     except Exception:
-        pass
+        return False  # 타임아웃·오프라인 — 무재시도(기존 규약)
 
 
 def progress_projection(ent, state, tail=None, session=None):
-    """장부 ent → 서버 진행 투영 한 발. 코멘트 경로와 완전 분리(코멘트 수 변화 0)."""
+    """장부 ent → 서버 진행 투영 한 발. 코멘트 경로와 완전 분리(코멘트 수 변화 0).
+
+    반환: True(2xx) | "stale"(409 — 서버 attempt CAS가 이전 회차 보고로 거부) |
+    False(기타 실패 — 기존 best-effort 규약). 종료 상태 보고 전 CAS 게이트로
+    쓰려면 반환값을 존중할 것."""
     payload = {"state": state, "machine": machine_name(),
                "session": session or ent.get("session") or "",
                "ts": time.strftime("%Y-%m-%dT%H:%M:%S%z")}
     if tail is not None:
         payload["tail"] = tail
-    tt_progress(ent["issue_id"], ent["dispatch_id"], payload)
+    return tt_progress(ent["issue_id"], ent["dispatch_id"], payload)
 
 
 # ---------- 레지스트리 ----------
@@ -1082,6 +1091,20 @@ def _run_summary(key):
     return summary
 
 
+def _stale_suppressed(key, ent, exit_code, status, write):
+    """서버 attempt CAS 거부(409 stale) 후처리 (TT 개선#1 요구 2).
+
+    이 회차는 서버 기준 이미 재점유·재회차됐다 — 코멘트·투영 없이 로컬 장부만
+    조용히 종결한다(물리 종료는 사실, 보고만 억제). 전이표가 방어한다: 진행 중
+    재회차로 엔트리가 교체됐으면 queued→종단 불법 전이로 거부되어 무시된다."""
+    if write:
+        set_status(key, status, exit=exit_code, ended=time.time(),
+                   detail="stale-suppressed")
+    log("FINALIZE-STALE dispatch#%s — 서버 CAS 거부, 보고 억제 (장부 %s)"
+        % (ent.get("dispatch_id"), status))
+    return "stale"
+
+
 def finalize(runs_dir_name, key, ent, exit_code, tail="", summary=None, write=True,
              owns_report=None):
     """런 종료 보고. write=False면 장부 전환 없이 보고만 — 흡수 경로(선점이 이미
@@ -1107,18 +1130,25 @@ def finalize(runs_dir_name, key, ent, exit_code, tail="", summary=None, write=Tr
             % (did, session))
         return "skipped"
     if exit_code == 0:
+        # CAS 선(先) — 완료 전환 최종 판정은 서버 attempt/version CAS (TT 개선#1
+        # 요구 2). 서버가 현재 회차로 인정할 때만 보고한다: 투영 409면 코멘트·
+        # 장부 보고 모두 억제. 기타 실패(타임아웃·오프라인)는 기존 best-effort대로
+        # 보고 진행 — 서버 장애가 완료 보고를 지우면 안 된다.
+        if progress_projection(ent, "finished") == "stale":
+            return _stale_suppressed(key, ent, exit_code, "done", write)
         tt_comment(issue, "runner:%s dispatch#%s done exit=0 session=%s\n%s"
                    % (machine_name(), did, session, mask(summary)))
         log("DONE dispatch#%s exit=0 session=%s" % (did, session))
         if write:
             update_run_if_round(key, ent, status="done", exit=exit_code, ended=time.time())
-        progress_projection(ent, "finished")
         return "done"
     # (M3BZS1G3 ①) 실패 출력에서 입력/승인 요구 시그니처 → crashed가 아니라 BLOCKED.
     # 재시도 하지 않고 사람에게 결정 지점을 넘긴다(TT측 waiting_for=human 연결).
     combined = (tail or "") + "\n" + (summary or "")
     sig = input_needed(combined)
     if sig:
+        if progress_projection(ent, "failed") == "stale":
+            return _stale_suppressed(key, ent, exit_code, "blocked", write)
         tt_comment(issue, "runner:%s dispatch#%s BLOCKED — 입력/승인 요구 감지(%s) exit=%s session=%s "
                    "waiting_for=human. 재지시('승인' 또는 지시)를 기다림; 자동 재시도 없음.\n%s"
                    % (machine_name(), did, sig, exit_code, session, mask(combined[-1500:])))
@@ -1126,15 +1156,15 @@ def finalize(runs_dir_name, key, ent, exit_code, tail="", summary=None, write=Tr
         if write:
             update_run_if_round(key, ent, status="blocked", exit=exit_code,
                                 blocked_on=sig, ended=time.time())
-        progress_projection(ent, "failed")  # 세션은 종료 — 사람 대기 = 실행 미활성
         return "blocked"
+    if progress_projection(ent, "failed") == "stale":
+        return _stale_suppressed(key, ent, exit_code, "failed", write)
     detail = tail or summary
     tt_comment(issue, "runner:%s dispatch#%s failed exit=%s session=%s\n%s"
                % (machine_name(), did, exit_code, session, mask(detail)))
     log("FAILED dispatch#%s exit=%s" % (did, exit_code))
     if write:
         update_run_if_round(key, ent, status="failed", exit=exit_code, ended=time.time())
-    progress_projection(ent, "failed")
     return "failed"
 
 

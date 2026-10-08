@@ -339,6 +339,28 @@ def test_dispatch_failure_system_comment(client, hook_server):
     assert client.get("/agents").json()[0]["last_err"] != ""
 
 
+
+
+def test_progress_terminal_cas_rejects_stale_round(client, hook_server):
+    """TT 개선#1 (M4DEDPK2-0VSF) 요구 2 — 서버 attempt CAS: 이전 회차의 늦은
+    종료 보고는 409로 거부된다(교차 머신 이전 회차 감시자 방어)."""
+    i = mk(client, title="CAS 카드")
+    reg_agent(client, hook_server)
+    did = make_dispatch(client, i["id"])  # attempt 0에서 생성
+    assert progress_post(client, i["id"], did, {"state": "running"}).status_code == 200
+    # 재claim — attempt 0→1 (이전 회차는 이제 stale)
+    client.post(f"/issues/{i['id']}/claim", json={"agent": "worker"})
+    r = progress_post(client, i["id"], did, {"state": "finished"})
+    assert r.status_code == 409, r.text
+    assert "stale round report" in r.text
+    # failed 종료 보고도 동일 거부
+    assert progress_post(client, i["id"], did, {"state": "failed"}).status_code == 409
+    # 비종료 진행(running/stalled)은 CAS 대상 아님 — last-write-wins 그대로
+    assert progress_post(client, i["id"], did, {"state": "stalled"}).status_code == 200
+    # 신규 회차 dispatch(attempt 1)의 종료 보고는 정상 수락
+    did2 = make_dispatch(client, i["id"])
+    assert progress_post(client, i["id"], did2, {"state": "finished"}).status_code == 200
+
 def test_dispatch_idempotent_3x_one_comment(client, hook_server):
     """TT 개선#1 (M4DEDPK2-0VSF) 검증 기준 — 동일 dispatch 3회 재전송 → 코멘트 1건."""
     i = mk(client, title="멱등 카드")
