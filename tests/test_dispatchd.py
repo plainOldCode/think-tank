@@ -88,12 +88,12 @@ def test_pool_only_auto_label_priority_order():
 
 def test_two_dispatch_tries_becomes_needs_human_not_work():
     t = issue("T1", labels=["auto"], dispatches=2)
-    assert decide(snap([t])) == [act("T1", "needs-human", "dispatch-tries>=2")]
+    assert decide(snap([t])) == [act("T1", "needs-human", "budget:dispatch-tries>=2")]
 
 
 def test_attempt_two_becomes_needs_human():
     t = issue("T1", labels=["auto"], execution_attempt=2)
-    assert decide(snap([t])) == [act("T1", "needs-human", "attempt>=2")]
+    assert decide(snap([t])) == [act("T1", "needs-human", "budget:attempt>=2")]
 
 
 def test_disabled_or_hookless_agent_is_skipped():
