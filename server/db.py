@@ -113,6 +113,16 @@ CREATE TABLE IF NOT EXISTS dispatches (
   idem_key TEXT,
   delivery_lease TEXT
 );
+CREATE TABLE IF NOT EXISTS events (
+  -- 변경 이벤트 outbox (TT 개선#2): 단조 seq, 변경과 같은 트랜잭션에서 기록 —
+  -- 소비자는 after_seq 커서로 재접속 시 유실 없이 이어받는다
+  seq INTEGER PRIMARY KEY AUTOINCREMENT,
+  kind TEXT NOT NULL,
+  entity TEXT NOT NULL,
+  entity_id TEXT NOT NULL,
+  payload TEXT NOT NULL DEFAULT '{}',
+  ts TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS dispatch_reports (
   -- 종료 보고 접수 이력 (R10): (dispatch, session) 유니크 — 응답 유실 재시도
   -- 멱등 + 끼어든 세션 재시도에서도 동일 보고 재접수 방지

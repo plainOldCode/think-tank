@@ -52,6 +52,10 @@ def bump(c, issue_id, fields, expected_version=None):
     fields = {**fields, "version": row["version"] + 1, "updated_at": dbmod.now()}
     sets = ", ".join(f"{k}=?" for k in fields)
     res = c.execute(f"UPDATE issues SET {sets} WHERE id=? AND version=?", (*fields.values(), issue_id, row["version"]))
+    if res.rowcount == 1:
+        log_event(c, "issue.updated", "issue", issue_id,
+                  {"state": fields.get("state", row["state"]),
+                   "fields": sorted(fields)})
     if res.rowcount != 1:
         raise HTTPException(409, "concurrent update, retry")
     c.commit()
@@ -64,6 +68,14 @@ def reset_evidence(c, issue_id):
             "evidence_after_comment_id": cursor}
 
 
+def log_event(c, kind: str, entity: str, entity_id, payload=None):
+    """변경 이벤트 outbox 기록 (TT 개선#2) — 반드시 변경과 같은 트랜잭션 안에서
+    호출한다. 소비자(보드·에이전트)는 GET /events?after_seq 또는 SSE로 수신."""
+    c.execute("INSERT INTO events (kind, entity, entity_id, payload, ts) VALUES (?,?,?,?,?)",
+              (kind, entity, str(entity_id), json.dumps(payload or {}, ensure_ascii=False),
+               dbmod.now()))
+
+
 def record_comment(c, issue_id, author, body, notify_human=True):
     """코멘트 접수 코어 (리뷰 R9) — /comments 라우터와 통합 종료 접수(progress
     comment)가 공유한다. 버전·updated_at 갱신과 legacy blocked human 알림
@@ -72,6 +84,8 @@ def record_comment(c, issue_id, author, body, notify_human=True):
               (issue_id, author, body, dbmod.now()))
     c.execute("UPDATE issues SET updated_at=?, version=version+1 WHERE id=?",
               (dbmod.now(), issue_id))
+    log_event(c, "comment.added", "issue", issue_id,
+              {"author": author, "preview": (body or "")[:120]})
     if notify_human:
         row = c.execute("SELECT state FROM issues WHERE id=?", (issue_id,)).fetchone()
         if row and row["state"] == "blocked" and "waiting_for=human" in (body or ""):

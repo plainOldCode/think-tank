@@ -186,6 +186,9 @@ def dispatch(issue_id: str, p: DispatchIn, request: Request, ctx: Ctx = Depends(
                                 (issue_id, p.agent, p.author, p.message, inh_ctx, "queued", dbmod.now(),
                                  ag["model"] or "", idem, issue["execution_attempt"],
                                  dbmod.now())).lastrowid
+                service.log_event(c, "dispatch.created", "dispatch", did,
+                                  {"agent": p.agent, "issue_id": issue_id,
+                                   "preview": p.message[:120]})
             except sqlite3.IntegrityError:
                 # 동시 중복 POST — 유니크 인덱스가 원자적으로 승자를 결정한다.
                 c.rollback()
@@ -313,6 +316,9 @@ def dispatch_progress(issue_id: str, dispatch_id: int, p: DispatchProgress, requ
                     "(attempt IS NULL OR attempt >= "
                     "(SELECT i.execution_attempt FROM issues i WHERE i.id=dispatches.issue_id))" % sets,
                     (*args, dispatch_id))
+                if res.rowcount == 1:
+                    service.log_event(c, "dispatch.updated", "dispatch", dispatch_id,
+                                      {"run_state": p.state})
                 if res.rowcount != 1:
                     # 409 — with 블록 예외 롤백으로 방금 선점한 보고 이력도 함께 취소된다
                     # (미접수 보고의 이력 잔재 방지). 코멘트도 접수되지 않는다.
