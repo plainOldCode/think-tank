@@ -119,9 +119,11 @@ def review_verdict(comments, reviewer, pr_no, sha8):
 
     리뷰어 코멘트만 인정(author 일치), 'PR#<n>@<sha8>' 불일치는 stale. 최신 판정 우선.
     """
+    if isinstance(reviewer, str):
+        reviewer = [reviewer]
     verdict = None
     for c in comments or []:
-        if c.get("author") != reviewer:
+        if c.get("author") not in reviewer:
             continue
         body = c.get("body") or ""
         m = PR_SHA.search(body)
@@ -131,6 +133,25 @@ def review_verdict(comments, reviewer, pr_no, sha8):
         if v:
             verdict = v.group(1).lower()
     return verdict
+
+
+def _requested_reviewers(i, pr_no, sha8):
+    """이 PR/head에 대해 probe가 리뷰를 요청한(수령시킨) 에이전트 집합.
+
+    [review-req #pr/sha8] 마커 코멘트의 '→ <agent>'를 파싱 — 교차 수령자의
+    판정이 다음 사이클에서 인정되게 한다(TT 개선#3c R1).
+    """
+    out = set()
+    for c in i.get("comments") or []:
+        if c.get("author") != "probe":
+            continue
+        body = c.get("body") or ""
+        if f"#{pr_no}/" not in body or (sha8 or "") not in body:
+            continue
+        m = re.search(r"→\s*(\S+)", body)
+        if m:
+            out.add(m.group(1).rstrip("."))
+    return out
 
 
 def _probe_marker(i, marker):
@@ -172,6 +193,13 @@ def decide(snap):
     now = snap.get("now") or ""
     actions = []
     claimed = set()
+    # TT 개선#3c R3: 유휴 판정은 작업 lease뿐 아니라 리뷰 점유 lease도 포함 +
+    # 이번 사이클에 이미 배정된(작업·리뷰) 에이전트는 재배정하지 않는다.
+    now0 = now
+    busy_agents = {i.get("lease_by") for i in issues
+                   if i.get("lease_by") and i.get("lease_expires")
+                   and (not now0 or i["lease_expires"] > now0)}
+    busy_agents.discard(None)
     # TT 개선#3b: 배정 못 한 카드의 reason code — run_once가 로그로 남긴다.
     # 에이전트 유무와 무관하게 전체 카드를 정책으로 스캔(상태 조합 매트릭스의 로그 실측).
     snap["probe_skips"] = {}
@@ -229,6 +257,7 @@ def decide(snap):
         if target is None:
             continue
         claimed.add(target["id"])
+        claimed.add(name)  # TT 개선#3c R3: 배정받은 에이전트는 이번 사이클 리뷰 금지
         actions.append({"agent": name, "issue": target["id"], "action": "work",
                         "reason": reason})
 
@@ -262,7 +291,12 @@ def decide(snap):
                     continue
                 gated.add(iid)
                 sha8 = (p.get("head_sha") or "")[:8]
-                verdict = review_verdict(i.get("comments"), reviewer, p["number"], sha8)
+                # TT 개선#3c R1: 교차 리뷰어의 판정도 인정 — env 리뷰어 + 카드 점유
+                # 리뷰어 + 마커 코멘트로 수령시킨 에이전트
+                verdict = review_verdict(i.get("comments"),
+                                         ({reviewer, i.get("reviewer")}
+                                          | _requested_reviewers(i, p["number"], sha8)) - {None},
+                                         p["number"], sha8)
                 if verdict in ("approve", "request-changes") and i.get("reviewer"):
                     # 리뷰어 claim 해제 — 판정 기록됐으면 점유 반납(review-fix 시 작업자 assignee 보존)
                     actions.append({"agent": "probe", "issue": iid, "action": "release-reviewer",
@@ -282,6 +316,19 @@ def decide(snap):
                     continue
                 if verdict is None:  # 미리뷰 또는 stale — (재)요청
                     marker = f"[review-req #{p['number']}/{sha8}]"
+                    # TT 개선#3c: 교차리뷰 자동 수령 — 본인 카드가 아닌 유휴 에이전트가 claim
+                    cross = next((a["name"] for a in agents
+                                  if a["name"] != i.get("assignee") and a["name"] not in busy_agents
+                                  and a["name"] not in claimed
+                                  and policy.review_eligible(i, now=now, agent=a["name"])[0]), None)
+                    if cross and not _probe_marker(i, marker):
+                        actions.append({"agent": cross, "issue": iid, "action": "review-claim",
+                                        "pr": p["number"], "repo": pr_repo,
+                                        "branch": p.get("branch", ""),
+                                        "head_sha": p.get("head_sha", ""), "marker": marker,
+                                        "reason": f"PR#{p['number']} 리뷰 대기 — 유휴 에이전트 자동 수령(교차리뷰)"})
+                        claimed.add(cross)  # R3: 한 사이클에 리뷰 1건
+                        continue
                     if not _probe_marker(i, marker):
                         actions.append({"agent": "probe", "issue": iid, "action": "review-request",
                                         "pr": p["number"], "repo": pr_repo,
@@ -503,6 +550,23 @@ def _probe_flag(url, act, msg):
         pass
 
 
+def _review_dispatch_msg(act, agent):
+    """리뷰 dispatch 본문 — review-request/review-claim이 공유(형식 동일 유지)."""
+    sha8 = (act.get("head_sha") or "")[:8]
+    repo = act.get("repo") or "plainOldCode/think-tank"
+    return (f"[auto review] PR #{act['pr']} ({repo}) @ {sha8} — 카드 {act['issue']} "
+            f"리뷰 요청. 먼저 TT API로 POST /issues/{act['issue']}/claim-review "
+            f"({{\"agent\": \"{agent}\"}})를 호출해 리뷰어 점유를 표기한 뒤 진행. "
+            f"repo는 https://github.com/{repo} — 기존 로컬 clone 재사용 우선"
+            f"(없으면 clone), git fetch origin pull/{act['pr']}/head 후 "
+            f"git diff origin/main...FETCH_HEAD(로컬 ref를 만들지 않으니 재리뷰에도 안전). "
+            "리뷰 방식: 변경 파일 통독 + 변경 심볼 grep으로 호출자 확인(공용 모듈은 필수). "
+            "판정 기준: 계약 v2.1 준수·시크릿 노출·테스트 적절성·놓친 엣지. "
+            "결과 제출: GitHub PR 코멘트와 TT 카드 코멘트 양쪽(docs/review-gate.md 형식) — "
+            f"첫 줄 'review: approve' 또는 'review: request-changes', 둘째 줄 'PR#{act['pr']}@{sha8}'. "
+            f"TT 코멘트 author는 '{agent}'로 게시.")
+
+
 def execute(url, act):
     kind = act["action"]
     if kind == "release-reviewer":
@@ -613,6 +677,27 @@ def execute(url, act):
             {"author": "probe", "body": f"{marker} PR#{act['pr']} CI 실패 — {agent}({target}) "
                                         "review+수정 위임"})
         return
+    if kind == "review-claim":
+        # TT 개선#3c — 교차리뷰 자동 수령: 서버 claim-review로 점유 표기 후 리뷰 dispatch
+        # R2: review-request와 동일한 마커 경합 재확인 + 영속화 — 재수령 루프 방지
+        cur = api(url, f"/issues/{act['issue']}")
+        if any(act["marker"] in (c.get("body") or "") for c in (cur.get("comments") or [])
+               if c.get("author") == "probe"):
+            return  # 경합 방어 — decide 판정 후 재확인
+        api(url, f"/issues/{act['issue']}/claim-review", "POST", {"agent": act["agent"]})
+        try:
+            api(url, f"/issues/{act['issue']}/dispatch", "POST",
+                {"agent": act["agent"], "message": _review_dispatch_msg(act, act["agent"]),
+                 "work_contract": REVIEW_CONTRACT})
+        except Exception as e:
+            api(url, f"/issues/{act['issue']}/comments", "POST",
+                {"author": "probe", "body": f"{act['marker']} 리뷰 dispatch 실패({str(e)[:80]}) — "
+                                            "사람 판단 대기"})
+            return
+        api(url, f"/issues/{act['issue']}/comments", "POST",
+            {"author": "probe", "body": f"{act['marker']} PR#{act['pr']} CI green — "
+                                        f"자동 수령 → {act['agent']}"})
+        return
     if kind == "review-request":
         # 리뷰 게이트 1단계 — 리뷰어 에이전트에 리뷰 요청 (docs/review-gate.md)
         cur = api(url, f"/issues/{act['issue']}")
@@ -620,19 +705,7 @@ def execute(url, act):
                if c.get("author") == "probe"):
             return  # 경합 방어 — decide 판정 후 재확인
         agent = os.environ.get("TT_REVIEW_AGENT", "").strip() or "kanban-adapter"
-        sha8 = (act.get("head_sha") or "")[:8]
-        repo = act.get("repo") or "plainOldCode/think-tank"
-        msg = (f"[auto review] PR #{act['pr']} ({repo}) @ {sha8} — 카드 {act['issue']} "
-               f"리뷰 요청. 먼저 TT API로 POST /issues/{act['issue']}/claim-review "
-               f"({{\"agent\": \"{agent}\"}})를 호출해 리뷰어 점유를 표기한 뒤 진행. "
-               f"repo는 https://github.com/{repo} — 기존 로컬 clone 재사용 우선"
-               f"(없으면 clone), git fetch origin pull/{act['pr']}/head 후 "
-               f"git diff origin/main...FETCH_HEAD(로컬 ref를 만들지 않으니 재리뷰에도 안전). "
-               "리뷰 방식: 변경 파일 통독 + 변경 심볼 grep으로 호출자 확인(공용 모듈은 필수). "
-               "판정 기준: 계약 v2.1 준수·시크릿 노출·테스트 적절성·놓친 엣지. "
-               "결과 제출: GitHub PR 코멘트와 TT 카드 코멘트 양쪽(docs/review-gate.md 형식) — "
-               f"첫 줄 'review: approve' 또는 'review: request-changes', 둘째 줄 'PR#{act['pr']}@{sha8}'. "
-               f"TT 코멘트 author는 '{agent}'로 게시.")
+        msg = _review_dispatch_msg(act, agent)
         try:
             api(url, f"/issues/{act['issue']}/dispatch", "POST",
                 {"agent": agent, "message": msg, "work_contract": REVIEW_CONTRACT})

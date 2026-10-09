@@ -138,6 +138,9 @@ def claim_review(issue_id: str, p: ReviewClaimIn, ctx: Ctx = Depends(get_ctx)):
         row = service.get_issue(c, issue_id)
         if row["state"] != "review":
             raise HTTPException(409, f"claim-review is for review-state cards only (state is {row['state']})")
+        # TT 개선#3c: 교차리뷰 원칙 — 본인 작업 카드는 리뷰 수령 불가(서버 강제)
+        if row["assignee"] and row["assignee"] == p.agent:
+            raise HTTPException(409, "cross-review: 본인 작업 카드는 수령 불가 (TT 개선#3c)")
         if row["reviewer"] and row["reviewer"] != p.agent:
             # R3: lease가 만료된 점유는 인계 가능 — 리뷰어 교체·장애 인계 차단 방지
             if (row["lease_expires"] or "") > dbmod.now():
