@@ -191,8 +191,10 @@ def pull(p: ClaimIn, ctx: Ctx = Depends(get_ctx)):
                          (p.agent, ts)).fetchone()["n"]
         if held >= config.max_leases():
             raise HTTPException(409, f"lease limit: active leases={held} (max={config.max_leases()}) — heartbeat or done first")
-        # TT 개선#3b R1: policy가 완전한 카드(예산·lease 필드)를 보게 전체 행 선택
-        sql = ("SELECT * FROM issues WHERE archived=0 AND ("
+        # TT 개선#3b R1: policy가 완전한 카드를 보게 — 전체 행 + dispatch 횟수
+        # (dispatches는 별도 테이블 카운트라 이슈 컬럼이 아니다 — 프로브 스냅샷과 동일 차원)
+        sql = ("SELECT i.*, (SELECT COUNT(*) FROM dispatches d WHERE d.issue_id=i.id) AS dispatches "
+               "FROM issues i WHERE i.archived=0 AND ("
                "(state='todo' AND assignee='') OR "
                "(state='in_progress' AND lease_expires IS NOT NULL AND lease_expires<?))")
         args: list = [ts]

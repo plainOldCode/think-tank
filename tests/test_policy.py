@@ -92,3 +92,20 @@ def test_probe_logs_skip_reasons(capsys):
     # work 배정 액션은 busy 카드를 향하지 않는다(needs-human 공지는 예외)
     assert not [a for a in acts if a.get("action") == "work"
                 and a.get("issue") in ("BUSY1", "BUDGET1", "PLAIN1")]
+
+
+def test_pull_respects_dispatch_budget_with_real_dispatches(client, tmp_path):
+    """R1 회귀: 실제 dispatch 레코드 2건이면 예산 소진 — pull은 다음 후보를 준다."""
+    import sqlite3
+    p1 = client.post("/issues", json={"title": "소진카드", "priority": 1,
+                                      "labels": ["auto"], "acceptance": "기준"}).json()
+    p2 = client.post("/issues", json={"title": "유효후보", "priority": 2,
+                                      "labels": ["auto"], "acceptance": "기준"}).json()
+    con = sqlite3.connect(tmp_path / "tt.db")
+    for _ in range(2):
+        con.execute("INSERT INTO dispatches (id, issue_id, agent, author, message, status, ts) "
+                    "VALUES (NULL, ?, ?, ?, ?, ?, datetime('now'))",
+                    (p1["id"], "codex", "board", "m", "ok"))
+    con.commit(); con.close()
+    r = client.post("/pull", json={"agent": "w1@t", "require_label": "auto", "hours": 6})
+    assert r.json()["id"] == p2["id"], "예산 소진 카드를 건너뛰고 유효 후보를 줘야 한다"
