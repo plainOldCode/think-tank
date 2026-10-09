@@ -13,6 +13,8 @@ class IssueCreate(BaseModel):
     priority: int | None = None
     labels: list[str] = []
     state: str = "todo"
+    # TT 개선#3d: 자기발의(label=self) 카드의 발의자 — WIP 1 산정과 배정에 쓰인다
+    nominee: str | None = None
 
     @field_validator("acceptance")
     @classmethod
@@ -51,6 +53,8 @@ class LeaseIn(BaseModel):
 
 class IssuePatch(BaseModel):
     acceptance: str | None = None
+    # TT 개선#3d: self 카드의 todo 승격은 사람/트리아지만 — 명시 플래그가 없으면 409
+    promoted: bool | None = None
     title: str | None = None
     body: str | None = None
     state: str | None = None

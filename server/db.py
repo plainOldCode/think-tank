@@ -182,7 +182,9 @@ def connect(path):
                 # SRM1: 지연 표기 — todo 진입 시각(기존 todo 행은 created_at 백필)
                 "todo_since TEXT",
                 # M42KC1XR-2DD1: 리뷰어 점유 — review 카드에서 판정자 표기(assignee는 작업자 유지)
-                "reviewer TEXT"):
+                "reviewer TEXT",
+                # TT 개선#3d: 자기발의 원 발의자 — assignee는 가변이라 WIP 산정에 못 씀
+                "nominee TEXT NOT NULL DEFAULT ''"):
         try:
             con.execute(f"ALTER TABLE issues ADD COLUMN {col}")
         except sqlite3.OperationalError:
