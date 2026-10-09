@@ -64,3 +64,28 @@ def test_일반_카드는_영향_없다(client):
     ver = r2.json()["version"]
     r3 = client.patch(f"/issues/{i['id']}", json={"state": "todo", "version": ver})
     assert r3.status_code == 200
+
+
+def test_WIP_카운트는_nominee_기준_독립적이다(client):
+    """R1 회귀: 승격으로 assignee가 비워져도 nominee 기준 WIP는 유지된다."""
+    i = _create(client, labels=["self"], nominee="a@t").json()
+    ver = client.get(f"/issues/{i['id']}").json()["version"]
+    client.patch(f"/issues/{i['id']}", json={"state": "todo", "version": ver,
+                                             "promoted": True})
+    assert client.get(f"/issues/{i['id']}").json()["assignee"] == ""
+    r = _create(client, labels=["self"], nominee="a@t", title="둘째")
+    assert r.status_code == 409
+
+
+def test_승격_게이트는_요청_라벨을_본다(client):
+    """R2 회귀: labels+state 동시 PATCH — self 라벨이 추가되면 게이트가 막는다."""
+    r = _create(client, labels=["auto"], state="backlog")
+    i = r.json()
+    ver = client.get(f"/issues/{i['id']}").json()["version"]
+    r2 = client.patch(f"/issues/{i['id']}", json={"labels": ["auto", "self"],
+                                                  "state": "todo", "version": ver})
+    assert r2.status_code == 409, "self 라벨이 되는 순간 승격 게이트 적용"
+    r3 = client.patch(f"/issues/{i['id']}", json={"labels": ["auto", "self"],
+                                                  "state": "todo", "version": ver,
+                                                  "promoted": True})
+    assert r3.status_code == 200
