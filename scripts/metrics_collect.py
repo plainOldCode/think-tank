@@ -27,6 +27,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import urllib.request
 from datetime import datetime, timedelta
@@ -44,11 +45,20 @@ def get(base: str, path: str, timeout: int = 30):
 
 
 def parse_ts(s):
-    """ISO 타임스탬프 파싱 — Python 3.9의 fromisoformat은 'Z' 접미를 받지 못한다."""
+    """ISO 타임스탬프 파싱 — Python 3.9 fromisoformat 호환 정규화.
+
+    서버 db.now()/future()는 %z 형식이라 'Z'와 콜론 없는 '+0900' 오프셋을 모두
+    보낸다(server/db.py:139-144 실측). 3.9의 fromisoformat은 둘 다 ValueError이므로
+    'Z'→'+00:00', '+0900'→'+09:00'로 정규화한다.
+    """
     if not s:
         return None
-    if isinstance(s, str) and s.endswith("Z"):
-        s = s[:-1] + "+00:00"
+    if isinstance(s, str):
+        if s.endswith("Z"):
+            s = s[:-1] + "+00:00"
+        m = re.search(r"([+-]\d{2})(\d{2})$", s)
+        if m:
+            s = s[:m.start()] + m.group(1) + ":" + m.group(2)
     return datetime.fromisoformat(s)
 
 
