@@ -232,16 +232,31 @@ async def test_idle_streams_do_not_exhaust_workers(client):
         assert dt < 2.0, f"쓰기가 {dt:.2f}s — 스트림 수에 막힘"
 
 
+def _wait_notifies(pred, timeout=5.0):
+    """알림 워커는 비동기(커밋 후 별도 스레드) — 조건 충족까지 폴링 대기."""
+    import time as _t
+    deadline = _t.monotonic() + timeout
+    while _t.monotonic() < deadline:
+        got = [(h.get("x-tt-command"), p) for h, p in Hook.received]
+        if pred(got):
+            return got
+        _t.sleep(0.05)
+    return [(h.get("x-tt-command"), p) for h, p in Hook.received]
+
+
 def test_mention_notify_respects_flag(client, hook_server):
     """리뷰 R4: 멘션 → notify_hook=true 에이전트에게만 알림 전송(켬/끔 회귀)."""
     client.post("/agents", json={"name": "on-ag", "base_url": hook_server, "notify_hook": True})
     client.post("/agents", json={"name": "off-ag", "base_url": hook_server, "notify_hook": False})
     Hook.received.clear()
-    client.post("/messages", json={"author": "w1", "body": "@on-ag @off-ag 확인"})
-    notifies = [(h.get("x-tt-command"), p) for h, p in Hook.received
-                if h.get("x-tt-command") == "notify"]
-    assert len(notifies) == 1, f"notify {len(notifies)}건 — 플래그 미반영"
-    assert "멘션 from w1" in notifies[0][1]["reason"]
+    client.post("/messages", json={"author": "w1", "body": "@on-ag @off-ag 확인 요청 — 본문 전달 검증"})
+    notifies = _wait_notifies(lambda got: sum(1 for c, _ in got if c == "notify") >= 1)
+    # off-ag는 끔 — 대상 에이전트 수만큼만 전송
+    assert len(notifies) == 1, f"notify {len(notifies)}건 — 플래그 미반영: {notifies}"
+    cmd, payload = notifies[0]
+    assert cmd == "notify" and "멘션 from w1" in payload["reason"]
+    # 리뷰 R4b: 알림 본문이 빈 문자열이 아니다 — 요청 내용이 실제 전달된다
+    assert "본문 전달 검증" in (payload.get("text") or ""), f"본문 누락: {payload!r}"
 
 
 def test_release_ready_notify_assignee(client, hook_server):
@@ -257,5 +272,44 @@ def test_release_ready_notify_assignee(client, hook_server):
     client.patch(f"/issues/{dep['id']}", json={"state": "in_progress"})
     client.patch(f"/issues/{dep['id']}", json={"state": "review"})
     client.post(f"/issues/{dep['id']}/verify", json={"verifier": "t", "evidence": "pytest 5 passed"})
-    notifies = [p for h, p in Hook.received if h.get("x-tt-command") == "notify"]
-    assert len(notifies) == 1 and notifies[0]["reason"] == "release-ready"
+    notifies = _wait_notifies(lambda got: sum(1 for c, _ in got if c == "notify") >= 1)
+    assert len(notifies) == 1 and notifies[0][1]["reason"] == "release-ready"
+
+
+def test_human_verify_records_issue_updated(client):
+    """리뷰 R2 2차: 사람 승인 분기도 issue.updated 이벤트 — done 소비자 누락 방지."""
+    i = mk(client, title="사람 승인 전이")
+    client.patch(f"/issues/{i['id']}", json={"state": "in_progress"})
+    r = client.post(f"/issues/{i['id']}/verify", json={"human": True, "verifier": "boss",
+                                                       "evidence": "사람 승인 — 자기선언"})
+    assert r.status_code == 200 and r.json()["state"] == "done"
+    ev = [e for e in client.get("/events?kind=issue.updated").json()["events"]
+          if e["entity_id"] == i["id"]]
+    assert ev, "사람 승인 issue.updated 없음"
+    payload = json.loads(ev[-1]["payload"])
+    assert payload["state"] == "done" and payload["via"] == "human-verify"
+
+
+def test_notify_outside_write_lock(client, hook_server):
+    """리뷰 R4a 경계: 알림 전송은 커밋 후 락 밖 — 느린 수신기가 무관한 쓰기를 막지 않고,
+    전송 지연 중에도 원문·이벤트는 즉시 가시다."""
+    client.post("/agents", json={"name": "slow-ag", "base_url": hook_server, "notify_hook": True})
+    import time
+    Hook.mode = "slow"  # 수신기 2초 지연
+    Hook.received.clear()
+    t0 = time.monotonic()
+    r = client.post("/messages", json={"author": "w1", "body": "@slow-ag 느린 수신기 테스트"})
+    dt = time.monotonic() - t0
+    Hook.mode = "ok"
+    assert r.status_code == 201 and dt < 1.5, f"메시지 POST가 훅을 기다림({dt:.2f}s) — 락 내 전송"
+    # 전송이 아직 진행 중이어도 원문·이벤트는 가시 (커밋 완료)
+    ev = client.get("/events?kind=message.posted").json()["events"]
+    assert any(json.loads(e["payload"]).get("body") == "@slow-ag 느린 수신기 테스트" for e in ev), \
+        "커밋 전까지 이벤트 비가시 — 트랜잭션 내 전송 잔재"
+    # 무관한 쓰기가 즉시 통과 (느린 훅이 쓰기 락을 잡지 않음)
+    t0 = time.monotonic()
+    w = client.post("/issues", json={"title": "무방해 쓰기"})
+    assert w.status_code == 201 and time.monotonic() - t0 < 2.0
+    # 느려도 결국 전달된다
+    got = _wait_notifies(lambda g: any(c == "notify" for c, _ in g), timeout=6.0)
+    assert any(c == "notify" for c, _ in got), "느린 수신기 알림 미전달"

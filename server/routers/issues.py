@@ -430,6 +430,9 @@ def verify_issue(issue_id: str, p: VerifyIn, ctx: Ctx = Depends(get_ctx)):
                       "verification_status='approved', state='done', completed_at=?, version=version+1 "
                       "WHERE id=? AND version=?",
                       (dbmod.now(), f"사람 승인: {ev[:300]}", dbmod.now(), issue_id, row["version"]))
+            # 리뷰 R2 2차: 사람 승인 분기도 상태 전이 이벤트 기록 — done 소비자가 놓치지 않게
+            service.log_event(c, "issue.updated", "issue", issue_id,
+                              {"state": "done", "via": "human-verify", "verifier": p.verifier})
             row2 = service.get_issue(c, issue_id)
             return dbmod.to_dict(row2)
         proof = p.completion_report

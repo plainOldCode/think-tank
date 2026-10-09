@@ -15,6 +15,7 @@ import re as _re
 
 import config
 import probe
+import service
 from routers import agents, issues, messages, meta
 from service import Ctx
 from work_contract import current_contract
@@ -41,6 +42,9 @@ def _versioned_html(html: str, static_dir: str | None = None) -> str:
     return _re.sub(r'(src|href)="(/(?:js|css)/[^"?]+)"', sub, html)
 
 
+_notify_workers: set = set()
+
+
 def create_app(db_path: str) -> FastAPI:
     app = FastAPI(title="think-tank")
     app.state.db_path = db_path  # 하위호환: 테스트/운영 스크립트가 직접 읽음
@@ -63,6 +67,21 @@ def create_app(db_path: str) -> FastAPI:
 
         threading.Thread(target=probe.loop, daemon=True, name="tt-probe",
                          args=(os.environ.get("TT_URL", "http://127.0.0.1:7800"), interval, stop)).start()
+
+    # 알림 전달 워커 (리뷰 R4a): 이벤트 저장(트랜잭션)과 웹훅 전송(커밋 후 락 밖) 분리.
+    # TT_NOTIFY_WORKER=0로 끈다(테스트 격리용). 전달 실패는 로그만 — 저장을 되돌리지 않는다.
+    # 같은 DB 파일에 워커가 이미 있으면 중복 기동 금지.
+    if os.environ.get("TT_NOTIFY_WORKER", "1") != "0" and db_path not in _notify_workers:
+        _notify_workers.add(db_path)
+        nstop = threading.Event()
+        app.state.notify_stop = nstop
+
+        @app.on_event("shutdown")
+        def _stop_notify():
+            nstop.set()
+
+        threading.Thread(target=service.notify_loop, daemon=True, name="tt-notify",
+                         args=(db_path, nstop)).start()
 
     static_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 

@@ -90,7 +90,7 @@ def post_message(p: MessageIn, ctx: Ctx = Depends(get_ctx)):
         mentions = _parse_mentions(c, p.body)
         mid = dbmod.new_id()
         service.log_event(c, "message.posted", "message", mid,
-                          {"thread_id": p.thread_id, "author": p.author,
+                          {"thread_id": p.thread_id, "author": p.author, "body": p.body[:300],
                            "mentions": mentions})
         c.execute("INSERT INTO messages (id, thread_id, author, body, mentions, created_at) VALUES (?,?,?,?,?,?)",
                   (mid, thread_id, p.author, p.body, f",{','.join(mentions)}," if mentions else "", dbmod.now()))

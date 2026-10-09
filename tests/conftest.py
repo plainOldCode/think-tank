@@ -16,6 +16,7 @@ def mk(client, **kw):
 
 import json
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 
@@ -26,6 +27,8 @@ class Hook(BaseHTTPRequestHandler):
     def do_POST(self):
         n = int(self.headers.get("content-length", 0))
         Hook.received.append(({k.lower(): v for k, v in self.headers.items()}, json.loads(self.rfile.read(n))))
+        if Hook.mode == "slow":
+            time.sleep(2.0)  # 느린 수신기 — 락 점유 회귀 경계용 (리뷰 R4a)
         if Hook.mode == "fail":
             self.send_response(500)
             self.end_headers()
