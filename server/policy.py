@@ -17,11 +17,19 @@ reason code는 안정(stable) 문자열 — 로그·코멘트 파싱 전제라 �
 TERMINAL = ("done", "cancelled")
 
 
+def _get(i, k, default=None):
+    """dict/sqlite3.Row 공용 접근 — 라우터가 Row를 그대로 넘길 수 있게."""
+    try:
+        return i[k] if i[k] is not None else default
+    except (KeyError, IndexError):
+        return default
+
+
 def budget_reason(i):
     """#1 배정 건너뜀 예산 — dispatch 횟수·실행 회차 상한."""
-    if (i.get("dispatches") or 0) >= 2:
+    if (_get(i, "dispatches") or 0) >= 2:
         return "budget:dispatch-tries>=2"
-    if (i.get("execution_attempt") or 0) >= 2:
+    if (_get(i, "execution_attempt") or 0) >= 2:
         return "budget:attempt>=2"
     return None
 
@@ -32,20 +40,20 @@ def busy_reason(i, *, now="", auto=False):
     lease 비교는 ISO 타임스탬프 문자열 비교(서버 전체 관례와 동일) — now가
     비어 있으면 lease 판정을 건너뛴다(테스트 편의).
     """
-    if i.get("archived"):
+    if _get(i, "archived"):
         return "archived"
-    st = i.get("state") or ""
+    st = _get(i, "state") or ""
     if st in TERMINAL:
         return "state:terminal"
     if st in ("backlog", "blocked", "review"):
         return f"state:{st}"
     if st == "in_progress":
         # 러너 실행 중 = 유효 lease. 만료 lease는 재수령 가능(busy 아님).
-        if i.get("lease_expires") and i.get("lease_by") and (not now or i["lease_expires"] > now):
+        if _get(i, "lease_expires") and _get(i, "lease_by") and (not now or i["lease_expires"] > now):
             return "lease_held"
         return None
     if st == "todo":
-        if auto and "auto" not in (i.get("labels") or []):
+        if auto and "auto" not in (_get(i, "labels") or []):
             return "not_auto"
         return budget_reason(i)
     return f"state:{st}" if st else "state:unknown"

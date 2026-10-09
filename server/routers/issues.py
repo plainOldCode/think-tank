@@ -107,7 +107,10 @@ def claim(issue_id: str, p: ClaimIn, ctx: Ctx = Depends(get_ctx)):
     with ctx.con() as c:
         row = service.get_issue(c, issue_id)
         if row["state"] != "todo":
-            raise HTTPException(409, f"cannot claim: state is {row['state']}")
+            # TT 개선#3b R2: 거부 응답에 단일 정책의 reason code를 실어 보낸다
+            ok, code = policy.eligible(row, now=dbmod.now(), auto=False)
+            raise HTTPException(409, f"cannot claim: state is {row['state']}"
+                                + (f" [policy: {code}]" if code else ""))
         if row["assignee"] and row["assignee"] != p.agent:
             raise HTTPException(409, f"already claimed by {row['assignee']}")
         held = c.execute("SELECT COUNT(*) n FROM issues WHERE lease_by=? AND lease_expires>?",
@@ -188,7 +191,8 @@ def pull(p: ClaimIn, ctx: Ctx = Depends(get_ctx)):
                          (p.agent, ts)).fetchone()["n"]
         if held >= config.max_leases():
             raise HTTPException(409, f"lease limit: active leases={held} (max={config.max_leases()}) — heartbeat or done first")
-        sql = ("SELECT id, state FROM issues WHERE archived=0 AND ("
+        # TT 개선#3b R1: policy가 완전한 카드(예산·lease 필드)를 보게 전체 행 선택
+        sql = ("SELECT * FROM issues WHERE archived=0 AND ("
                "(state='todo' AND assignee='') OR "
                "(state='in_progress' AND lease_expires IS NOT NULL AND lease_expires<?))")
         args: list = [ts]
@@ -199,9 +203,7 @@ def pull(p: ClaimIn, ctx: Ctx = Depends(get_ctx)):
         for cand in c.execute(sql, args).fetchall():
             iid = cand["id"]
             # TT 개선#3b: SQL 사전필터 뒤 policy 재판정 — busy/eligible 단일 관문 공유
-            row = dict(cand)
-            row["archived"] = 0
-            ok, _reason = policy.eligible(row, now=ts, auto=False)
+            ok, _reason = policy.eligible(dict(cand), now=ts, auto=False)
             if not ok:
                 continue
             if cand["state"] == "todo":
