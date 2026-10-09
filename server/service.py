@@ -70,10 +70,42 @@ def reset_evidence(c, issue_id):
 
 def log_event(c, kind: str, entity: str, entity_id, payload=None):
     """변경 이벤트 outbox 기록 (TT 개선#2) — 반드시 변경과 같은 트랜잭션 안에서
-    호출한다. 소비자(보드·에이전트)는 GET /events?after_seq 또는 SSE로 수신."""
+    호출한다. 소비자(보드·에이전트)는 GET /events?after_seq 또는 SSE로 수신.
+    알림성 이벤트(멘션·release-ready·review-req)는 기존 notify_hook 플래그로 대상을
+    결정해 즉시 발송한다(escalate_blocked_human과 같은 best-effort, 실패 무시)."""
     c.execute("INSERT INTO events (kind, entity, entity_id, payload, ts) VALUES (?,?,?,?,?)",
               (kind, entity, str(entity_id), json.dumps(payload or {}, ensure_ascii=False),
                dbmod.now()))
+    try:
+        _notify_event(c, kind, entity_id, payload or {})
+    except Exception as e:
+        print(f"[tt-server] notify_event 실패({kind}): {str(e)[:120]}", flush=True)
+
+
+def _notify_event(c, kind, entity_id, payload):
+    """이벤트 → notify_hook 에이전트 웹훅 (리뷰 R4). 실행 권한은 claim/lease 그대로 —
+    여기는 관찰 가능성 전달일 뿐이다. 대상·활성화 모두 기존 플래그가 결정한다."""
+    if kind == "message.posted":
+        targets = payload.get("mentions") or []
+        if not targets:
+            return
+        rows = c.execute("SELECT * FROM agents WHERE enabled=1 AND notify_hook=1 AND "
+                         "name IN (%s)" % ",".join("?" * len(targets)), targets).fetchall()
+        for ag in rows:
+            send_command(ag, "notify", payload.get("thread_id") or entity_id,
+                         f"멘션 from {payload.get('author', '?')}",
+                         text=(payload.get("body") or "")[:300])
+    elif kind == "comment.added":
+        body = payload.get("preview") or ""
+        if "[release-ready]" not in body and "[review-req" not in body:
+            return
+        row = c.execute("SELECT a.* FROM issues i JOIN agents a ON a.name=i.assignee "
+                        "WHERE i.id=? AND a.enabled=1 AND a.notify_hook=1",
+                        (entity_id,)).fetchone()
+        if row:
+            send_command(row, "notify", entity_id,
+                         "release-ready" if "[release-ready]" in body else "review-request",
+                         text=body[:300])
 
 
 def record_comment(c, issue_id, author, body, notify_human=True):
@@ -193,10 +225,12 @@ def escalate_blocked_human(c, issue_id, source):
         if status != "ok":
             print(f"[tt-server] notify → {ag['name']} 실패: {detail}", flush=True)
     c.execute("UPDATE issues SET blocked_notified_at=? WHERE id=?", (dbmod.now(), issue_id))
+    body = (f"[level4-notify] human 대기 알림 발송({source}): "
+            f"{', '.join(statuses) or 'notify_hook agent 없음'}\n{text}")
     c.execute("INSERT INTO comments (issue_id, author, body, ts) VALUES (?,?,?,?)",
-              (issue_id, "tt-server",
-               f"[level4-notify] human 대기 알림 발송({source}): {', '.join(statuses) or 'notify_hook agent 없음'}\n{text}",
-               dbmod.now()))
+              (issue_id, "tt-server", body, dbmod.now()))
+    log_event(c, "comment.added", "issue", issue_id,
+              {"author": "tt-server", "preview": body[:120]})
     c.commit()
 
 
@@ -266,10 +300,11 @@ def reconcile_release(c, issue_id, reason, by):
         did = last["id"] if last else None
         status, detail = send_command(ag, "release", issue_id, reason, did)
         results.append((ag["name"], status, detail))
+        body = (f"reconcile release → {ag['name']}: {status} {detail} (by {by}, {reason})")
         c.execute("INSERT INTO comments (issue_id, author, body, ts) VALUES (?,?,?,?)",
-                  (issue_id, "tt-server",
-                   f"reconcile release → {ag['name']}: {status} {detail}"
-                   f" (by {by}, {reason})", dbmod.now()))
+                  (issue_id, "tt-server", body, dbmod.now()))
+        log_event(c, "comment.added", "issue", issue_id,
+                  {"author": "tt-server", "preview": body[:120]})
     return results
 
 
@@ -288,10 +323,12 @@ def notify_blocked_dependents(c, closed_id, end_state):
         open_deps = dep_states(c, dep_ids(d))
         still = [x["id"] for x in open_deps if x["state"] not in ("done", "cancelled")]
         head = "해제 가능" if not still else f"의존 {closed_id} {end_state} — 잔여 미완료 {','.join(still)}"
+        body = (f"{marker} {end_state} — {head}. 재개: tt edit {b['id']} --state todo "
+                f"(자동 재dispatch 없음 — 결정 후 수동 재개)")
         c.execute("INSERT INTO comments (issue_id, author, body, ts) VALUES (?,?,?,?)",
-                  (b["id"], "tt-server",
-                   f"{marker} {end_state} — {head}. 재개: tt edit {b['id']} --state todo "
-                   f"(자동 재dispatch 없음 — 결정 후 수동 재개)", dbmod.now()))
+                  (b["id"], "tt-server", body, dbmod.now()))
+        log_event(c, "comment.added", "issue", b["id"],
+                  {"author": "tt-server", "preview": body[:120]})
     return
 
 

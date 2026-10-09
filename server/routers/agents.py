@@ -176,6 +176,8 @@ def dispatch(issue_id: str, p: DispatchIn, request: Request, ctx: Ctx = Depends(
                              "ORDER BY id DESC LIMIT 1", (issue_id, p.agent)).fetchone()
             c.execute("INSERT INTO comments (issue_id, author, body, ts) VALUES (?,?,?,?)",
                       (issue_id, p.author, p.message, dbmod.now()))
+            service.log_event(c, "comment.added", "issue", issue_id,
+                              {"author": p.author, "preview": p.message[:120]})
             # R5: 행 생성 시점부터 resume context를 상속해 둔다 — 전달 실패(error)나
             # 전달 전 크래시로 끝나도 재전달 payload가 원래 context를 잃지 않는다.
             # 전달 성공 시에만 웹훅 응답 token으로 갱신된다.
@@ -240,8 +242,11 @@ def dispatch(issue_id: str, p: DispatchIn, request: Request, ctx: Ctx = Depends(
                   (dbmod.now() if status == "ok" else ag["last_ok"],
                    "" if status == "ok" else detail, p.agent))
         if status == "error":
+            fail_body = f"⚠ hook dispatch #{did} → {p.agent} 실패: {detail}"
             c.execute("INSERT INTO comments (issue_id, author, body, ts) VALUES (?,?,?,?)",
-                      (issue_id, "tt-server", f"⚠ hook dispatch #{did} → {p.agent} 실패: {detail}", dbmod.now()))
+                      (issue_id, "tt-server", fail_body, dbmod.now()))
+            service.log_event(c, "comment.added", "issue", issue_id,
+                              {"author": "tt-server", "preview": fail_body[:120]})
         c.commit()
         row = c.execute("SELECT * FROM dispatches WHERE id=?", (did,)).fetchone()
     if redeliver:

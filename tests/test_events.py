@@ -98,28 +98,41 @@ def test_after_seq_cursor_no_loss(client):
     assert seqs == sorted(seqs), "seq 역전"
 
 
-def test_sse_stream_replays_after_cursor(client):
+async def _drain(gen, stop):
+    """비동기 SSE 제너레이터 소비 — 조건 충족까지 타임아웃 걸고 수신."""
+    import asyncio
+    received, deadline = [], 10.0
+    while True:
+        try:
+            chunk = await asyncio.wait_for(gen.__anext__(), timeout=deadline)
+        except (StopAsyncIteration, asyncio.TimeoutError):
+            return received
+        for line in chunk.split("\n"):
+            if line.startswith("data: "):
+                received.append(json.loads(line[6:]))
+        if stop(received):
+            return received
+
+
+@pytest.mark.anyio
+async def test_sse_stream_replays_after_cursor(client):
     """검증기준: SSE 재연결 시 커서 이후 전건 수신."""
     i = mk(client, title="SSE 재생")
     for n in range(3):
         client.post(f"/issues/{i['id']}/comments", json={"author": "w1", "body": "s%d" % n})
     cursor = client.get("/events?limit=1").json()["events"][0]["seq"]
-    # 커서 이후 전건 — 스트림 제너레이터 직접 소비(타임아웃 없이 닫힘까지)
+    # 커서 이후 전건 — 비동기 스트림 제너레이터 직접 소비
     from server.routers.meta import events_stream
     gen = events_stream(after_seq=cursor, ctx=client.app.state.ctx, poll_s=0.01, max_idle=0.05)
-    received = []
-    for chunk in gen:
-        for line in chunk.split("\n"):
-            if line.startswith("data: "):
-                received.append(json.loads(line[6:]))
-        if any(e["entity_id"] == i["id"] for e in received):
-            break
+    received = await _drain(gen, lambda ev: any(e["entity_id"] == i["id"] for e in ev))
+    await gen.aclose()
     assert received, "SSE 재생 수신 0건"
     assert all(e["seq"] > cursor for e in received)
     assert any(e["entity_id"] == i["id"] for e in received), "커서 이후 이벤트 누락"
 
 
-def test_sse_last_event_id_header(client):
+@pytest.mark.anyio
+async def test_sse_last_event_id_header(client):
     """Last-Event-ID 헤더 — 재접속 커서(표준 SSE 재연결 규약)."""
     i = mk(client, title="Last-Event-ID")
     client.post(f"/issues/{i['id']}/comments", json={"author": "w1", "body": "x"})
@@ -128,11 +141,121 @@ def test_sse_last_event_id_header(client):
     client.post(f"/issues/{i['id']}/comments", json={"author": "w1", "body": "y"})
     from server.routers.meta import events_stream
     gen = events_stream(after_seq=cursor, ctx=client.app.state.ctx, poll_s=0.01, max_idle=0.05)
-    received = []
-    for chunk in gen:
-        for line in chunk.split("\n"):
-            if line.startswith("data: "):
-                received.append(json.loads(line[6:]))
-        if received:
-            break
+    received = await _drain(gen, lambda ev: bool(ev))
+    await gen.aclose()
     assert all(e["seq"] > cursor for e in received)
+
+
+def test_response_cursor_pagination_no_skip(client):
+    """리뷰 R1: 응답 커서(cursor)로 페이지네이션 — 페이지 크기와 무관하게 누락 0.
+    (구버식 last_seq=MAX(seq) 커서는 limit=2에서 중간 이벤트를 영구 건너뛰었다)"""
+    i = mk(client, title="응답 커서 페이지네이션")
+    for n in range(50):
+        client.post(f"/issues/{i['id']}/comments", json={"author": "w1", "body": "c%d" % n})
+    seen, cursor, pages = [], 0, 0
+    while True:
+        page = client.get(f"/events?after_seq={cursor}&limit=2").json()
+        if not page["events"]:
+            break
+        pages += 1
+        seen.extend(page["events"])
+        # 응답 커서로만 이어받기 — events[-1] 추측 금지
+        assert page["cursor"] == page["events"][-1]["seq"]
+        cursor = page["cursor"]
+        if pages > 500:
+            pytest.fail("페이지네이션 비종료 — 커서가 안 남진 않는지")
+    seqs = _seqs(seen)
+    assert len(seqs) == len(set(seqs)), "커서 재개 중복"
+    assert len([e for e in seen if e["kind"] == "comment.added" and e["entity_id"] == i["id"]]) == 50
+    assert page["cursor"] == cursor and page["last_seq"] >= cursor
+
+
+def test_issue_created_and_pull_events(client):
+    """리뷰 R2: 생성·pull 전이도 outbox를 우회하지 않는다."""
+    r = client.post("/issues", json={"title": "생성 이벤트", "state": "todo"}).json()
+    ev = client.get("/events?kind=issue.created").json()["events"]
+    assert any(e["entity_id"] == r["id"] for e in ev), "issue.created 없음"
+    got = client.post("/pull", json={"agent": "w9"}).json()
+    assert got and got["id"] == r["id"]
+    ev = [e for e in client.get("/events?kind=issue.updated").json()["events"]
+          if e["entity_id"] == r["id"]]
+    assert ev, "pull 전이 이벤트 없음"
+    payload = json.loads(ev[-1]["payload"])
+    assert payload["state"] == "in_progress" and payload["assignee"] == "w9" and payload["via"] == "pull"
+
+
+def test_release_ready_comment_event(client):
+    """리뷰 R2: 의존 종료 → [release-ready] 시스템 댓글도 comment.added 이벤트."""
+    dep = mk(client, title="의존 원본")
+    i = mk(client, title="블록 카드")  # 의존은 blocked_detail 토큰으로 (부모관계 X — 부모 done은 409)
+    client.patch(f"/issues/{i['id']}", json={"state": "blocked", "waiting_for": "dependency",
+                                             "blocked_detail": f"의존 {dep['id']}"})
+    # review 진입 후 verify → done → notify_blocked_dependents (verify는 review 전용)
+    client.patch(f"/issues/{dep['id']}", json={"state": "in_progress"})
+    client.patch(f"/issues/{dep['id']}", json={"state": "review"})
+    client.post(f"/issues/{dep['id']}/verify", json={"verifier": "t", "evidence": "pytest 5 passed"})
+    ev = [e for e in client.get("/events?kind=comment.added").json()["events"]
+          if e["entity_id"] == i["id"]]
+    assert ev and "[release-ready]" in json.loads(ev[-1]["payload"])["preview"]
+
+
+@pytest.mark.anyio
+async def test_idle_streams_do_not_exhaust_workers(client):
+    """리뷰 R3: 유휴 SSE 연결이 공용 스레드풀을 고갈시키지 않는다 — 40 스트림 + 쓰기.
+
+    (동기 sleep 제너레이터였을 때는 40연결이 limiter 40을 점유해 POST가 막혔다)"""
+    import asyncio
+    import time
+
+    import httpx
+    from starlette.testclient import TestClient  # noqa: F401
+
+    app = client.app
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t", timeout=3.0) as ac:
+        async def idle():
+            try:
+                async with ac.stream("GET", "/events/stream?after_seq=99999999&poll=0.05") as r:
+                    async for _ in r.aiter_bytes():
+                        pass
+            except Exception:
+                pass
+        streams = [asyncio.create_task(idle()) for _ in range(40)]
+        await asyncio.sleep(0.5)  # 스트림 전부 유휴 진입
+        t0 = time.monotonic()
+        r = await ac.post("/issues", json={"title": "쓰기 무방해"})
+        dt = time.monotonic() - t0
+        for s in streams:
+            s.cancel()
+        await asyncio.gather(*streams, return_exceptions=True)
+        assert r.status_code == 201, "유휴 스트림 40개 뒤에서 쓰기 실패 — 스레드풀 고갈"
+        assert dt < 2.0, f"쓰기가 {dt:.2f}s — 스트림 수에 막힘"
+
+
+def test_mention_notify_respects_flag(client, hook_server):
+    """리뷰 R4: 멘션 → notify_hook=true 에이전트에게만 알림 전송(켬/끔 회귀)."""
+    client.post("/agents", json={"name": "on-ag", "base_url": hook_server, "notify_hook": True})
+    client.post("/agents", json={"name": "off-ag", "base_url": hook_server, "notify_hook": False})
+    Hook.received.clear()
+    client.post("/messages", json={"author": "w1", "body": "@on-ag @off-ag 확인"})
+    notifies = [(h.get("x-tt-command"), p) for h, p in Hook.received
+                if h.get("x-tt-command") == "notify"]
+    assert len(notifies) == 1, f"notify {len(notifies)}건 — 플래그 미반영"
+    assert "멘션 from w1" in notifies[0][1]["reason"]
+
+
+def test_release_ready_notify_assignee(client, hook_server):
+    """리뷰 R4: [release-ready] 코멘트 → 대기 카드 담당 에이전트 notify(플래그 on만)."""
+    dep = mk(client, title="의존 원본")
+    i = mk(client, title="블록 카드")  # 의존은 blocked_detail 토큰으로 (부모관계 X — 부모 done은 409)
+    client.post("/agents", json={"name": "rel-on", "base_url": hook_server, "notify_hook": True})
+    client.post("/agents", json={"name": "rel-off", "base_url": hook_server, "notify_hook": False})
+    client.patch(f"/issues/{i['id']}", json={"state": "blocked", "waiting_for": "dependency",
+                                             "blocked_detail": f"의존 {dep['id']}",
+                                             "assignee": "rel-on"})
+    Hook.received.clear()
+    client.patch(f"/issues/{dep['id']}", json={"state": "in_progress"})
+    client.patch(f"/issues/{dep['id']}", json={"state": "review"})
+    client.post(f"/issues/{dep['id']}/verify", json={"verifier": "t", "evidence": "pytest 5 passed"})
+    notifies = [p for h, p in Hook.received if h.get("x-tt-command") == "notify"]
+    assert len(notifies) == 1 and notifies[0]["reason"] == "release-ready"
