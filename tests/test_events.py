@@ -300,9 +300,12 @@ def test_notify_outside_write_lock(client, hook_server):
     t0 = time.monotonic()
     r = client.post("/messages", json={"author": "w1", "body": "@slow-ag 느린 수신기 테스트"})
     dt = time.monotonic() - t0
-    Hook.mode = "ok"
     assert r.status_code == 201 and dt < 1.5, f"메시지 POST가 훅을 기다림({dt:.2f}s) — 락 내 전송"
-    # 전송이 아직 진행 중이어도 원문·이벤트는 가시 (커밋 완료)
+    # 리뷰 보강: 워커가 수신기에 '진입'(요청 도착, 응답 전 2s 정지 구간)할 때까지 대기 —
+    # 전송이 실제로 막혀 있는 동안에 가시성·무방해 쓰기를 검증한다 (모드 해제는 그 뒤)
+    entered = _wait_notifies(lambda g: any(c == "notify" for c, _ in g), timeout=4.0)
+    assert any(c == "notify" for c, _ in entered), "워커가 수신기에 진입하지 않음"
+    # 전송이 막혀 있는 동안: 원문·이벤트는 가시 (커밋 완료 — 트랜잭션 내 전송 잔재 없음)
     ev = client.get("/events?kind=message.posted").json()["events"]
     assert any(json.loads(e["payload"]).get("body") == "@slow-ag 느린 수신기 테스트" for e in ev), \
         "커밋 전까지 이벤트 비가시 — 트랜잭션 내 전송 잔재"
@@ -310,6 +313,59 @@ def test_notify_outside_write_lock(client, hook_server):
     t0 = time.monotonic()
     w = client.post("/issues", json={"title": "무방해 쓰기"})
     assert w.status_code == 201 and time.monotonic() - t0 < 2.0
-    # 느려도 결국 전달된다
-    got = _wait_notifies(lambda g: any(c == "notify" for c, _ in g), timeout=6.0)
-    assert any(c == "notify" for c, _ in got), "느린 수신기 알림 미전달"
+    Hook.mode = "ok"  # 해제 — 막힌 전송 완료
+
+
+def test_worker_restarts_for_recreated_app(tmp_path):
+    """리뷰 R5: 같은 DB로 앱을 다시 만들면 워커가 다시 시작된다 — 알림 중단 없음."""
+    import threading
+    from fastapi.testclient import TestClient
+
+    from app import create_app, _notify_workers
+
+    path = str(tmp_path / "tt.db")
+
+    def post_and_wait(app, body):
+        with TestClient(app) as c:
+            c.post("/agents", json={"name": "w-ag", "base_url": hook_server_url, "notify_hook": True})
+            Hook.received.clear()
+            c.post("/messages", json={"author": "w1", "body": body})
+            got = _wait_notifies(lambda g: any(c2 == "notify" for c2, _ in g), timeout=5)
+        assert any(c2 == "notify" for c2, _ in got), f"알림 미전달: {body}"  # 본문에 @w-ag 필요
+
+    import conftest
+    global hook_server_url
+    srv = conftest.Hook
+    import threading as _th
+    from http.server import HTTPServer
+    Hook.received, Hook.mode = [], "ok"
+    server = HTTPServer(("127.0.0.1", 0), Hook)
+    _th.Thread(target=server.serve_forever, daemon=True).start()
+    hook_server_url = f"http://127.0.0.1:{server.server_address[1]}/hook"
+    try:
+        post_and_wait(create_app(path), "@w-ag 첫 앱 멘션")   # 첫 앱 — shutdown까지 실행
+        post_and_wait(create_app(path), "@w-ag 재생성 앱 멘션")  # 같은 DB — 워커 재기동
+        assert path not in _notify_workers or _notify_workers[path].is_set(), \
+            "종료 후 등록 잔재"  # (모듈 기본 앱의 워커는 제외 — 이 테스트 경로만)'
+
+    finally:
+        server.shutdown()
+
+
+def test_repeated_app_creation_closes_worker_resources(tmp_path):
+    """리뷰 R5: 앱 생성/종료 반복 — 워커 스레드·연결이 누적되지 않는다.
+
+    (종료 미연결이던 워커는 앱당 수 개의 fd를 새며 기본 한도 256에서 수십 회 만에
+    'unable to open database file'로 죽었다 — 이 반복은 그 경계를 그대로 검증한다)"""
+    from fastapi.testclient import TestClient
+
+    from app import create_app, _notify_workers
+
+    path = str(tmp_path / "tt.db")
+    for n in range(100):
+        app = create_app(path)
+        with TestClient(app) as c:
+            c.get("/health")
+        assert path not in _notify_workers, f"{n}번째 종료 후 워커 등록 잔재"
+    with TestClient(create_app(path)) as c:
+        assert c.get("/health").json()["status"] == "ok"

@@ -85,35 +85,39 @@ def log_event(c, kind: str, entity: str, entity_id, payload=None):
 
 
 def notify_loop(db_path, stop, interval=0.3):
-    """알림 전달 워커 (create_app 데몬 스레드). stop 이벤트로 종료.
+    """알림 전달 워커 (create_app 데몬 스레드). stop 이벤트로 종료, 종료 시 연결 close.
 
     영구 연결 1개로 폴링한다 — 틱마다 connect+migrate를 반복하면 스레드 수만큼
     스키마 컴파일이 쌓여 프로세스 전체가 질질 끈다(실측). 폴링 쿼리는 부분 인덱스
     (idx_events_unnotified) 한 방이라 유휴 비용이 사실상 0이다."""
     con = None
-    while not stop.is_set():
-        try:
-            if con is None:
-                if not os.path.exists(db_path):  # 테스트 tmp 정리 후 부활 방지
-                    stop.wait(interval)
-                    continue
-                con = dbmod.connect(db_path)
-            con.row_factory = sqlite3.Row
-            rows = con.execute("SELECT seq, kind, entity_id, payload FROM events "
-                               "WHERE notified=0 ORDER BY seq LIMIT ?", (200,)).fetchall()
-            for r in rows:
-                try:
-                    _notify_event(con, r["kind"], r["entity_id"], json.loads(r["payload"]))
-                except Exception as e:
-                    print(f"[tt-server] notify_event 실패({r['kind']}): {str(e)[:120]}", flush=True)
-            if rows:
-                con.execute("UPDATE events SET notified=1 WHERE seq IN (%s)"
-                            % ",".join("?" * len(rows)), [r["seq"] for r in rows])
-                con.commit()
-        except Exception as e:
-            print(f"[tt-server] notify 루프 오류: {str(e)[:120]}", flush=True)
-            con = None  # 다음 틱에 재접속
-        stop.wait(interval)
+    try:
+        while not stop.is_set():
+            try:
+                if con is None:
+                    if not os.path.exists(db_path):  # 테스트 tmp 정리 후 부활 방지
+                        stop.wait(interval)
+                        continue
+                    con = dbmod.connect(db_path)
+                con.row_factory = sqlite3.Row
+                rows = con.execute("SELECT seq, kind, entity_id, payload FROM events "
+                                   "WHERE notified=0 ORDER BY seq LIMIT ?", (200,)).fetchall()
+                for r in rows:
+                    try:
+                        _notify_event(con, r["kind"], r["entity_id"], json.loads(r["payload"]))
+                    except Exception as e:
+                        print(f"[tt-server] notify_event 실패({r['kind']}): {str(e)[:120]}", flush=True)
+                if rows:
+                    con.execute("UPDATE events SET notified=1 WHERE seq IN (%s)"
+                                % ",".join("?" * len(rows)), [r["seq"] for r in rows])
+                    con.commit()
+            except Exception as e:
+                print(f"[tt-server] notify 루프 오류: {str(e)[:120]}", flush=True)
+                con = None  # 다음 틱에 재접속
+            stop.wait(interval)
+    finally:
+        if con is not None:
+            con.close()
 
 
 def _notify_event(c, kind, entity_id, payload):

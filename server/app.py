@@ -42,7 +42,7 @@ def _versioned_html(html: str, static_dir: str | None = None) -> str:
     return _re.sub(r'(src|href)="(/(?:js|css)/[^"?]+)"', sub, html)
 
 
-_notify_workers: set = set()
+_notify_workers: dict = {}  # db_path → stop Event (살아있는 워커 추적, R5)
 
 
 def create_app(db_path: str) -> FastAPI:
@@ -70,15 +70,18 @@ def create_app(db_path: str) -> FastAPI:
 
     # 알림 전달 워커 (리뷰 R4a): 이벤트 저장(트랜잭션)과 웹훅 전송(커밋 후 락 밖) 분리.
     # TT_NOTIFY_WORKER=0로 끈다(테스트 격리용). 전달 실패는 로그만 — 저장을 되돌리지 않는다.
-    # 같은 DB 파일에 워커가 이미 있으면 중복 기동 금지.
-    if os.environ.get("TT_NOTIFY_WORKER", "1") != "0" and db_path not in _notify_workers:
-        _notify_workers.add(db_path)
+    # 같은 DB 파일의 살아있는 워커가 있으면 중복 기동 금지. 수명은 앱에 연결(리뷰 R5):
+    # shutdown에서 stop+등록 해제 — 같은 DB로 앱을 다시 만들면 워커가 다시 시작된다.
+    if os.environ.get("TT_NOTIFY_WORKER", "1") != "0" and _notify_workers.get(db_path) is None:
         nstop = threading.Event()
+        _notify_workers[db_path] = nstop
         app.state.notify_stop = nstop
 
         @app.on_event("shutdown")
         def _stop_notify():
             nstop.set()
+            if _notify_workers.get(db_path) is nstop:
+                del _notify_workers[db_path]
 
         threading.Thread(target=service.notify_loop, daemon=True, name="tt-notify",
                          args=(db_path, nstop)).start()

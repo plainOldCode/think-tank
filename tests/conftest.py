@@ -6,8 +6,11 @@ from app import create_app
 
 @pytest.fixture
 def client(tmp_path):
+    # 리뷰 R5: TestClient를 컨텍스트로 사용 — 앱 종료(shutdown)까지 실행해
+    # 워커 stop+등록 해제가 매 테스트에서 일어난다 (스레드·연결 누적 방지).
     app = create_app(str(tmp_path / "tt.db"))
-    return TestClient(app)
+    with TestClient(app) as c:
+        yield c
 
 
 def mk(client, **kw):
