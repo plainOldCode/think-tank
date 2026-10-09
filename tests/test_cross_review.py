@@ -171,11 +171,10 @@ def test_리뷰_점유_보유_에이전트는_교차_수령_후보가_아니다(
 def test_사이클내_작업_배정_에이전트는_교차_수령_안_한다(monkeypatch):
     """R3: 이번 사이클에 work 배정받은 에이전트는 리뷰도 맡지 않는다."""
     monkeypatch.setenv("TT_REVIEW_AGENT", "fallback@t")
-    work = _i(id="M4WWWWWW-WW01", state="todo")
+    work = _i(id="M4WWWWWW-WW01", state="todo", labels=["auto"])
     acts = dispatchd.decide(_snap([work, _i()], _pr(), [_agent("a2@t")]))
-    work_acts = [a for a in acts if a["action"] == "work"]
-    if work_acts:  # work 배정이 먼저면 리뷰는 안 건다
-        assert not [a for a in acts if a["action"] == "review-claim"]
+    assert [a for a in acts if a["action"] == "work"], "work 배정이 먼저 이뤄져야 한다"
+    assert not [a for a in acts if a["action"] == "review-claim"]
 
 
 def test_execute_review_claim은_마커를_영속화한다(monkeypatch):

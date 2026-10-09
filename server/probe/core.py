@@ -257,6 +257,7 @@ def decide(snap):
         if target is None:
             continue
         claimed.add(target["id"])
+        claimed.add(name)  # TT 개선#3c R3: 배정받은 에이전트는 이번 사이클 리뷰 금지
         actions.append({"agent": name, "issue": target["id"], "action": "work",
                         "reason": reason})
 
