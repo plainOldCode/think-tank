@@ -14,6 +14,8 @@ def client(tmp_path):
 
 
 def mk(client, **kw):
+    # TT 개선#3a 게이트 통과 기본값 — acceptance 필요 테스트는 kw로 덮어씀
+    kw.setdefault("acceptance", "완료 기준: 전체 회귀 통과")
     return client.post("/issues", json={"title": "t", **kw}).json()
 
 

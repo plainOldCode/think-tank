@@ -39,7 +39,7 @@ def v2_report(contract, attempt=1):
 
 
 def claimed(client):
-    i = client.post("/issues", json={"title": "병합 게이트"}).json()
+    i = client.post("/issues", json={"acceptance": "완료 기준: 테스트 통과", "title": "병합 게이트"}).json()
     c = client.post(f"/issues/{i['id']}/claim", json={"agent": "w@t"}).json()
     return i["id"], c["work_contract"]["version"], c["execution_attempt"]
 
@@ -76,7 +76,7 @@ def test_근거없는_done은_강등코멘트(client):
 
 
 def test_close라벨은_done유지(client):
-    i = client.post("/issues", json={"title": "close 예외", "labels": ["close"]}).json()
+    i = client.post("/issues", json={"acceptance": "완료 기준: 테스트 통과", "title": "close 예외", "labels": ["close"]}).json()
     client.post(f"/issues/{i['id']}/claim", json={"agent": "w@t"})
     r = client.patch(f"/issues/{i['id']}", json={"state": "done"}).json()
     assert r["state"] == "done" and r["verified"] == 1

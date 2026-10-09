@@ -156,7 +156,7 @@ def _make_api(client):
 
 
 def _new_issue(c, body="작업 설명"):
-    r = c.post("/issues", json={"title": IID, "body": body})
+    r = c.post("/issues", json={"acceptance": "완료 기준: 테스트 통과", "title": IID, "body": body})
     assert r.status_code == 201, r.text
     return r.json()["id"]
 

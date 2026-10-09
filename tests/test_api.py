@@ -15,7 +15,7 @@ def test_parent_child(client):
     c1 = mk(client, title="child1", parent_id=p["id"])
     tree = client.get(f"/issues/{p['id']}/tree").json()
     assert tree["tree"][0]["id"] == c1["id"]
-    bad = client.post("/issues", json={"title": "x", "parent_id": "NOPE"})
+    bad = client.post("/issues", json={"acceptance": "완료 기준: 테스트 통과", "title": "x", "parent_id": "NOPE"})
     assert bad.status_code == 404
 
 
@@ -180,7 +180,7 @@ def test_install_script(client):
 
 def test_claim_respects_lease_limit(client):
     agent = "lim@test"
-    ids = [client.post("/issues", json={"title": f"L{i}", "state": "todo"}).json()["id"] for i in range(3)]
+    ids = [client.post("/issues", json={"acceptance": "완료 기준: 테스트 통과", "title": f"L{i}", "state": "todo"}).json()["id"] for i in range(3)]
     assert client.post(f"/issues/{ids[0]}/claim", json={"agent": agent}).status_code == 200
     assert client.post(f"/issues/{ids[1]}/claim", json={"agent": agent}).status_code == 200
     assert client.post(f"/issues/{ids[2]}/claim", json={"agent": agent}).status_code == 409
@@ -190,7 +190,7 @@ def test_claim_lease_limit_env_override(client, monkeypatch):
     """TT_MAX_LEASES=3 → 3건째 claim 통과, 4건째 409(경계 포함). 기본값(2)은 위 테스트가 보호."""
     monkeypatch.setenv("TT_MAX_LEASES", "3")
     agent = "env@test"
-    ids = [client.post("/issues", json={"title": f"E{i}", "state": "todo"}).json()["id"] for i in range(4)]
+    ids = [client.post("/issues", json={"acceptance": "완료 기준: 테스트 통과", "title": f"E{i}", "state": "todo"}).json()["id"] for i in range(4)]
     for i in ids[:3]:
         assert client.post(f"/issues/{i}/claim", json={"agent": agent}).status_code == 200
     r = client.post(f"/issues/{ids[3]}/claim", json={"agent": agent})
@@ -208,16 +208,16 @@ def test_pull_lease_limit_env_override(client, monkeypatch):
 
 
 def test_unassign_clears_lease(client):
-    iid = client.post("/issues", json={"title": "U", "state": "todo"}).json()["id"]
+    iid = client.post("/issues", json={"acceptance": "완료 기준: 테스트 통과", "title": "U", "state": "todo"}).json()["id"]
     client.post(f"/issues/{iid}/claim", json={"agent": "ua@test"})
     r = client.patch(f"/issues/{iid}", json={"assignee": ""})
     assert r.status_code == 200 and r.json()["lease_by"] == "" and r.json()["assignee"] == ""
 
 
 def test_parent_done_requires_children_closed(client):
-    p = client.post("/issues", json={"title": "P"}).json()["id"]
-    c1 = client.post("/issues", json={"title": "C1", "state": "todo"}).json()["id"]
-    c2 = client.post("/issues", json={"title": "C2", "state": "todo"}).json()["id"]
+    p = client.post("/issues", json={"acceptance": "완료 기준: 테스트 통과", "title": "P"}).json()["id"]
+    c1 = client.post("/issues", json={"acceptance": "완료 기준: 테스트 통과", "title": "C1", "state": "todo"}).json()["id"]
+    c2 = client.post("/issues", json={"acceptance": "완료 기준: 테스트 통과", "title": "C2", "state": "todo"}).json()["id"]
     client.patch(f"/issues/{c1}", json={"parent_id": p})
     client.patch(f"/issues/{c2}", json={"parent_id": p})
     client.patch(f"/issues/{p}", json={"state": "todo"})
@@ -232,7 +232,7 @@ def test_parent_done_requires_children_closed(client):
 
 
 def test_claim_self_assigned(client):
-    iid = client.post("/issues", json={"title": "A", "state": "todo"}).json()["id"]
+    iid = client.post("/issues", json={"acceptance": "완료 기준: 테스트 통과", "title": "A", "state": "todo"}).json()["id"]
     client.patch(f"/issues/{iid}", json={"assignee": "me@test"})
     assert client.post(f"/issues/{iid}/claim", json={"agent": "me@test"}).status_code == 200
     assert client.post(f"/issues/{iid}/claim", json={"agent": "other@test"}).status_code == 409
@@ -1075,7 +1075,7 @@ def test_warn_mode_allows_done_with_comment(client, tmp_path):
         c = m.create_app(str(tmp_path / "warn.db"))
         from fastapi.testclient import TestClient
         wc = TestClient(c)
-        i = wc.post("/issues", json={"title": "warn"}).json()
+        i = wc.post("/issues", json={"acceptance": "완료 기준: 테스트 통과", "title": "warn"}).json()
         wc.post(f"/issues/{i['id']}/claim", json={"agent": "w@t"})
         r = wc.patch(f"/issues/{i['id']}", json={"state": "done"})
         assert r.status_code == 200 and r.json()["state"] == "done"
@@ -1289,7 +1289,7 @@ def test_dispatch_이력에_model_스냅샷_병기(client, monkeypatch):
         client.post("/agents", json={"name": "codex", "base_url": "http://x/hook",
                                      "model": "gpt-6.1-sol", "tier": "sota"})
         client.post("/agents", json={"name": "nomodel", "base_url": "http://y/hook"})
-        i = client.post("/issues", json={"title": "감사"}).json()
+        i = client.post("/issues", json={"acceptance": "완료 기준: 테스트 통과", "title": "감사"}).json()
         d1 = client.post(f"/issues/{i['id']}/dispatch", json={"agent": "codex", "message": "m"}).json()
         d2 = client.post(f"/issues/{i['id']}/dispatch", json={"agent": "nomodel", "message": "m"}).json()
     finally:

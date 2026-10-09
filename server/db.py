@@ -161,7 +161,8 @@ def connect(path):
     con.execute("PRAGMA journal_mode=WAL")
     con.execute("PRAGMA foreign_keys=ON")
     con.executescript(SCHEMA)
-    for col in ("archived INTEGER NOT NULL DEFAULT 0",
+    for col in ("acceptance TEXT NOT NULL DEFAULT ''",  # TT 개선#3a: 완료 기준
+                "archived INTEGER NOT NULL DEFAULT 0",
                 "lease_by TEXT NOT NULL DEFAULT ''",
                 "lease_expires TEXT",
                 "heartbeat_at TEXT",
