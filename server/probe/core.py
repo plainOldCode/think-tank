@@ -13,6 +13,7 @@ import time
 import urllib.request
 
 from service import REVIEW_CONTRACT
+import policy
 
 PULL_HINT = "tt claim ID {agent} 후 dispatch — pull(풀) 사용 금지(30KP/W1DP)"
 
@@ -28,11 +29,8 @@ def _auto_todo(issues, exclude=()):
 
 
 def _budget_blocked(i):
-    if (i.get("dispatches") or 0) >= 2:
-        return "dispatch-tries>=2"
-    if (i.get("execution_attempt") or 0) >= 2:
-        return "attempt>=2"
-    return None
+    # TT 개선#3b: 예산 판정은 policy 단일 모듈로 — reason code도 policy 것을 씀
+    return policy.budget_reason(i)
 
 
 def ci_passed(pr):
@@ -174,16 +172,28 @@ def decide(snap):
     now = snap.get("now") or ""
     actions = []
     claimed = set()
+    # TT 개선#3b: 배정 못 한 카드의 reason code — run_once가 로그로 남긴다.
+    # 에이전트 유무와 무관하게 전체 카드를 정책으로 스캔(상태 조합 매트릭스의 로그 실측).
+    snap["probe_skips"] = {}
+    skip = snap["probe_skips"]
+    for i in issues:
+        ok, code = policy.eligible(i, now=now, auto=True)
+        if not ok and code:
+            skip[i["id"]] = code
 
     def idle(name):
         return not any(i["state"] == "in_progress" and i.get("assignee") == name
                        and (i.get("lease_expires") or "9999") > now for i in issues)
 
     def pick(cands):
-        """가장 낮은 우선순위의 예산 통과 후보(동률 id순). 없으면 None."""
+        """가장 낮은 우선순위의 배정 가능 후보(동률 id순). 없으면 None.
+        TT 개선#3b: 기각 시 policy reason code를 probe_skips에 남긴다."""
         for i in sorted(cands, key=_prio):
-            if not _budget_blocked(i):
+            ok, code = policy.eligible(i, now=now, auto=True)
+            if ok:
                 return i
+            if code and i["id"] not in skip:
+                skip[i["id"]] = code
         return None
 
     # ① release-ready 재개(수동 재개 규약의 기계 대행 — 서버 release_ready 판정 근거)
@@ -777,8 +787,10 @@ def run_once(url, dry=False):
         if not dry:
             execute(url, a)
     # 내장화 관측점: 서버 로그에서 사이클 생존을 확인 가능하게(빈 라운드도 1행)
+    skips = snap.get("probe_skips") or {}
     print(time.strftime("%F %T"),
-          f"[probe] cycle: issues={len(snap['issues'])} prs={len(snap['prs'])} actions={len(acts)}",
+          f"[probe] cycle: issues={len(snap['issues'])} prs={len(snap['prs'])} actions={len(acts)}"
+          + (f" skips={json.dumps(skips, ensure_ascii=False, sort_keys=True)}" if skips else ""),
           flush=True)
     return acts
 
