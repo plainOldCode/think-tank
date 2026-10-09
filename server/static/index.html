@@ -13,6 +13,7 @@
   <div class="tools">
   <form onsubmit="return newIssue(event)">
     <input id="newtitle" name="title" placeholder="새 이슈 등록" size="24" required>
+    <input name="acceptance" placeholder="완료 기준 (필수)" size="20" required>
     <select name="state"><option>todo</option><option>backlog</option></select>
     <button id="newbtn">등록</button>
   </form>
