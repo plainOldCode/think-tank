@@ -316,47 +316,123 @@ def test_notify_outside_write_lock(client, hook_server):
     Hook.mode = "ok"  # 해제 — 막힌 전송 완료
 
 
-def test_worker_restarts_for_recreated_app(tmp_path):
-    """리뷰 R5: 같은 DB로 앱을 다시 만들면 워커가 다시 시작된다 — 알림 중단 없음."""
-    import threading
-    from fastapi.testclient import TestClient
-
-    from app import create_app, _notify_workers
-
-    path = str(tmp_path / "tt.db")
-
-    def post_and_wait(app, body):
-        with TestClient(app) as c:
-            c.post("/agents", json={"name": "w-ag", "base_url": hook_server_url, "notify_hook": True})
-            Hook.received.clear()
-            c.post("/messages", json={"author": "w1", "body": body})
-            got = _wait_notifies(lambda g: any(c2 == "notify" for c2, _ in g), timeout=5)
-        assert any(c2 == "notify" for c2, _ in got), f"알림 미전달: {body}"  # 본문에 @w-ag 필요
-
-    import conftest
-    global hook_server_url
-    srv = conftest.Hook
+def _own_hook_server():
+    """테스트 전용 훅 수신기 — (server, url). 진입 동기화 테스트용."""
     import threading as _th
     from http.server import HTTPServer
     Hook.received, Hook.mode = [], "ok"
     server = HTTPServer(("127.0.0.1", 0), Hook)
     _th.Thread(target=server.serve_forever, daemon=True).start()
-    hook_server_url = f"http://127.0.0.1:{server.server_address[1]}/hook"
-    try:
-        post_and_wait(create_app(path), "@w-ag 첫 앱 멘션")   # 첫 앱 — shutdown까지 실행
-        post_and_wait(create_app(path), "@w-ag 재생성 앱 멘션")  # 같은 DB — 워커 재기동
-        assert path not in _notify_workers or _notify_workers[path].is_set(), \
-            "종료 후 등록 잔재"  # (모듈 기본 앱의 워커는 제외 — 이 테스트 경로만)'
+    return server, f"http://127.0.0.1:{server.server_address[1]}/hook"
 
+
+def _wait_polls(entry, minimum, timeout=6.0):
+    """워커가 DB를 실제로 열고 폴링했는지 — polls 카운터로 동기화."""
+    import time as _t
+    deadline = _t.monotonic() + timeout
+    while _t.monotonic() < deadline:
+        if entry.get("polls", 0) >= minimum:
+            return True
+        _t.sleep(0.02)
+    return False
+
+
+def test_worker_restarts_for_recreated_app(tmp_path):
+    """리뷰 R5: 같은 DB로 앱을 다시 만들면 워커가 다시 시작된다 — 알림 중단 없음."""
+    from fastapi.testclient import TestClient
+
+    from app import create_app, _notify_workers
+
+    path = str(tmp_path / "tt.db")
+    server, url = _own_hook_server()
+    try:
+        for body in ("@w-ag 첫 앱 멘션", "@w-ag 재생성 앱 멘션"):
+            with TestClient(create_app(path)) as c:
+                c.post("/agents", json={"name": "w-ag", "base_url": url, "notify_hook": True})
+                Hook.received.clear()
+                c.post("/messages", json={"author": "w1", "body": body})
+                got = _wait_notifies(lambda g: any(c2 == "notify" for c2, _ in g), timeout=5)
+            assert any(c2 == "notify" for c2, _ in got), f"알림 미전달: {body}"
+        # 마지막 앱 종료 — 워커 본인이 등록을 치운다
+        entry = _notify_workers.get(path)
+        if entry is not None:
+            entry["thread"].join(timeout=5)
+        assert path not in _notify_workers, "종료 후 등록 잔재"
+    finally:
+        server.shutdown()
+
+
+def test_mid_send_recreate_no_duplicate_delivery(tmp_path):
+    """리뷰 R5 4차 경계 1: 전송 중 앱 종료 → 재생성 — 같은 이벤트 중복 전송 금지.
+
+    첫 워커가 느린 수신기에 진입한 상태로 앱을 종료·재생성한다. 선점 CAS
+    (notified 0→2) 때문에 새 워커는 이미 잡힌 이벤트를 전송하지 못한다."""
+    from fastapi.testclient import TestClient
+
+    from app import create_app
+
+    path = str(tmp_path / "tt.db")
+    server, url = _own_hook_server()
+    try:
+        Hook.mode = "slow"  # 수신기 2초 정지
+        with TestClient(create_app(path)) as c1:
+            c1.post("/agents", json={"name": "w-ag", "base_url": url, "notify_hook": True})
+            c1.post("/messages", json={"author": "w1", "body": "@w-ag 중복 경계"})
+            # 첫 워커가 수신기에 진입(요청 도착 — 응답 전 2s 정지)할 때까지
+            assert _wait_notifies(lambda g: any(c2 == "notify" for c2, _ in g), timeout=4), \
+                "첫 워커 미진입"
+        # 진입한 전송이 여전히 막혀 있는 동안(2s 내) 같은 DB 재생성
+        with TestClient(create_app(path)) as c2:
+            c2.post("/messages", json={"author": "w1", "body": "@w-ag 재생성 후 메시지"})
+            Hook.mode = "ok"  # 막힌 첫 전송 해제
+            got = _wait_notifies(
+                lambda g: any(c2 == "notify" and "재생성 후" in (p.get("text") or "")
+                              for c2, p in g), timeout=6)
+        first_dupes = [p for c2, p in got
+                       if c2 == "notify" and "중복 경계" in (p.get("text") or "")]
+        assert len(first_dupes) == 1, f"첫 이벤트 중복 전송 {len(first_dupes)}건"
+        assert any("재생성 후" in (p.get("text") or "") for c2, p in got if c2 == "notify"), \
+            "재생성 앱 알림 미전달"
+    finally:
+        Hook.mode = "ok"
+        server.shutdown()
+
+
+def test_shared_db_app_exit_keeps_delivery(tmp_path):
+    """리뷰 R5 4차 경계 2: 두 앱이 같은 DB 공유 — 먼저 만든 앱 종료 후에도 전달 지속."""
+    from fastapi.testclient import TestClient
+
+    from app import create_app, _notify_workers
+
+    path = str(tmp_path / "tt.db")
+    server, url = _own_hook_server()
+    try:
+        app1, app2 = create_app(path), create_app(path)
+        entry = _notify_workers[path]
+        assert entry["refs"] == 2, f"참조 카운트 {entry['refs']}"
+        with TestClient(app1) as c1:  # app1만 종료 — refs 1, 워커 생존
+            c1.post("/agents", json={"name": "w-ag", "base_url": url, "notify_hook": True})
+        assert entry["refs"] == 1 and not entry["stop"].is_set(), "첫 앱 종료가 워커를 죽임"
+        with TestClient(app2) as c2:
+            c2.post("/messages", json={"author": "w1", "body": "@w-ag 생존 앱 멘션"})
+            got = _wait_notifies(lambda g: any(c2 == "notify" for c2, _ in g), timeout=5)
+        assert any(c2 == "notify" for c2, _ in got), "생존 앱 알림 미전달"
+        with TestClient(app2):  # 마지막 앱 종료 → 워커 종료
+            pass
+        entry["thread"].join(timeout=5)
+        assert not entry["thread"].is_alive(), "워커 스레드 미종료"
+        assert path not in _notify_workers, "종료 후 등록 잔재"
     finally:
         server.shutdown()
 
 
 def test_repeated_app_creation_closes_worker_resources(tmp_path):
-    """리뷰 R5: 앱 생성/종료 반복 — 워커 스레드·연결이 누적되지 않는다.
+    """리뷰 R5 4차: 앱 생성/종료 반복 — 워커 스레드·연결이 실제로 정리된다.
 
     (종료 미연결이던 워커는 앱당 수 개의 fd를 새며 기본 한도 256에서 수십 회 만에
-    'unable to open database file'로 죽었다 — 이 반복은 그 경계를 그대로 검증한다)"""
+    'unable to open database file'로 죽었다. /health만으로는 DB를 안 열어 워커가
+    연결을 안 만드므로, 매 회 이슈를 만들어 실제 연결을 강제하고 polls 카운터로
+    워커 진입을 동기화한 뒤 join으로 종료까지 확인한다)"""
     from fastapi.testclient import TestClient
 
     from app import create_app, _notify_workers
@@ -365,7 +441,10 @@ def test_repeated_app_creation_closes_worker_resources(tmp_path):
     for n in range(100):
         app = create_app(path)
         with TestClient(app) as c:
-            c.get("/health")
-        assert path not in _notify_workers, f"{n}번째 종료 후 워커 등록 잔재"
-    with TestClient(create_app(path)) as c:
-        assert c.get("/health").json()["status"] == "ok"
+            c.post("/issues", json={"title": f"반복 {n}"})  # 실제 DB 오픈 강제
+            entry = _notify_workers.get(path)
+            assert entry is not None, f"{n}번째 워커 미기동"
+            assert _wait_polls(entry, 1), f"{n}번째 워커 폴링 미진입"
+        entry["thread"].join(timeout=5)
+        assert not entry["thread"].is_alive(), f"{n}번째 워커 스레드 미종료"
+        assert path not in _notify_workers, f"{n}번째 종료 후 등록 잔재"

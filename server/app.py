@@ -42,7 +42,7 @@ def _versioned_html(html: str, static_dir: str | None = None) -> str:
     return _re.sub(r'(src|href)="(/(?:js|css)/[^"?]+)"', sub, html)
 
 
-_notify_workers: dict = {}  # db_path → stop Event (살아있는 워커 추적, R5)
+from service import _notify_workers, _notify_reg_lock  # noqa: F401 (테스트가 app 경유 참조)
 
 
 def create_app(db_path: str) -> FastAPI:
@@ -70,21 +70,33 @@ def create_app(db_path: str) -> FastAPI:
 
     # 알림 전달 워커 (리뷰 R4a): 이벤트 저장(트랜잭션)과 웹훅 전송(커밋 후 락 밖) 분리.
     # TT_NOTIFY_WORKER=0로 끈다(테스트 격리용). 전달 실패는 로그만 — 저장을 되돌리지 않는다.
-    # 같은 DB 파일의 살아있는 워커가 있으면 중복 기동 금지. 수명은 앱에 연결(리뷰 R5):
-    # shutdown에서 stop+등록 해제 — 같은 DB로 앱을 다시 만들면 워커가 다시 시작된다.
-    if os.environ.get("TT_NOTIFY_WORKER", "1") != "0" and _notify_workers.get(db_path) is None:
-        nstop = threading.Event()
-        _notify_workers[db_path] = nstop
-        app.state.notify_stop = nstop
+    # 수명은 앱에 연결하되 참조 카운트로 공유(리뷰 R5 4차): 같은 DB의 살아있는 앱이
+    # 남아 있으면 워커가 계속 전달하고, 마지막 앱 shutdown의 stop을 워커 본인이
+    # 확인해 자기 등록을 치운다 — shutdown의 선삭제가 만드는 전송 중 재생성 중복/
+    # 공유 앱 전달 중단이 없다. 전송 자체는 이벤트별 CAS 선점(notified 0→2)이라
+    # 동시 워커가 있어도 중복 발송이 불가능.
+    if os.environ.get("TT_NOTIFY_WORKER", "1") != "0":
+        with _notify_reg_lock:
+            entry = _notify_workers.get(db_path)
+            if entry is not None and not entry["stop"].is_set():
+                entry["refs"] += 1  # 살아있는 워커 인계 (공유 DB 앱)
+            else:
+                # 없거나 죽어가는(stop set) 워커 — 새 등록 + 새 스레드
+                entry = {"stop": threading.Event(), "refs": 1, "thread": None, "polls": 0}
+                _notify_workers[db_path] = entry
+                t = threading.Thread(target=service.notify_loop, daemon=True,
+                                     name="tt-notify", args=(db_path, entry))
+                entry["thread"] = t
+                t.start()
+        app.state.notify_entry = entry
 
         @app.on_event("shutdown")
         def _stop_notify():
-            nstop.set()
-            if _notify_workers.get(db_path) is nstop:
-                del _notify_workers[db_path]
-
-        threading.Thread(target=service.notify_loop, daemon=True, name="tt-notify",
-                         args=(db_path, nstop)).start()
+            # 등록 삭제는 워커 본인이 한다(전송 중 종료 경계) — 여기선 참조만 감
+            with _notify_reg_lock:
+                app.state.notify_entry["refs"] -= 1
+                if app.state.notify_entry["refs"] <= 0:
+                    app.state.notify_entry["stop"].set()
 
     static_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 
