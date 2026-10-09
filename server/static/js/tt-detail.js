@@ -50,6 +50,7 @@ async function show(id, keep) {
     </form>
     <form class="row" onsubmit="return child(event,'${esc(id)}')">
       <input name="title" placeholder="새 하위 이슈" style="flex:1" required>
+      <input name="acceptance" placeholder="완료 기준 (필수)" style="flex:1" required>
       <button>하위 생성</button>
     </form>`;
 }
@@ -77,8 +78,9 @@ async function cmt(e) {
 }
 async function child(e, parent) {
   e.preventDefault();
-  await post("/issues", {title:e.target.title.value, parent_id:parent});
-  e.target.title.value=""; load();
+  // TT 개선#3a: 완료 기준 필수 — 서버 게이트와 동일한 전제를 폼에도 적용
+  await post("/issues", {title:e.target.title.value, acceptance:e.target.acceptance.value, parent_id:parent});
+  e.target.title.value=""; e.target.acceptance.value=""; load();
   return false;
 }
 async function dispatchTo(e) {
@@ -93,7 +95,8 @@ async function dispatchTo(e) {
 async function newIssue(e) {
   e.preventDefault();
   const f = e.target;
-  await post("/issues", {title:f.title.value, state:f.state.value});
-  f.title.value=""; load();
+  // TT 개선#3a: 완료 기준 필수 — 서버 게이트와 동일한 전제를 폼에도 적용
+  await post("/issues", {title:f.title.value, acceptance:f.acceptance.value, state:f.state.value});
+  f.title.value=""; f.acceptance.value=""; load();
   return false;
 }

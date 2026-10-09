@@ -13,7 +13,7 @@ def client(tmp_path, monkeypatch):
 
 
 def start(client, title="change behavior"):
-    issue = client.post("/issues", json={"title": title}).json()
+    issue = client.post("/issues", json={"acceptance": "완료 기준: 테스트 통과", "title": title}).json()
     response = client.post(f"/issues/{issue['id']}/claim", json={"agent": "worker"})
     assert response.status_code == 200
     return response.json()
@@ -29,7 +29,7 @@ def test_claim_and_pull_deliver_the_published_contract(client):
     claimed = start(client)
     assert claimed["work_contract"] == contract
     assert claimed["execution_attempt"] == 1
-    other = client.post("/issues", json={"title": "pull task"}).json()
+    other = client.post("/issues", json={"acceptance": "완료 기준: 테스트 통과", "title": "pull task"}).json()
     pulled = client.post("/pull", json={"agent": "puller"}).json()
     assert pulled["id"] == other["id"] and pulled["work_contract"] == contract
     assert pulled["execution_attempt"] == 1
@@ -91,7 +91,7 @@ def test_verify_rejects_arbitrary_text(client):
 
 @pytest.mark.parametrize("state", ["done", "review", "in_progress"])
 def test_creation_cannot_skip_the_workflow(client, state):
-    assert client.post("/issues", json={"title": "skip", "state": state}).status_code == 422
+    assert client.post("/issues", json={"acceptance": "완료 기준: 테스트 통과", "title": "skip", "state": state}).status_code == 422
 
 
 def test_reopening_invalidates_evidence_and_starts_a_new_attempt(client):
@@ -353,7 +353,7 @@ def test_upgrade_keeps_unpinned_work_compatible_until_next_claim(tmp_path, monke
     monkeypatch.setenv("TT_REQUIRE_REPORT", "1")
     path = str(tmp_path / "upgrade.db")
     strict = TestClient(create_app(path))
-    issue = strict.post("/issues", json={"title": "existing production work"}).json()
+    issue = strict.post("/issues", json={"acceptance": "완료 기준: 테스트 통과", "title": "existing production work"}).json()
     iid = issue["id"]
     # Same persisted fields as a pre-contract server's in-flight row.
     with db.connect(path) as con:
@@ -396,7 +396,7 @@ def test_env_switch_serves_v2_contract(tmp_path, monkeypatch):
     contract = c.get("/work-contract").json()
     assert contract["version"].startswith("tt-tdd-v2:")
     assert "three stages" in contract["instructions"]
-    issue = c.post("/issues", json={"title": "v2 flow"}).json()
+    issue = c.post("/issues", json={"acceptance": "완료 기준: 테스트 통과", "title": "v2 flow"}).json()
     claimed = c.post(f"/issues/{issue['id']}/claim", json={"agent": "worker"}).json()
     assert claimed["work_contract"]["version"].startswith("tt-tdd-v2:")
     report = v2_report(claimed["execution_attempt"])
@@ -417,7 +417,7 @@ def test_env_switch_serves_v2_contract(tmp_path, monkeypatch):
 def test_v1_report_rejected_on_v2_pinned_card(tmp_path, monkeypatch):
     monkeypatch.setenv("TT_CONTRACT_VERSION", "2")
     c = TestClient(create_app(str(tmp_path / "v2b.db")))
-    issue = c.post("/issues", json={"title": "mixed"}).json()
+    issue = c.post("/issues", json={"acceptance": "완료 기준: 테스트 통과", "title": "mixed"}).json()
     claimed = c.post(f"/issues/{issue['id']}/claim", json={"agent": "worker"}).json()
     legacy = {"contract_version": claimed["work_contract"]["version"], "attempt": claimed["execution_attempt"],
               "method": "tdd", "red_command": "pytest", "red_evidence": "1 failed",
@@ -431,12 +431,12 @@ def test_mixed_v1_and_v2_claims_one_db(tmp_path, monkeypatch):
     db = str(tmp_path / "mixed.db")
     monkeypatch.setenv("TT_CONTRACT_VERSION", "1")
     c = TestClient(create_app(db))
-    old_issue = c.post("/issues", json={"title": "pinned v1"}).json()
+    old_issue = c.post("/issues", json={"acceptance": "완료 기준: 테스트 통과", "title": "pinned v1"}).json()
     old_claim = c.post(f"/issues/{old_issue['id']}/claim", json={"agent": "w1"}).json()
     assert old_claim["work_contract"]["version"].startswith("tt-tdd-v1:")
     monkeypatch.setenv("TT_CONTRACT_VERSION", "2")
     c2 = TestClient(create_app(db))
-    new_issue = c2.post("/issues", json={"title": "pinned v2"}).json()
+    new_issue = c2.post("/issues", json={"acceptance": "완료 기준: 테스트 통과", "title": "pinned v2"}).json()
     new_claim = c2.post(f"/issues/{new_issue['id']}/claim", json={"agent": "w2"}).json()
     assert new_claim["work_contract"]["version"].startswith("tt-tdd-v2:")
     legacy = {"contract_version": old_claim["work_contract"]["version"], "attempt": old_claim["execution_attempt"],
@@ -498,7 +498,7 @@ def test_human_자가승인은_허용하되_이름_나란히_기록(client):
 
 
 def test_claim_review는_review상태에서만_가능하고_상태를_바꾸지_않는다(client):
-    issue = client.post("/issues", json={"title": "리뷰 대상"}).json()
+    issue = client.post("/issues", json={"acceptance": "완료 기준: 테스트 통과", "title": "리뷰 대상"}).json()
     r = client.post(f"/issues/{issue['id']}/claim-review", json={"agent": "codex"})
     assert r.status_code == 409  # todo 상태에는 리뷰어 claim 불가
 
@@ -534,7 +534,7 @@ def test_probe_반납은_실제_핸들러에서_reviewer와_lease를_지우고_a
     """R1 통합 회귀 — probe execute → 실제 PATCH → reviewer/lease 해제, 작업자 assignee 유지."""
     import probe.core
 
-    issue = client.post("/issues", json={"title": "반납 통합"}).json()
+    issue = client.post("/issues", json={"acceptance": "완료 기준: 테스트 통과", "title": "반납 통합"}).json()
     claimed = client.post(f"/issues/{issue['id']}/claim", json={"agent": "worker"}).json()
     client.patch(f"/issues/{issue['id']}", json={"state": "done", "completion_report": {
         "contract_version": claimed["work_contract"]["version"], "attempt": 1, "method": "planned",
@@ -568,7 +568,7 @@ def test_probe_반납은_실제_핸들러에서_reviewer와_lease를_지우고_a
 def test_리뷰어_lease만료_후_타_리뷰어_인계_가능(client):
     import sqlite3
 
-    issue = client.post("/issues", json={"title": "인계"}).json()
+    issue = client.post("/issues", json={"acceptance": "완료 기준: 테스트 통과", "title": "인계"}).json()
     claimed = client.post(f"/issues/{issue['id']}/claim", json={"agent": "worker"}).json()
     client.patch(f"/issues/{issue['id']}", json={"state": "done", "completion_report": {
         "contract_version": claimed["work_contract"]["version"], "attempt": 1, "method": "planned",
@@ -610,7 +610,7 @@ def test_리뷰_dispatch는_리뷰_계약을_전달한다(client, monkeypatch):
         return Response()
 
     monkeypatch_dummy = None
-    issue = client.post("/issues", json={"title": "리뷰 계약"}).json()
+    issue = client.post("/issues", json={"acceptance": "완료 기준: 테스트 통과", "title": "리뷰 계약"}).json()
     # dispatch는 등록된 webhook agent 필요 — codex 등록 후 호출
     client.post("/agents", json={"name": "codex", "base_url": "http://runner.local"})
     probe_api = probe.core.api
@@ -654,7 +654,7 @@ def test_리뷰_dispatch는_리뷰_계약을_전달한다(client, monkeypatch):
 def test_리뷰어_재claim은_한도_제외되고_타인은_한도_적용(client, monkeypatch):
     """R4 — 같은 카드 재claim(refresh)은 현재 카드 lease를 한도에서 제외."""
     monkeypatch.setenv("TT_MAX_LEASES", "1")
-    issue = client.post("/issues", json={"title": "한도"}).json()
+    issue = client.post("/issues", json={"acceptance": "완료 기준: 테스트 통과", "title": "한도"}).json()
     claimed = client.post(f"/issues/{issue['id']}/claim", json={"agent": "worker"}).json()
     client.patch(f"/issues/{issue['id']}", json={"state": "done", "completion_report": {
         "contract_version": claimed["work_contract"]["version"], "attempt": 1, "method": "planned",
@@ -666,9 +666,9 @@ def test_리뷰어_재claim은_한도_제외되고_타인은_한도_적용(clien
     # 재claim(갱신) — 자기 lease가 한도 1에 걸려도 본인 카드라 허용
     assert client.post(f"/issues/{issue['id']}/claim-review", json={"agent": "codex"}).status_code == 200
     # 타 에이전트가 별도 카드를 이미 점유 중이면 다른 리뷰 카드 선점은 한도로 거부
-    other = client.post("/issues", json={"title": "다른 카드"}).json()
+    other = client.post("/issues", json={"acceptance": "완료 기준: 테스트 통과", "title": "다른 카드"}).json()
     client.post(f"/issues/{other['id']}/claim", json={"agent": "claude"})
-    other2 = client.post("/issues", json={"title": "다른 리뷰"}).json()
+    other2 = client.post("/issues", json={"acceptance": "완료 기준: 테스트 통과", "title": "다른 리뷰"}).json()
     o2 = client.post(f"/issues/{other2['id']}/claim", json={"agent": "worker"}).json()
     client.patch(f"/issues/{other2['id']}", json={"state": "done", "completion_report": {
         "contract_version": o2["work_contract"]["version"], "attempt": 1, "method": "planned",
@@ -684,7 +684,7 @@ def test_stale_반납은_재작업자_lease를_보존한다(client, monkeypatch)
     """R5 — release-reviewer 실행 시 lease_by가 다른 에이전트(재작업자)면 lease를 건드리지 않는다."""
     import probe.core
 
-    issue = client.post("/issues", json={"title": "stale 반납"}).json()
+    issue = client.post("/issues", json={"acceptance": "완료 기준: 테스트 통과", "title": "stale 반납"}).json()
     claimed = client.post(f"/issues/{issue['id']}/claim", json={"agent": "worker"}).json()
     client.patch(f"/issues/{issue['id']}", json={"state": "done", "completion_report": {
         "contract_version": claimed["work_contract"]["version"], "attempt": 1, "method": "planned",
@@ -720,7 +720,7 @@ def test_stale_반납은_재작업자_lease를_보존한다(client, monkeypatch)
 
 def test_작업자_재claim은_이전_리뷰어_표기를_제거한다(client):
     """R6 — review→todo→claim 후에도 reviewer가 남는 것 방지."""
-    issue = client.post("/issues", json={"title": "R6"}).json()
+    issue = client.post("/issues", json={"acceptance": "완료 기준: 테스트 통과", "title": "R6"}).json()
     claimed = client.post(f"/issues/{issue['id']}/claim", json={"agent": "worker"}).json()
     client.patch(f"/issues/{issue['id']}", json={"state": "done", "completion_report": {
         "contract_version": claimed["work_contract"]["version"], "attempt": 1, "method": "planned",

@@ -28,13 +28,14 @@ def create_issue(p: IssueCreate, ctx: Ctx = Depends(get_ctx)):
         if p.parent_id:
             service.get_issue(c, p.parent_id)
         c.execute(
-            "INSERT INTO issues (id,title,body,state,priority,labels,assignee,parent_id,created_at,updated_at,todo_since) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-            (iid, p.title, p.body, p.state, p.priority, ",".join(p.labels), "", p.parent_id, ts, ts,
-             ts if p.state == "todo" else None),
+            "INSERT INTO issues (id,title,body,acceptance,state,priority,labels,assignee,parent_id,created_at,updated_at,todo_since) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            (iid, p.title, p.body, p.acceptance, p.state, p.priority, ",".join(p.labels), "", p.parent_id,
+             ts, ts, ts if p.state == "todo" else None),
         )
         service.log_event(c, "issue.created", "issue", iid,
-                          {"title": p.title[:80], "state": p.state, "parent": p.parent_id})
+                          {"title": p.title[:80], "state": p.state, "parent": p.parent_id,
+                           "has_acceptance": bool(p.acceptance.strip())})
         c.commit()
         row = service.get_issue(c, iid)
     return dbmod.to_dict(row)
@@ -298,6 +299,11 @@ def patch_issue(issue_id: str, p: IssuePatch, ctx: Ctx = Depends(get_ctx)):
                 fields.update({"lease_by": "", "lease_expires": None,
                                "waiting_for": "", "waiting_actor": "", "blocked_detail": "",
                                "blocked_notified_at": None})
+        if p.acceptance is not None:
+            # 기존 카드 점진 보완 경로 — 생성 게이트와 달리 PATCH는 강제하지 않는다
+            if not p.acceptance.strip():
+                raise HTTPException(422, "acceptance는 빈 값으로 되돌릴 수 없다")
+            fields["acceptance"] = p.acceptance.strip()
         if p.title is not None:
             fields["title"] = p.title
         if p.body is not None:

@@ -1,5 +1,5 @@
 """API 스키마 — pydantic 모델 (라우팅/로직과 분리)."""
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, field_validator, model_validator
 
 from verification import CompletionReport
 
@@ -7,10 +7,19 @@ from verification import CompletionReport
 class IssueCreate(BaseModel):
     title: str
     body: str = ""
+    # TT 개선#3a: 완료 기준 필수 — 자율 pull의 전제(기계가 '끝낼 조건'을 읽어야 함)
+    acceptance: str
     parent_id: str | None = None
     priority: int | None = None
     labels: list[str] = []
     state: str = "todo"
+
+    @field_validator("acceptance")
+    @classmethod
+    def _acceptance_nonempty(cls, v):
+        if not v or not v.strip():
+            raise ValueError("acceptance(완료 기준)는 필수다 — 자율 pull 전제 (TT 개선#3a)")
+        return v.strip()
 
 
 class ClaimIn(BaseModel):
@@ -41,6 +50,7 @@ class LeaseIn(BaseModel):
 
 
 class IssuePatch(BaseModel):
+    acceptance: str | None = None
     title: str | None = None
     body: str | None = None
     state: str | None = None

@@ -50,7 +50,7 @@ def cli(tmp_path, monkeypatch):
 
 
 def new(run):
-    return json.loads(run("new", "CLI task", "--json").stdout)["id"]
+    return json.loads(run("new", "CLI task", "-a", "완료 기준: 계약 확인", "--json").stdout)["id"]
 
 
 def test_done_json_stays_json_when_demoted(cli):

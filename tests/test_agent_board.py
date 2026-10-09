@@ -111,7 +111,7 @@ def test_agent_board_페이지(client):
 
 
 def test_issues_리스트에서_일지용_파라미터_철수(client):
-    iid = client.post("/issues", json={"title": "x"}).json()["id"]
+    iid = client.post("/issues", json={"acceptance": "완료 기준: 테스트 통과", "title": "x"}).json()["id"]
     client.post(f"/issues/{iid}/comments", json={"author": "a", "body": "b"})
     row = next(r for r in client.get("/issues?with_comments=1").json() if r["id"] == iid)
     assert "comments" not in row, "일지 철수 — with_comments 제거(알 수 없는 파라미터 무시)"

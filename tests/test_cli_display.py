@@ -57,7 +57,7 @@ def cli(tmp_path, monkeypatch):
 
 
 def new(run):
-    return json.loads(run("new", "표시 테스트", "--json").stdout)["id"]
+    return json.loads(run("new", "표시 테스트", "-a", "완료 기준: 표시 확인", "--json").stdout)["id"]
 
 
 REPORT = {"method": "tdd",

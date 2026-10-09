@@ -172,7 +172,7 @@ def test_response_cursor_pagination_no_skip(client):
 
 def test_issue_created_and_pull_events(client):
     """리뷰 R2: 생성·pull 전이도 outbox를 우회하지 않는다."""
-    r = client.post("/issues", json={"title": "생성 이벤트", "state": "todo"}).json()
+    r = client.post("/issues", json={"acceptance": "완료 기준: 테스트 통과", "title": "생성 이벤트", "state": "todo"}).json()
     ev = client.get("/events?kind=issue.created").json()["events"]
     assert any(e["entity_id"] == r["id"] for e in ev), "issue.created 없음"
     got = client.post("/pull", json={"agent": "w9"}).json()
@@ -223,7 +223,7 @@ async def test_idle_streams_do_not_exhaust_workers(client):
         streams = [asyncio.create_task(idle()) for _ in range(40)]
         await asyncio.sleep(0.5)  # 스트림 전부 유휴 진입
         t0 = time.monotonic()
-        r = await ac.post("/issues", json={"title": "쓰기 무방해"})
+        r = await ac.post("/issues", json={"acceptance": "완료 기준: 테스트 통과", "title": "쓰기 무방해"})
         dt = time.monotonic() - t0
         for s in streams:
             s.cancel()
@@ -311,7 +311,7 @@ def test_notify_outside_write_lock(client, hook_server):
         "커밋 전까지 이벤트 비가시 — 트랜잭션 내 전송 잔재"
     # 무관한 쓰기가 즉시 통과 (느린 훅이 쓰기 락을 잡지 않음)
     t0 = time.monotonic()
-    w = client.post("/issues", json={"title": "무방해 쓰기"})
+    w = client.post("/issues", json={"acceptance": "완료 기준: 테스트 통과", "title": "무방해 쓰기"})
     assert w.status_code == 201 and time.monotonic() - t0 < 2.0
     Hook.mode = "ok"  # 해제 — 막힌 전송 완료
 
@@ -441,10 +441,30 @@ def test_repeated_app_creation_closes_worker_resources(tmp_path):
     for n in range(100):
         app = create_app(path)
         with TestClient(app) as c:
-            c.post("/issues", json={"title": f"반복 {n}"})  # 실제 DB 오픈 강제
+            c.post("/issues", json={"acceptance": "완료 기준: 테스트 통과", "title": f"반복 {n}"})  # 실제 DB 오픈 강제
             entry = _notify_workers.get(path)
             assert entry is not None, f"{n}번째 워커 미기동"
             assert _wait_polls(entry, 1), f"{n}번째 워커 폴링 미진입"
         entry["thread"].join(timeout=5)
         assert not entry["thread"].is_alive(), f"{n}번째 워커 스레드 미종료"
         assert path not in _notify_workers, f"{n}번째 종료 후 등록 잔재"
+
+
+def test_acceptance_required_for_new_cards(client):
+    """TT 개선#3a: acceptance 없는 신규 카드 생성 거부(템플릿 게이트)."""
+    r = client.post("/issues", json={"title": "기준 없는 카드"})
+    assert r.status_code == 422, "acceptance 게이트 미작동"
+    text = str(r.json()["detail"])
+    assert "acceptance" in text, f"게이트 사유 불명: {text}"
+
+
+def test_acceptance_stored_and_patchable(client):
+    """acceptance 지정 생성 + readback + PATCH 보완."""
+    r = client.post("/issues", json={"title": "기준 있는 카드",
+                                     "acceptance": "pytest 전부 통과"}).json()
+    assert r["acceptance"] == "pytest 전부 통과"
+    r2 = client.patch(f"/issues/{r['id']}", json={"acceptance": "pytest 321 + runner 93"}).json()
+    assert r2["acceptance"] == "pytest 321 + runner 93"
+    created = [e for e in client.get("/events?kind=issue.created").json()["events"]
+               if e["entity_id"] == r["id"]]
+    assert created and json.loads(created[-1]["payload"])["has_acceptance"] is True

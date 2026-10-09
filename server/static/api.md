@@ -160,7 +160,7 @@ curl -s -H 'content-type: application/json' -X PATCH /issues/ID -d '{"state":"do
 | GET | `/health` | – | `{status:"ok"}` server health check |
 | GET | `/work-contract` | – | `{version, instructions, report_required}` base methodology and completion-report policy |
 | POST | `/pull` | `{"agent":STR, "require_label"?STR, "hours"?1~6}` | Atomically claims one from todo + **lease-expired in_progress**, by priority then creation order. With require_label, only that label. `null` if none. 409 if 2 active leases |
-| POST | `/issues` | `{title, body?, parent_id?, priority?1-4, labels?[STR], state?="todo"|"backlog"}` | Register. Without parent_id it is a root. 201 |
+| POST | `/issues` | `{title, acceptance, body?, parent_id?, priority?1-4, labels?[STR], state?="todo"|"backlog"}` | Register. Without parent_id it is a root. **`acceptance` required (TT improvement #3a)** — the machine-readable done-criteria autonomous pull depends on; missing/blank → 422. Existing cards fill it gradually via PATCH (empty rejected). 201 |
 | POST | `/issues/{id}/claim` | `{"agent":STR, "hours"?1~6}` | Claim a specific id. Only todo+unassigned, otherwise 409 |
 | POST | `/issues/{id}/lease` | `{"agent":STR, "hours"?1~6}` | Heartbeat. Holder only (409), extends TTL. Does not bump the version |
 | GET | `/issues` | – | Filters: `?state=&parent=&label=&assignee=&q=&limit=200&archived=no` · `parent=none` roots only. `archived`: no (default)/all/only |

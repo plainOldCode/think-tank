@@ -72,16 +72,20 @@ case "$cmd" in
     req "$URL/health" | $JQ '"ok: \(.name) \(.status)"' ;;
 
   new)
-    title=""; parent=""; body=""; prio="null"; labels="[]"; state="todo"
+    title=""; parent=""; body=""; prio="null"; labels="[]"; state="todo"; acceptance=""
     while [[ $# -gt 0 ]]; do case "$1" in
-      -p) parent="$2"; shift 2;; -b) body="$2"; shift 2;;
+      -p) parent="$2"; shift 2;; -b) body="$2"; shift 2;; -a) acceptance="$2"; shift 2;;
       -P) prio="$(tr -d pP <<<"$2")"; shift 2;; -l) labels="$(jq -cn --arg L "$2" '$L|split(",")')"; shift 2;;
       -s) state="$2"; shift 2;; *) title="$1"; shift;; esac; done
     [[ -z "$title" ]] && { echo "제목 필요"; exit 1; }
+    # TT 개선#3a: 완료 기준 필수 — 자율 pull의 전제(기계가 '끝낼 조건'을 읽어야 함)
+    # 공백·탭·개행만 있는 값도 거부(서버 422를 유저에게 보이기 전에 차단)
+    [[ -z "${acceptance//[[:space:]]/}" ]] && { echo "acceptance(완료 기준) 필요: tt new \"제목\" -a \"끝낼 조건\""; exit 1; }
     PARENT_JSON=null; [[ -n "$parent" ]] && PARENT_JSON="\"$parent\""
     body_esc="$(jq -Rs . <<<"$body")"
-    payload="$(jq -cn --arg t "$title" --arg s "$state" --argjson p "$PARENT_JSON" --argjson pr "$prio" --argjson l "$labels" --argjson b "$body_esc" \
-      '{title:$t,state:$s,parent_id:$p,priority:$pr,labels:$l,body:$b}')"
+    acc_esc="$(jq -Rs . <<<"$acceptance")"
+    payload="$(jq -cn --arg t "$title" --arg s "$state" --argjson p "$PARENT_JSON" --argjson pr "$prio" --argjson l "$labels" --argjson b "$body_esc" --argjson a "$acc_esc" \
+      '{title:$t,state:$s,parent_id:$p,priority:$pr,labels:$l,body:$b,acceptance:$a}')"
     req -X POST "$URL/issues" -d "$payload" | $JQ '.id + " [" + .state + "] " + .title' ;;
 
   list)
