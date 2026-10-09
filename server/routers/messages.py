@@ -13,6 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, field_validator
 
 import db as dbmod
+import service
 from service import Ctx
 from routers.agents import get_ctx
 
@@ -88,6 +89,9 @@ def post_message(p: MessageIn, ctx: Ctx = Depends(get_ctx)):
             thread_id = root["thread_id"] or root["id"]  # 답글에 답글은 루트로 평탄화
         mentions = _parse_mentions(c, p.body)
         mid = dbmod.new_id()
+        service.log_event(c, "message.posted", "message", mid,
+                          {"thread_id": p.thread_id, "author": p.author, "body": p.body[:300],
+                           "mentions": mentions})
         c.execute("INSERT INTO messages (id, thread_id, author, body, mentions, created_at) VALUES (?,?,?,?,?,?)",
                   (mid, thread_id, p.author, p.body, f",{','.join(mentions)}," if mentions else "", dbmod.now()))
         c.commit()

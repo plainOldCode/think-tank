@@ -33,6 +33,8 @@ def create_issue(p: IssueCreate, ctx: Ctx = Depends(get_ctx)):
             (iid, p.title, p.body, p.state, p.priority, ",".join(p.labels), "", p.parent_id, ts, ts,
              ts if p.state == "todo" else None),
         )
+        service.log_event(c, "issue.created", "issue", iid,
+                          {"title": p.title[:80], "state": p.state, "parent": p.parent_id})
         c.commit()
         row = service.get_issue(c, iid)
     return dbmod.to_dict(row)
@@ -214,6 +216,8 @@ def pull(p: ClaimIn, ctx: Ctx = Depends(get_ctx)):
                 reset = service.reset_evidence(c, iid)
                 c.execute("UPDATE issues SET " + ", ".join(f"{k}=?" for k in reset) + " WHERE id=?",
                           (*reset.values(), iid))
+                service.log_event(c, "issue.updated", "issue", iid,
+                                  {"state": "in_progress", "assignee": p.agent, "via": "pull"})
                 c.commit()
                 return dbmod.to_dict(service.get_issue(c, iid))
     return None
@@ -354,21 +358,27 @@ def patch_issue(issue_id: str, p: IssuePatch, ctx: Ctx = Depends(get_ctx)):
                         and fields.get("verification_status") == "reported")
             if accepted:
                 # 유효보고 접수 = 정상 정지. 병합 확인(probe) 또는 사람 verify가 done 확정.
+                body = ("보고 접수 — review에 정지(병합 대기). PR 병합 확인 후 probe verify 또는 "
+                        f"tt verify {issue_id} --report/증거로 done 확정. 재작업은 review → todo → claim.")
                 c.execute("INSERT INTO comments (issue_id, author, body, ts) VALUES (?,?,?,?)",
-                          (issue_id, "tt-server",
-                           f"보고 접수 — review에 정지(병합 대기). PR 병합 확인 후 probe verify 또는 "
-                           f"tt verify {issue_id} --report/증거로 done 확정. 재작업은 review → todo → claim.",
-                           dbmod.now()))
+                          (issue_id, "tt-server", body, dbmod.now()))
+                service.log_event(c, "comment.added", "issue", issue_id,
+                                  {"author": "tt-server", "preview": body[:120]})
             else:
                 # done 강등 사유를 관찰 가능하게: 무엇이 증거로 인정되는지 안내
+                body = config.DONE_GATE_MSG.format(iid=issue_id)
                 c.execute("INSERT INTO comments (issue_id, author, body, ts) VALUES (?,?,?,?)",
-                          (issue_id, "tt-server", config.DONE_GATE_MSG.format(iid=issue_id), dbmod.now()))
+                          (issue_id, "tt-server", body, dbmod.now()))
+                service.log_event(c, "comment.added", "issue", issue_id,
+                                  {"author": "tt-server", "preview": body[:120]})
             c.commit()
         elif p.state == "done" and new_state == "done" and gate_warn:
+            body = (f"⚠ done 됐지만 완료증거 코멘트가 없음 (TT_DONE_GATE=warn — M3BZV172-9F0S). "
+                    f"나중에라도: tt verify {issue_id} <증거>")
             c.execute("INSERT INTO comments (issue_id, author, body, ts) VALUES (?,?,?,?)",
-                      (issue_id, "tt-server",
-                       f"⚠ done 됐지만 완료증거 코멘트가 없음 (TT_DONE_GATE=warn — M3BZV172-9F0S). "
-                       f"나중에라도: tt verify {issue_id} <증거>", dbmod.now()))
+                      (issue_id, "tt-server", body, dbmod.now()))
+            service.log_event(c, "comment.added", "issue", issue_id,
+                              {"author": "tt-server", "preview": body[:120]})
             c.commit()
         if new_state in ("done", "cancelled"):
             # ③ reconcile: terminalize된 카드의 실행 중인 agent에게 release 명령 (best-effort)
@@ -410,14 +420,19 @@ def verify_issue(issue_id: str, p: VerifyIn, ctx: Ctx = Depends(get_ctx)):
                 raise HTTPException(422, "human verify requires a one-line attestation note")
             if p.expected_version is not None and p.expected_version != row["version"]:
                 raise HTTPException(409, "version conflict")
+            verify_body = (f"verify → done (사람 승인 — 자기선언). 노트: {ev[:300]} "
+                           f"| 작업: @{row['assignee'] or '-'} 승인: {p.verifier}")
             c.execute("INSERT INTO comments (issue_id, author, body, ts) VALUES (?,?,?,?)",
-                      (issue_id, p.verifier,
-                       f"verify → done (사람 승인 — 자기선언). 노트: {ev[:300]} "
-                       f"| 작업: @{row['assignee'] or '-'} 승인: {p.verifier}", dbmod.now()))
+                      (issue_id, p.verifier, verify_body, dbmod.now()))
+            service.log_event(c, "comment.added", "issue", issue_id,
+                              {"author": p.verifier, "preview": verify_body[:120]})
             c.execute("UPDATE issues SET verified=1, verified_at=?, verified_evidence=?, "
                       "verification_status='approved', state='done', completed_at=?, version=version+1 "
                       "WHERE id=? AND version=?",
                       (dbmod.now(), f"사람 승인: {ev[:300]}", dbmod.now(), issue_id, row["version"]))
+            # 리뷰 R2 2차: 사람 승인 분기도 상태 전이 이벤트 기록 — done 소비자가 놓치지 않게
+            service.log_event(c, "issue.updated", "issue", issue_id,
+                              {"state": "done", "via": "human-verify", "verifier": p.verifier})
             row2 = service.get_issue(c, issue_id)
             return dbmod.to_dict(row2)
         proof = p.completion_report
@@ -438,12 +453,13 @@ def verify_issue(issue_id: str, p: VerifyIn, ctx: Ctx = Depends(get_ctx)):
                 raise HTTPException(422, "successful current-attempt evidence or completion_report required")
         if p.expected_version is not None and p.expected_version != row["version"]:
             raise HTTPException(409, "version conflict")
+        verify_body = (f"verify → done (reported). evidence: {ev[:300]}"
+                       + ("" if (proof is None or isinstance(proof.verification.evidence, str))
+                          else f" [구조화 증거 {len(proof.verification.evidence)}블록]"))
         c.execute("INSERT INTO comments (issue_id, author, body, ts) VALUES (?,?,?,?)",
-                  (issue_id, p.verifier,
-                   f"verify → done (reported). evidence: {ev[:300]}"
-                   + ("" if (proof is None or isinstance(proof.verification.evidence, str))
-                      else f" [구조화 증거 {len(proof.verification.evidence)}블록]"),
-                   dbmod.now()))
+                  (issue_id, p.verifier, verify_body, dbmod.now()))
+        service.log_event(c, "comment.added", "issue", issue_id,
+                          {"author": p.verifier, "preview": verify_body[:120]})
         fields = {**service.reported_fields(ev), "state": "done", "completed_at": dbmod.now(),
                   "completion_report": proof.model_dump_json() if proof else "",
                   "lease_by": "", "lease_expires": None, "waiting_for": "", "waiting_actor": "",

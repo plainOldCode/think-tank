@@ -113,6 +113,18 @@ CREATE TABLE IF NOT EXISTS dispatches (
   idem_key TEXT,
   delivery_lease TEXT
 );
+CREATE TABLE IF NOT EXISTS events (
+  -- 변경 이벤트 outbox (TT 개선#2): 단조 seq, 변경과 같은 트랜잭션에서 기록 —
+  -- 소비자는 after_seq 커서로 재접속 시 유실 없이 이어받는다.
+  -- notified: 웹훅 전달 추적(리뷰 R4a) — 저장은 트랜잭션 안, 전달은 커밋 후 워커.
+  seq INTEGER PRIMARY KEY AUTOINCREMENT,
+  kind TEXT NOT NULL,
+  entity TEXT NOT NULL,
+  entity_id TEXT NOT NULL,
+  payload TEXT NOT NULL DEFAULT '{}',
+  ts TEXT NOT NULL,
+  notified INTEGER NOT NULL DEFAULT 1
+);
 CREATE TABLE IF NOT EXISTS dispatch_reports (
   -- 종료 보고 접수 이력 (R10): (dispatch, session) 유니크 — 응답 유실 재시도
   -- 멱등 + 끼어든 세션 재시도에서도 동일 보고 재접수 방지
@@ -220,6 +232,19 @@ def connect(path):
             con.execute(f"ALTER TABLE dispatches ADD COLUMN {col}")
         except sqlite3.OperationalError:
             pass
+    # 알림 전달 추적 (리뷰 R4a): 이벤트 저장은 트랜잭션 안, 웹훅 전달은 커밋 후
+    # 워커가 락 밖에서 수행 — notified=0만 미전달. 기존 행은 1(처리 완료 간주).
+    try:
+        con.execute("ALTER TABLE events ADD COLUMN notified INTEGER NOT NULL DEFAULT 1")
+        con.execute("UPDATE events SET notified=1 WHERE notified IS NULL")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        con.execute("CREATE INDEX IF NOT EXISTS idx_events_unnotified "
+                    "ON events(seq) WHERE notified=0")
+        con.commit()
+    except sqlite3.OperationalError:
+        pass
     return con
 
 

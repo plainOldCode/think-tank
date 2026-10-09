@@ -4,6 +4,9 @@
 작업 계약 스냅샷)는 Ctx로 전달한다.
 """
 import json
+import os
+import sqlite3
+import threading
 import urllib.request
 
 from fastapi import HTTPException
@@ -11,6 +14,11 @@ from fastapi import HTTPException
 import config
 import db as dbmod
 from verification import legacy_result
+
+_notify_reg_lock = threading.Lock()
+# db_path → {"stop": Event, "refs": 살아있는 앱 수, "thread": Thread, "polls": 폴링 수}
+# 소유자는 notify_loop — 등록 제거도 워커 본인이 한다(리뷰 R5 전송 중 종료 경계).
+_notify_workers: dict = {}
 
 ISSUE_ID_RE = config.ISSUE_ID_RE
 
@@ -52,6 +60,10 @@ def bump(c, issue_id, fields, expected_version=None):
     fields = {**fields, "version": row["version"] + 1, "updated_at": dbmod.now()}
     sets = ", ".join(f"{k}=?" for k in fields)
     res = c.execute(f"UPDATE issues SET {sets} WHERE id=? AND version=?", (*fields.values(), issue_id, row["version"]))
+    if res.rowcount == 1:
+        log_event(c, "issue.updated", "issue", issue_id,
+                  {"state": fields.get("state", row["state"]),
+                   "fields": sorted(fields)})
     if res.rowcount != 1:
         raise HTTPException(409, "concurrent update, retry")
     c.commit()
@@ -64,6 +76,102 @@ def reset_evidence(c, issue_id):
             "evidence_after_comment_id": cursor}
 
 
+def log_event(c, kind: str, entity: str, entity_id, payload=None):
+    """변경 이벤트 outbox 기록 (TT 개선#2) — 반드시 변경과 같은 트랜잭션 안에서
+    호출한다. 소비자(보드·에이전트)는 GET /events?after_seq 또는 SSE로 수신.
+
+    알림성 이벤트는 notified=0으로만 표기한다. 웹훅 전송은 여기서 하지 않는다
+    (리뷰 R4a: 트랜잭션 안 동기 HTTP는 미커밋 원문 뒤에 쓰기 락을 잡아 무관한
+    API까지 막는다) — 커밋 후 notify 워커가 락 밖에서 전달한다."""
+    notify_worthy = kind in ("message.posted", "comment.added")
+    c.execute("INSERT INTO events (kind, entity, entity_id, payload, ts, notified) "
+              "VALUES (?,?,?,?,?,?)",
+              (kind, entity, str(entity_id), json.dumps(payload or {}, ensure_ascii=False),
+               dbmod.now(), 0 if notify_worthy else 1))
+
+
+def notify_loop(db_path, entry, interval=0.3):
+    """알림 전달 워커 (create_app 데몬 스레드). 수명은 entry와 공유(리뷰 R5 4차).
+
+    entry: {"stop": Event, "refs": 살아있는 앱 수, "thread": Thread, "polls": 폴링 수}.
+    종료 규약: stop은 "refs==0 확정"일 때만 set된다(마지막 앱 shutdown). 워커는
+    stop+refs<=0을 원자적으로 확인하고 그때 자기 등록을 직접 지운다 — shutdown이
+    등록을 선삭제하지 않으므로 '전송 중 종료 → 재생성'에서 새 워커가 같은 이벤트를
+    다시 잡는 일이 없다. stop set + refs>0이면 인계로 보고 계속한다.
+
+    전송 선점(리뷰 R5 4차): 행마다 notified 0→2 CAS로 소유권을 원자적으로 가져가
+    전송 후 1로 마감한다 — 두 워커가 같은 이벤트를 전송하는 중복이 구조적으로 불가능.
+    프로세스 크래시로 notified=2 잔행은 유실(프로세스 수명 best-effort — 이벤트 원장
+    자체는 유실 0). 영구 연결 1개 폴링 — 틱마다 connect+migrate를 반복하면 스레드
+    수만큼 스키마 컴파일이 쌓여 프로세스 전체가 질질 끈다(실측)."""
+    con = None
+    try:
+        while True:
+            with _notify_reg_lock:
+                if entry["stop"].is_set():
+                    if entry["refs"] <= 0:
+                        if _notify_workers.get(db_path) is entry:
+                            del _notify_workers[db_path]
+                        break  # 종료 확정 — 등록은 워커 본인이 치웠다
+                    entry["stop"].clear()  # 재생성 앱이 인계 — 계속
+            try:
+                if con is None:
+                    if not os.path.exists(db_path):  # 테스트 tmp 정리 후 부활 방지
+                        entry["stop"].wait(interval)
+                        continue
+                    con = dbmod.connect(db_path)
+                con.row_factory = sqlite3.Row
+                entry["polls"] = entry.get("polls", 0) + 1
+                rows = con.execute("SELECT seq, kind, entity_id, payload FROM events "
+                                   "WHERE notified=0 ORDER BY seq LIMIT ?", (200,)).fetchall()
+                for r in rows:
+                    # 선점 CAS — 같은 행을 두 워커가 잡지 못한다
+                    cur = con.execute("UPDATE events SET notified=2 WHERE seq=? AND notified=0",
+                                      (r["seq"],))
+                    con.commit()
+                    if cur.rowcount != 1:
+                        continue  # 남이 이미 전송 중
+                    try:
+                        _notify_event(con, r["kind"], r["entity_id"], json.loads(r["payload"]))
+                    except Exception as e:
+                        print(f"[tt-server] notify_event 실패({r['kind']}): {str(e)[:120]}", flush=True)
+                    con.execute("UPDATE events SET notified=1 WHERE seq=?", (r["seq"],))
+                    con.commit()
+            except Exception as e:
+                print(f"[tt-server] notify 루프 오류: {str(e)[:120]}", flush=True)
+                con = None  # 다음 틱에 재접속
+            entry["stop"].wait(interval)
+    finally:
+        if con is not None:
+            con.close()
+
+
+def _notify_event(c, kind, entity_id, payload):
+    """이벤트 → notify_hook 에이전트 웹훅 (리뷰 R4). 실행 권한은 claim/lease 그대로 —
+    여기는 관찰 가능성 전달일 뿐이다. 대상·활성화 모두 기존 플래그가 결정한다."""
+    if kind == "message.posted":
+        targets = payload.get("mentions") or []
+        if not targets:
+            return
+        rows = c.execute("SELECT * FROM agents WHERE enabled=1 AND notify_hook=1 AND "
+                         "name IN (%s)" % ",".join("?" * len(targets)), targets).fetchall()
+        for ag in rows:
+            send_command(ag, "notify", payload.get("thread_id") or entity_id,
+                         f"멘션 from {payload.get('author', '?')}",
+                         text=(payload.get("body") or "")[:300])
+    elif kind == "comment.added":
+        body = payload.get("preview") or ""
+        if "[release-ready]" not in body and "[review-req" not in body:
+            return
+        row = c.execute("SELECT a.* FROM issues i JOIN agents a ON a.name=i.assignee "
+                        "WHERE i.id=? AND a.enabled=1 AND a.notify_hook=1",
+                        (entity_id,)).fetchone()
+        if row:
+            send_command(row, "notify", entity_id,
+                         "release-ready" if "[release-ready]" in body else "review-request",
+                         text=body[:300])
+
+
 def record_comment(c, issue_id, author, body, notify_human=True):
     """코멘트 접수 코어 (리뷰 R9) — /comments 라우터와 통합 종료 접수(progress
     comment)가 공유한다. 버전·updated_at 갱신과 legacy blocked human 알림
@@ -72,6 +180,8 @@ def record_comment(c, issue_id, author, body, notify_human=True):
               (issue_id, author, body, dbmod.now()))
     c.execute("UPDATE issues SET updated_at=?, version=version+1 WHERE id=?",
               (dbmod.now(), issue_id))
+    log_event(c, "comment.added", "issue", issue_id,
+              {"author": author, "preview": (body or "")[:120]})
     if notify_human:
         row = c.execute("SELECT state FROM issues WHERE id=?", (issue_id,)).fetchone()
         if row and row["state"] == "blocked" and "waiting_for=human" in (body or ""):
@@ -179,10 +289,12 @@ def escalate_blocked_human(c, issue_id, source):
         if status != "ok":
             print(f"[tt-server] notify → {ag['name']} 실패: {detail}", flush=True)
     c.execute("UPDATE issues SET blocked_notified_at=? WHERE id=?", (dbmod.now(), issue_id))
+    body = (f"[level4-notify] human 대기 알림 발송({source}): "
+            f"{', '.join(statuses) or 'notify_hook agent 없음'}\n{text}")
     c.execute("INSERT INTO comments (issue_id, author, body, ts) VALUES (?,?,?,?)",
-              (issue_id, "tt-server",
-               f"[level4-notify] human 대기 알림 발송({source}): {', '.join(statuses) or 'notify_hook agent 없음'}\n{text}",
-               dbmod.now()))
+              (issue_id, "tt-server", body, dbmod.now()))
+    log_event(c, "comment.added", "issue", issue_id,
+              {"author": "tt-server", "preview": body[:120]})
     c.commit()
 
 
@@ -252,10 +364,11 @@ def reconcile_release(c, issue_id, reason, by):
         did = last["id"] if last else None
         status, detail = send_command(ag, "release", issue_id, reason, did)
         results.append((ag["name"], status, detail))
+        body = (f"reconcile release → {ag['name']}: {status} {detail} (by {by}, {reason})")
         c.execute("INSERT INTO comments (issue_id, author, body, ts) VALUES (?,?,?,?)",
-                  (issue_id, "tt-server",
-                   f"reconcile release → {ag['name']}: {status} {detail}"
-                   f" (by {by}, {reason})", dbmod.now()))
+                  (issue_id, "tt-server", body, dbmod.now()))
+        log_event(c, "comment.added", "issue", issue_id,
+                  {"author": "tt-server", "preview": body[:120]})
     return results
 
 
@@ -274,10 +387,12 @@ def notify_blocked_dependents(c, closed_id, end_state):
         open_deps = dep_states(c, dep_ids(d))
         still = [x["id"] for x in open_deps if x["state"] not in ("done", "cancelled")]
         head = "해제 가능" if not still else f"의존 {closed_id} {end_state} — 잔여 미완료 {','.join(still)}"
+        body = (f"{marker} {end_state} — {head}. 재개: tt edit {b['id']} --state todo "
+                f"(자동 재dispatch 없음 — 결정 후 수동 재개)")
         c.execute("INSERT INTO comments (issue_id, author, body, ts) VALUES (?,?,?,?)",
-                  (b["id"], "tt-server",
-                   f"{marker} {end_state} — {head}. 재개: tt edit {b['id']} --state todo "
-                   f"(자동 재dispatch 없음 — 결정 후 수동 재개)", dbmod.now()))
+                  (b["id"], "tt-server", body, dbmod.now()))
+        log_event(c, "comment.added", "issue", b["id"],
+                  {"author": "tt-server", "preview": body[:120]})
     return
 
 
