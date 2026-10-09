@@ -25,14 +25,32 @@ def create_issue(p: IssueCreate, ctx: Ctx = Depends(get_ctx)):
         raise HTTPException(422, "new issues must start in todo or backlog")
     iid = dbmod.new_id()
     ts = dbmod.now()
+    nominee = ""
+    # TT 개선#3d: 자기발의 규약 — label=self는 backlog에서 시작, WIP 1,
+    # 승격은 사람/트리아지만(패치 게이트). 발의자는 nominee로 기록해 배정.
+    if "self" in p.labels:
+        if not p.nominee or not p.nominee.strip():
+            raise HTTPException(422, "self 카드는 nominee(발의자)가 필요하다 (TT 개선#3d)")
+        nominee = p.nominee.strip()
+        p.state = "backlog"
     with ctx.con() as c:
         if p.parent_id:
             service.get_issue(c, p.parent_id)
+        if nominee:
+            n = (",".join(p.labels),)
+            held = c.execute(
+                "SELECT COUNT(*) n FROM issues WHERE archived=0 AND state NOT IN ('done','cancelled') "
+                "AND assignee=? AND (labels LIKE ? OR labels LIKE ? OR labels LIKE ? OR labels=?)",
+                (nominee, "%,self,%", "self,%", "%,self", "self")).fetchone()["n"]
+            if held >= 1:
+                raise HTTPException(
+                    409, f"self WIP 1: {nominee}의 열린 자기발의 카드가 이미 있다 — "
+                         "종료 후 재발의 (TT 개선#3d)")
         c.execute(
             "INSERT INTO issues (id,title,body,acceptance,state,priority,labels,assignee,parent_id,created_at,updated_at,todo_since) "
             "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-            (iid, p.title, p.body, p.acceptance, p.state, p.priority, ",".join(p.labels), "", p.parent_id,
-             ts, ts, ts if p.state == "todo" else None),
+            (iid, p.title, p.body, p.acceptance, p.state, p.priority, ",".join(p.labels),
+             nominee, p.parent_id, ts, ts, ts if p.state == "todo" else None),
         )
         service.log_event(c, "issue.created", "issue", iid,
                           {"title": p.title[:80], "state": p.state, "parent": p.parent_id,
@@ -266,6 +284,11 @@ def patch_issue(issue_id: str, p: IssuePatch, ctx: Ctx = Depends(get_ctx)):
         if p.state and p.state != row["state"]:
             if p.state not in dbmod.STATES:
                 raise HTTPException(422, f"bad state {p.state}")
+            # TT 개선#3d: 자기발의 카드의 todo 승격은 사람/트리아지만 — 명시 플래그 요구
+            if p.state == "todo" and "self" in (row["labels"] or "").split(",") \
+                    and not p.promoted:
+                raise HTTPException(
+                    409, "self 카드의 todo 승격은 사람/트리아지만 — promoted=true 필요 (TT 개선#3d)")
             if not dbmod.can_transition(row["state"], p.state):
                 raise HTTPException(409, f"illegal transition {row['state']} -> {p.state}")
             fields["state"] = p.state
