@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 import config
 import db as dbmod
 import service
+import policy
 from models import ClaimIn, CommentIn, IssueCreate, IssuePatch, LeaseIn, ReviewClaimIn, VerifyIn
 from service import Ctx
 from verification import legacy_result
@@ -197,6 +198,12 @@ def pull(p: ClaimIn, ctx: Ctx = Depends(get_ctx)):
         sql += " ORDER BY priority IS NULL, priority, created_at LIMIT 10"
         for cand in c.execute(sql, args).fetchall():
             iid = cand["id"]
+            # TT 개선#3b: SQL 사전필터 뒤 policy 재판정 — busy/eligible 단일 관문 공유
+            row = dict(cand)
+            row["archived"] = 0
+            ok, _reason = policy.eligible(row, now=ts, auto=False)
+            if not ok:
+                continue
             if cand["state"] == "todo":
                 res = c.execute(
                     "UPDATE issues SET state='in_progress', assignee=?, reviewer=NULL, started_at=?, lease_by=?, lease_expires=?, "
