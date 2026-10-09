@@ -1,28 +1,21 @@
 #!/usr/bin/env python3
-"""TT 지표 수집기 v3 — TT 개선#3e (M4FFCB9J-2AAB) 2주 실험 측정 창구.
+"""TT 지표 수집기 v4 — TT 개선#3e (M4FFCB9J-2AAB) 2주 실험 측정 창구.
 
-v3는 2차 독립 리뷰(TT 코멘트 PR#66@b4575cc 결정표 R1~R4 open)의 결함을 반영했다:
-- R1: 제출을 카드별 "인스턴스 FIFO"로 보존 — v2의 submissions[eid]=ts는 마지막 제출만
-  남겨 제출→반납→재제출→검증 사이클의 이전 제출·통과를 삭제했다. 검증은 가장 오래된
-  미검증 제출과 페어링하고, 반납(state→todo 실제 전이) 시 미검증 제출을 전부 종료한다.
-  제출/검증 구별은 (id,ts) 집합이 아니라 payload 상태값(st)으로 한다 — 같은 초의
-  제출+검증 쌍(seq 51/54 등 라이브 7쌽)도 seq 순서와 상태값으로 정확히 분류된다.
-  제출·통과·반납 집계에 실험 창 필터를 적용한다(창 이전 제출은 페어링에 쓰되 분모에서 제외).
-- R2: stall 이탈을 전부 복구로 세지 않는다 — 해소 시 카드 상태로 결과를 분류한다
-  (in_progress/review/done=복구, todo=반납, blocked, backlog/cancelled, 소실=missing).
-  해소 행에 이슈 식별자를 보존하고, 전체 복구율과 §5-4 판정용 120분 이내 복구율을
-  함께 출력한다.
-- R3: last_state를 fields 유무와 무관하게 모든 state-bearing 이벤트에서 갱신한다 —
-  /pull 이벤트는 {state:in_progress,assignee,via:pull}로 fields가 없어 v2가 수령을
-  상태 관측에서 누락했다. 전이 "카운트"는 state 필드 변경 이벤트만, 출발 상태는
-  직전 관측값으로 판정한다. 반납 카운트에도 창 필터를 적용한다.
-- R4: 첫 수령을 state→in_progress 전이로 인식한다(claim과 /pull 경로 공통) —
-  v2는 started_at 필드 이벤트만 봐서 정상 /pull 수령이 코호트에서 빠졌다. 첫 수령
-  시점 이후 todo_entry를 동결해 첫 수령에 대응하는 todo 진입 원시 행을 고정한다.
+v4는 3차 독립 리뷰(PR#66@45eb208, R1~R4)의 경계 결함을 반영했다:
+- R1: 제출 회차 종료는 창 무관 — 창 이전 반납도 미검증 제출을 종료한다. v3는 종료
+  자체를 창 조건 안에 넣어 "창 이전 제출→반납→재수령→force_done"이 이전 제출과
+  페어링되는 오분류를 만들었다. 집계(반납·직행 카운트)만 창으로 제한한다.
+- R2: 120분 복구율 분모는 시간값이 유효한 전체 해소분 — v3는 <=120 필터로 분모를
+  좁혀 느린 복구(180분)가 판정에서 사라져 100%로 과대평가됐다.
+- R3: 반납·출발 상태 카운트도 창 안에서만 누적 — v3는 todo_into 누적이 창 검사
+  밖에 있어 이전 주 반납이 섞였다. 상태 복원은 로그 전체, 카운트만 창 내.
+- R4: todo_entry는 실제 todo 진입(fields에 state)에서만 갱신 — v3는 갱신을 fields
+  조건 밖으로 빼서 todo 카드의 priority/title 수정이 진입 시각을 덮어썼다.
 
-v2에서 유지: R1 이벤트 페어링(서버 계약: 제출=state→review+completed_at 필드,
-검증=state→done+completed_at 필드), R2 영속 상태 파일+30분 주기+censoring+review
-병합 대기 오탐 제거, R5 blocked 실제 진입만 집계(직전 상태 비교).
+v2~v3에서 유지: 제출 인스턴스 FIFO+대체 종료+동초 상태값 분류(2차 R1), 해소 결과
+분류+식별자 보존(2차 R2), 전 state-bearing 이벤트 last_state 갱신(2차 R3), claim·pull
+공통 첫 수령(2차 R4), blocked 실제 진입만(1차 R5). parse_ts는 Python 3.9 호환을 위해
+'Z' 접미를 정규화한다(이전 통합 리뷰의 3.9 블로커).
 
 계약(카드 본문): 착수시간·리뷰통과율·재작업률·stall복구율·개입횟수 5종. 카드 생성 수는
 지표에서 제외.
@@ -51,8 +44,11 @@ def get(base: str, path: str, timeout: int = 30):
 
 
 def parse_ts(s):
+    """ISO 타임스탬프 파싱 — Python 3.9의 fromisoformat은 'Z' 접미를 받지 못한다."""
     if not s:
         return None
+    if isinstance(s, str) and s.endswith("Z"):
+        s = s[:-1] + "+00:00"
     return datetime.fromisoformat(s)
 
 
@@ -118,7 +114,7 @@ def collect(base: str, state_file: str, window_start: datetime):
     pending_subs = {}  # 이슈별 미검증 제출 인스턴스 FIFO [(seq, ts)] (R1)
     sub_events = []    # (seq, eid, ts) 제출 이벤트 전체
     pass_pairs = []    # (eid, submit_ts, verify_ts) 페어링 결과
-    direct_done = 0    # 제출 없는 done — close 라벨/force_done 승인 경로
+    direct_done = 0    # 제출 없는 done — close 라벨/force_done 승인 경로(창 내만)
     reworked_after_submit = 0  # 반납으로 종료된 제출 인스턴스(창 내 이벤트만)
     superseded = 0     # 대체 제출로 종료된 이전 회차(R1)
     todo_into = {"review": 0, "unknown_prev": 0}
@@ -146,17 +142,18 @@ def collect(base: str, state_file: str, window_start: datetime):
             first_receipt[eid] = ts  # R4: claim·pull 공통 첫 수령
         if st == "todo":
             if is_field_change:
-                if prev is None:
-                    todo_into["unknown_prev"] += 1
-                elif prev == "review":
-                    todo_into["review"] += 1
-                else:
-                    todo_into[prev] = todo_into.get(prev, 0) + 1
-                if ts >= window_start:  # R1/R3: 반납 집계에 실험 창 필터
-                    reworked_after_submit += len(pending_subs.get(eid, []))
-                    pending_subs[eid] = []  # R1: 반납 시 미검증 제출 인스턴스 종료
-            if eid not in first_receipt:  # 첫 수령 전 최신 todo 진입만 착수 소스(이후 동결)
-                todo_entry[eid] = ts
+                closed = len(pending_subs.get(eid, []))
+                if ts and ts >= window_start:
+                    if prev is None:
+                        todo_into["unknown_prev"] += 1
+                    elif prev == "review":
+                        todo_into["review"] += 1
+                    else:
+                        todo_into[prev] = todo_into.get(prev, 0) + 1
+                    reworked_after_submit += closed  # R1/R3: 반납 집계에 실험 창 필터
+                pending_subs[eid] = []  # R1: 회차 종료는 창 무관 — 창 이전 반납도 종료해야 함
+                if eid not in first_receipt:  # 실제 todo 진입만 착수 소스(메타데이터 수정 무시 — R4), 이후 동결
+                    todo_entry[eid] = ts
         elif st == "review" and "completed_at" in fields:
             # R1: 대체 제출 — 같은 카드에 미검증 제출이 남아 있으면 회차 종료(superseded)
             if ts and ts >= window_start:
@@ -168,8 +165,8 @@ def collect(base: str, state_file: str, window_start: datetime):
             if pending_subs.get(eid):
                 _, s_ts = pending_subs[eid].pop(0)  # R1: 가장 오래된 미검증 제출과 페어링
                 pass_pairs.append((eid, s_ts, ts))
-            else:
-                direct_done += 1
+            elif ts and ts >= window_start:
+                direct_done += 1  # 창 내 제출 없는 done만 직행 카운트(R1)
         elif st == "blocked" and is_field_change and prev != "blocked":
             blocked_entries += 1  # R5: 실제 blocked 진입만
         last_state[eid] = st  # R3: fields 유무와 무관하게 관측 상태 갱신
@@ -260,9 +257,11 @@ def collect(base: str, state_file: str, window_start: datetime):
     all_resolved = st["resolved"]
     recovered = [r for r in all_resolved if r.get("outcome") == "recovered"]
     unrecovered = [r for r in all_resolved if r.get("outcome") != "recovered"]
-    judged = [r for r in all_resolved if r.get("minutes_open") is not None
-              and r["minutes_open"] <= RECOVERY_JUDGE_MIN]
-    recovered_120 = [r for r in judged if r.get("outcome") == "recovered"]
+    # R2: 120분 복구율 — 분모는 시간값이 유효한 전체 해소분, 분자는 recovered && <=120분.
+    # <=120로 분모를 좁히면 느린 복구가 판정에서 사라져 과대평가된다(3차 리뷰).
+    timed = [r for r in all_resolved if r.get("minutes_open") is not None]
+    recovered_120 = [r for r in timed if r.get("outcome") == "recovered"
+                     and r["minutes_open"] <= RECOVERY_JUDGE_MIN]
 
     # ── R5 개입 원시 카운트(사람 코멘트/메시지) ──
     human_comments, human_messages = 0, 0
@@ -275,7 +274,7 @@ def collect(base: str, state_file: str, window_start: datetime):
                     human_messages += 1
 
     return {
-        "collector_version": "v3",
+        "collector_version": "v4",
         "generated_at": now.isoformat(timespec="seconds"),
         "window_start": window_start.isoformat(timespec="seconds"),
         "window_note": f"이벤트 로그 seq 1~{events[-1]['seq'] if events else 0} (로그 시작 이전 이력은 원시 근거 없음 — 집계 제외·별도 표기)",
@@ -298,7 +297,7 @@ def collect(base: str, state_file: str, window_start: datetime):
         "rework": {"attempt_ge2": len(reworked_n), "started": len(started),
                    "attempt_rate_pct": round(len(reworked_n) / len(started) * 100.0, 1) if started else None,
                    "review_to_todo_returns": todo_into.get("review", 0),
-                   "todo_entries_by_prev_state": {k: v for k, v in todo_into.items() if k != "review"},
+                   "todo_entries_by_prev_state": {k: v for k, v in todo_into.items() if k != "review" and v > 0},
                    "note": "unknown_prev = 로그 시작 이전 이력으로 출발 상태 미상. 반납 카운트에 창 필터 적용"},
         "stall": {"threshold_min": STALL_HEARTBEAT_MIN, "run_interval_assumed_min": DEFAULT_RUN_INTERVAL_MIN,
                   "active": len(active), "stalled_now": stalled_now,
@@ -306,8 +305,8 @@ def collect(base: str, state_file: str, window_start: datetime):
                   "episodes_recovered": len(recovered),
                   "episodes_closed_unrecovered": len(unrecovered),
                   "recovery_rate_pct": round(len(recovered) / len(all_resolved) * 100.0, 1) if all_resolved else None,
-                  "recovery_rate_120m_pct": round(len(recovered_120) / len(judged) * 100.0, 1) if judged else None,
-                  "judged_120m_n": len(judged),
+                  "recovery_rate_120m_pct": round(len(recovered_120) / len(timed) * 100.0, 1) if timed else None,
+                  "timed_resolved_n": len(timed),
                   "resolved_rows": all_resolved[-20:],
                   "note": "복구=해소 시 in_progress/review/done. returned/blocked/missing/other는 미복구 분류. 120분 집계가 §5-4 판정 기준"},
         "intervention": {"human_comments": human_comments, "human_messages": human_messages,
@@ -333,7 +332,7 @@ def dashboard(m: dict) -> str:
         f"| todo 진입 출발 상태 | {json.dumps(rw['todo_entries_by_prev_state'], ensure_ascii=False)} | events |",
         f"| stall 현재/episode | {len(stl['stalled_now'])}/{stl['active']} active | 열림 {stl['episodes_open']} · 복구 {stl['episodes_recovered']} · 미복구 {stl['episodes_closed_unrecovered']} |",
         f"| stall복구율 전체 (해소분 기준) | {str(stl['recovery_rate_pct']) + '%' if stl['recovery_rate_pct'] is not None else '-'} | 상태 파일 누적 |",
-        f"| stall복구율 {stl and 120}분 이내 (판정 기준) | {str(stl['recovery_rate_120m_pct']) + '%' if stl['recovery_rate_120m_pct'] is not None else '-'} | n={stl['judged_120m_n']} |",
+        f"| stall복구율 120분 이내 (판정 기준) | {str(stl['recovery_rate_120m_pct']) + '%' if stl['recovery_rate_120m_pct'] is not None else '-'} | 시간 유효 해소분 n={stl['timed_resolved_n']} |",
         f"| 개입: 사람 코멘트/메시지/blocked 진입 | {iv['human_comments']}/{iv['human_messages']}/{iv['blocked_entries']} | events (v1 proxy) |",
         "",
         f"stall 상세: {', '.join(stl['stalled_now'][:5]) or '없음'}",
