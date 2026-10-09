@@ -74,7 +74,7 @@ TT 서버의 무엇이 측정 가능한지 2026-10-09 라이브 실측(서버 �
 
 ### 2.5 개입횟수 (human intervention)
 
-- **정의**: 사람 액터(`skshim*`)의 comment.added / message.posted 원시 카운트 + **blocked 실제 진입** 횟수.
+- **정의**: 사람 액터(`skshim*`)의 comment.added / message.posted 원시 카운트 + **blocked 실제 진입** 횟수. **세 카운터 모두 창 내 이벤트만 집계**한다(5차 리뷰 Intervention_window — v4는 창 이전 사람 코멘트·blocked 진입을 그대로 더해 주간 비교를 왜곡했다).
 - **blocked 진입**: payload의 state는 변경 후 전체 상태라 blocked 카드의 priority/title 수정도 state=blocked다 → `fields`에 state가 있고 **직전 상태가 blocked가 아닐 때**만 센다 (라이브 재현: 진입 1회+메타데이터 수정 2회 → 1회로 집계 확인).
 - **v1 proxy 표기**: 자동 blocked와 사람 개입을 구별할 수 없어 카운트는 proxy다 — 출력과 문서에 명시. 발령자의 정상 발령(dispatch.created)은 개입에서 제외.
 
@@ -147,5 +147,7 @@ stall 상세: M4GD1NPN-QFDE, M4GB403A-E4XC, M4GAW92V-DW9A, M4DEFW03-QTEN, M32909
 - Python 3.9 파싱: `/usr/bin/python3`(3.9.6)에서 'Z' 접미·**콜론 없는 +0900 오프셋**(서버 %z 형식)·분수 초 파싱 확인 + **3.9 라이브 수집기 실행 exit 0**(303카드·373이벤트) — cron 배포 블로커 해소(4차 리뷰 Python3.9_compat).
 - 4차 리뷰 R1~R4: **전부 resolved** — 리뷰어가 합성 12경계+로컬 API 2건+이전 24재현 38/38 통과로 독립 확인.
 - 3차 리뷰 R1~R4 해소 대응: R1 회차 종료 창 무관화+직행 창 필터, R2 120분 분모=시간 유효 전체 해소분, R3 반납·출발 카운트 창 필터, R4 todo_entry 실제 진입만 갱신. 1·2차 리뷰 반영분(R5 포함) 유지.
+- **회귀 테스트**: `tests/test_metrics_collect.py` — 독립 리뷰의 결정적 경계(동초 페어링, 재작업 사이클, 대체 종료, 창 이전 반납+직행, 120분 분모, 반납 창 필터, 메타데이터 덮어쓰기, pull 코호트, 개입 창 필터, py3.9 타임스탬프)를 합성 이벤트로 잠근다. CI에서 서버 의존성 없이 실행된다.
+- 5차 리뷰(PR#66@351f2ca7): R1~R4·Python3.9_compat 전부 resolved 독립 확인 — 잔여 Intervention_window(개입 카운터 창 필터)를 v5에서 해소하고 회귀 테스트를 저장소에 추가. 3.9.6·3.13 라이브 이중 실행 exit 0도 리뷰어 확인.
 - 시크릿: 자격증명 없는 공개 엔드포인트만 호출, 운영 주소 미기록(secret-scan 통과).
 - 이 문서의 수치는 2026-10-10 기준선이며, 실험 데이터는 Git 밖 스냅샷으로 적재한다.

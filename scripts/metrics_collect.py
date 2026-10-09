@@ -177,8 +177,8 @@ def collect(base: str, state_file: str, window_start: datetime):
                 pass_pairs.append((eid, s_ts, ts))
             elif ts and ts >= window_start:
                 direct_done += 1  # 창 내 제출 없는 done만 직행 카운트(R1)
-        elif st == "blocked" and is_field_change and prev != "blocked":
-            blocked_entries += 1  # R5: 실제 blocked 진입만
+        elif st == "blocked" and is_field_change and prev != "blocked" and ts and ts >= window_start:
+            blocked_entries += 1  # R5: 실제 blocked 진입만(5차 리뷰: 창 내 이벤트만)
         last_state[eid] = st  # R3: fields 유무와 무관하게 관측 상태 갱신
 
     # ── R4 착수시간: todo 진입 → 첫 수령 (실험 창 내 todo 진입 코호트) ──
@@ -273,10 +273,13 @@ def collect(base: str, state_file: str, window_start: datetime):
     recovered_120 = [r for r in timed if r.get("outcome") == "recovered"
                      and r["minutes_open"] <= RECOVERY_JUDGE_MIN]
 
-    # ── R5 개입 원시 카운트(사람 코멘트/메시지) ──
+    # ── R5 개입 원시 카운트(사람 코멘트/메시지) — 창 내 이벤트만(5차 리뷰) ──
     human_comments, human_messages = 0, 0
     for e in events:
         if e.get("kind") in ("comment.added", "message.posted"):
+            ts = parse_ts(e.get("ts"))
+            if not ts or ts < window_start:
+                continue
             if any(payload_of(e).get("author", "").startswith(h) for h in HUMAN_ACTORS):
                 if e["kind"] == "comment.added":
                     human_comments += 1
