@@ -63,3 +63,29 @@ def eligible(i, *, now="", auto=False):
     """(배정 가능, reason code) 튜플 — 세 소비자가 공유하는 관문."""
     r = busy_reason(i, now=now, auto=auto)
     return (r is None, r)
+
+
+def review_eligible(i, *, now="", agent=""):
+    """리뷰 수령(claim-review) 가능 여부 — (가능, reason code).
+
+    교차리뷰 전용 판정: 새 작업 배정과 달리 state:review가 '대상'이다.
+    - own_work        본인이 만든/작업 중인 카드(교차리뷰 원칙 위반)
+    - review_occupied  다른 리뷰어의 유효 점유 lease
+    - no_contract      계약 없는 카드 — 토론·상징 카드 제외
+    """
+    if _get(i, "archived"):
+        return False, "archived"
+    st = _get(i, "state") or ""
+    if st in TERMINAL:
+        return False, "state:terminal"
+    if st != "review":
+        return False, f"state:{st}"
+    if agent and _get(i, "assignee") == agent:
+        return False, "own_work"
+    rev = _get(i, "reviewer")
+    if rev and rev != agent and _get(i, "lease_by") == rev \
+            and _get(i, "lease_expires") and (not now or i["lease_expires"] > now):
+        return False, "review_occupied"
+    if not _get(i, "work_contract"):
+        return False, "no_contract"
+    return True, None
