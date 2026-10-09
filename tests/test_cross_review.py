@@ -13,7 +13,8 @@ SHA8 = "b" * 8
 
 
 def _i(**kw):
-    base = {"id": "M4ABCDEF-GH12", "state": "review", "archived": 0, "assignee": "a1@t",
+    base = {"id": "M4ABCDEF-GH12", "state": "review", "archived": 0, "version": 3,
+            "assignee": "a1@t",
             "reviewer": "", "lease_by": "", "lease_expires": None, "labels": [],
             "dispatches": 1, "execution_attempt": 1,
             "work_contract": {"version": "v2"}, "comments": [],
@@ -134,3 +135,88 @@ def test_review_claim_e2e_본인_작업은_서버가_거부한다(client):
     assert r.status_code == 409 and "본인 작업" in r.json()["detail"]
     r2 = client.post(f"/issues/{i['id']}/claim-review", json={"agent": "a2@t"})
     assert r2.status_code == 200 and r2.json()["reviewer"] == "a2@t"
+
+
+def test_교차_리뷰어의_판정도_게이트가_인정한다(monkeypatch):
+    """R1: cross@t가 approve를 남기면 재수령 없이 반납+병합 경로로 간다."""
+    monkeypatch.setenv("TT_REVIEW_AGENT", "fallback@t")
+    done = _i(reviewer="cross@t",
+              comments=[{"author": "cross@t",
+                         "body": "review: approve\nPR#9@" + SHA8}])
+    acts = dispatchd.decide(_snap([done], _pr(), [_agent("cross@t")]))
+    assert not [a for a in acts if a["action"] == "review-claim"]
+    assert [a for a in acts if a["action"] == "release-reviewer"]
+    assert [a for a in acts if a["action"] == "merge"]
+
+
+def test_교차_리뷰어의_request_changes는_fix를_건다(monkeypatch):
+    monkeypatch.setenv("TT_REVIEW_AGENT", "fallback@t")
+    rc = _i(reviewer="cross@t",
+            comments=[{"author": "cross@t",
+                       "body": "review: request-changes\nPR#9@" + SHA8}])
+    acts = dispatchd.decide(_snap([rc], _pr(), [_agent("cross@t")]))
+    assert [a for a in acts if a["action"] == "review-fix"]
+    assert not [a for a in acts if a["action"] == "review-claim"]
+
+
+def test_리뷰_점유_보유_에이전트는_교차_수령_후보가_아니다(monkeypatch):
+    """R3: 다른 카드의 리뷰 lease를 가진 에이전트는 유휴가 아니다."""
+    monkeypatch.setenv("TT_REVIEW_AGENT", "fallback@t")
+    other = _i(id="M4ZZZZZZ-KK01", reviewer="cross@t", lease_by="cross@t",
+               lease_expires="2026-10-09T11:00:00+0900")
+    acts = dispatchd.decide(_snap([_i(), other], _pr(), [_agent("cross@t")]))
+    assert not [a for a in acts if a["action"] == "review-claim"]
+
+
+def test_사이클내_작업_배정_에이전트는_교차_수령_안_한다(monkeypatch):
+    """R3: 이번 사이클에 work 배정받은 에이전트는 리뷰도 맡지 않는다."""
+    monkeypatch.setenv("TT_REVIEW_AGENT", "fallback@t")
+    work = _i(id="M4WWWWWW-WW01", state="todo")
+    acts = dispatchd.decide(_snap([work, _i()], _pr(), [_agent("a2@t")]))
+    work_acts = [a for a in acts if a["action"] == "work"]
+    if work_acts:  # work 배정이 먼저면 리뷰는 안 건다
+        assert not [a for a in acts if a["action"] == "review-claim"]
+
+
+def test_execute_review_claim은_마커를_영속화한다(monkeypatch):
+    """R2: 수령 성공 후 [review-req #pr/sha8] 마커 코멘트를 남긴다."""
+    calls = []
+
+    def fake_api(url, path, method="GET", body=None):
+        calls.append((method, path, body))
+        if path.endswith("/claim-review"):
+            return {"id": "M4ABCDEF-GH12"}
+        return {"comments": [], "version": 3}
+
+    monkeypatch.setattr(probe.core, "api", fake_api)
+    marker = "[review-req #9/" + SHA8 + "]"
+    probe.core.execute("http://x", {"action": "review-claim", "agent": "a2@t",
+                                    "issue": "M4ABCDEF-GH12", "pr": 9, "repo": "o/r",
+                                    "head_sha": "b" * 40, "marker": marker})
+    comments = [b for m, p, b in calls if p == "/issues/M4ABCDEF-GH12/comments"]
+    assert any(marker in (b.get("body") or "") for b in comments)
+    # 경합: 마커 이미 있으면 claim도 dispatch도 안 한다
+    calls.clear()
+
+    def raced(url, path, method="GET", body=None):
+        calls.append((method, path, body))
+        if path.endswith("/comments") or method == "GET":
+            return {"comments": [{"author": "probe", "body": marker}], "version": 3}
+        return {}
+
+    monkeypatch.setattr(probe.core, "api", raced)
+    probe.core.execute("http://x", {"action": "review-claim", "agent": "a2@t",
+                                    "issue": "M4ABCDEF-GH12", "pr": 9, "repo": "o/r",
+                                    "head_sha": "b" * 40, "marker": marker})
+    assert not [c for c in calls if c[1].endswith("claim-review")]
+
+
+def test_마커_코멘트로_수령자를_기억해_판정을_인정한다(monkeypatch):
+    """R1: claim 없이 마커 코멘트의 수령자 기록만으로도 판정이 인정된다."""
+    monkeypatch.setenv("TT_REVIEW_AGENT", "fallback@t")
+    marker = "[review-req #9/" + SHA8 + "]"
+    done = _i(comments=[{"author": "probe", "body": f"{marker} PR#9 CI green — 자동 수령 → cross@t"},
+                        {"author": "cross@t", "body": "review: approve\nPR#9@" + SHA8}])
+    acts = dispatchd.decide(_snap([done], _pr(), [_agent("cross@t")]))
+    assert [a for a in acts if a["action"] == "merge"]
+    assert not [a for a in acts if a["action"] == "review-claim"]
