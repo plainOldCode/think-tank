@@ -119,3 +119,23 @@ def test_body_file_읽기_실패시_생성_하지_않는다(cli, tmp_path):
     p = run("new", "실패 카드", "-a", "완료 기준: 중단", "--body-file", str(tmp_path))
     assert p.returncode != 0
     assert len(api("/issues?limit=1000")) == before, "읽기 실패에도 카드가 생성되면 안 된다"
+
+
+def test_claim_review는_review_카드만_받는다(cli):
+    """스킬 문서화 분 — CLI claim-review가 서버 게이트와 동일하게 거부 메시지를 보인다."""
+    run, url, api, db = cli
+    iid = json.loads(run("new", "리뷰 게이트", "-a", "완료 기준: 리뷰 점유", "--json").stdout)["id"]
+    p = run("claim-review", iid)
+    assert p.returncode != 0 and "review 카드가 아니거나" in p.stderr
+    # 본인 작업 카드는 review 전이라도 claim 후 review 전환 시 본인 수령 409
+    run("claim", iid)
+    ver = api(f"/issues/{iid}")["version"]
+    client_state = api(f"/issues/{iid}")
+    import urllib.request
+    req = urllib.request.Request(url + f"/issues/{iid}", method="PATCH",
+                                 data=json.dumps({"state": "review", "version": ver}).encode(),
+                                 headers={"content-type": "application/json"})
+    with urllib.request.urlopen(req) as r:
+        pass
+    p2 = run("claim-review", iid)
+    assert "본인 작업" in p2.stderr

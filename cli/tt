@@ -20,6 +20,7 @@ tt — think-tank issue tracker ($URL)
   tt show ID                 # 상세 + 하위 + 코멘트
   tt tree ID                 # 부모-자식 트리
   tt claim ID [--hours N]      # 특정 이슈 명시적 수령
+  tt claim-review ID [--hours N]  # 리뷰어 점유 (review 카드 한정, 본인 작업 409)
   tt label ID add|rm 라벨       # 라벨 부여·제거 (readback 출력)
   tt labels ID set A,B          # 라벨 통째 치환 (빈 값=전체 제거)
   tt unassign ID                # assignee+lease 해제
@@ -202,6 +203,14 @@ case "$cmd" in
     out="$(req -X POST "$URL/issues/$id/claim" -d "$cl_payload")" || { echo "실패: 수령 불가(상태/선점 확인)" >&2; exit 1; }
     show_contract "$out"
     <<<"$out" $JQ '"■ \(.id) [\(.state)] \(.title) @\(.assignee)"' ;;
+
+  claim-review)
+    # TT 개선#3c: 리뷰어 점유 — review 카드만, 본인 작업 카드는 409(교차리뷰)
+    id="$1"; shift; hours=""
+    [[ "${1:-}" == --hours ]] && hours="$2"
+    cr_payload="$(jq -cn --arg a "$AGENT" --arg h "$hours" '{agent:$a} + (if $h=="" then {} else {hours:($h|tonumber)} end)')"
+    out="$(req -X POST "$URL/issues/$id/claim-review" -d "$cr_payload")" || { echo "실패: review 카드가 아니거나 본인 작업 카드(교차리뷰 금지)/이중 점유" >&2; exit 1; }
+    <<<"$out" $JQ '"◆ \(.id) [\(.state)] 리뷰어 \(.reviewer) — 판정 후 TT 코멘트 + PR 코멘트 양쪽 게시"' ;;
 
   note)
     req -X POST "$URL/issues/$1/comments" -d "$(jq -cn --arg a "$AGENT" --arg b "$2" '{author:$a,body:$b}')" >/dev/null || { echo "실패: 코멘트" >&2; exit 1; }
