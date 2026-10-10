@@ -1400,14 +1400,26 @@ def test_dispatch_에이전트명_폴백(client, hook_server):
                     json={"agent": "codex@m2max", "message": "fix 지시"})
     assert p.status_code == 201, p.json()
     assert p.json()["agent"] == "codex"
+    # R1: 웹훅 페이로드의 agent도 해석된 등록명 — 러너가 이 이름으로 프로필을 정확 매칭한다
+    Hook.received.clear()
+    client.post(f"/issues/{i['id']}/dispatch",
+                json={"agent": "codex@m2max", "message": "페이로드 확인"})
+    assert Hook.received[0][1]["agent"] == "codex"
     # 정확명이 존재하면 폴백 없이 정확명 우선
     client.post("/agents", json={"name": "codex@m2max", "base_url": hook_server})
     p2 = client.post(f"/issues/{i['id']}/dispatch",
                      json={"agent": "codex@m2max", "message": "fix 지시"})
     assert p2.status_code == 200 and p2.json()["id"] == p.json()["id"]  # 멱등키: issue+agent+attempt+본문
+    # 정확명 등록 후 같은 요청명은 정확명으로 해석된다 (페이로드 포함)
+    Hook.received.clear()
     p3 = client.post(f"/issues/{i['id']}/dispatch",
                      json={"agent": "codex@m2max", "message": "다음 지시"})
     assert p3.status_code == 201 and p3.json()["agent"] == "codex@m2max"
+    assert Hook.received[0][1]["agent"] == "codex@m2max"
     # 폴백에도 없으면 404 유지
     assert client.post(f"/issues/{i['id']}/dispatch",
                        json={"agent": "nobody@x", "message": "x"}).status_code == 404
+    # R2: 전달 성공 헬스가 등록명 행에 기록된다 (요청명 행은 존재하지 않음)
+    ags = {a["name"]: a for a in client.get("/agents").json()}
+    assert ags["codex"]["last_ok"] is not None
+    assert ags["codex@m2max"]["last_ok"] is not None

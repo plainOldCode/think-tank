@@ -66,10 +66,13 @@ def _idem_key(issue_id: str, agent: str, attempt: int, message: str) -> str:
     return f"{issue_id}:{agent}:{attempt}:{digest}"
 
 
-def _dispatch_payload(issue, ag, p, did, issue_id, request, ctx, prev, tail):
+def _dispatch_payload(issue, ag, p, did, issue_id, request, ctx, prev, tail,
+                      agent_name=None):
     return {
         "dispatch_id": did, "issue_id": issue_id, "issue_title": issue["title"],
-        "agent": p.agent, "author": p.author, "message": p.message,
+        # 러너가 페이로드의 agent로 프로필을 정확 매칭한다 — 등록명(폴백 해석 후)을
+        # 실어 보내야 codex@m2max → codex 폴백이 실제 세션을 연다(WGT4 리뷰 R1).
+        "agent": agent_name or p.agent, "author": p.author, "message": p.message,
         "context": prev["context"] if prev else "", "comments": tail,
         "tt_url": str(request.base_url).rstrip("/"),
         "model": ag["model"] or "",  # RZ20: 감사 추적 — 이 회차가 어떤 모델로 실행되는지 선언값
@@ -229,7 +232,8 @@ def dispatch(issue_id: str, p: DispatchIn, request: Request, ctx: Ctx = Depends(
             prev = claimed
         tail = dbmod.comments_of(c, issue_id)[-20:]
         c.commit()
-    payload = _dispatch_payload(issue, ag, p, did, issue_id, request, ctx, prev, tail)
+    payload = _dispatch_payload(issue, ag, p, did, issue_id, request, ctx, prev, tail,
+                                agent_name=agent_name)
     status, detail, dctx = "ok", "", ""
     try:
         code, dctx = service.deliver(ag["base_url"], ag["secret"], payload)
@@ -247,7 +251,7 @@ def dispatch(issue_id: str, p: DispatchIn, request: Request, ctx: Ctx = Depends(
                       (status, detail, did))
         c.execute("UPDATE agents SET last_ok=?, last_err=? WHERE name=?",
                   (dbmod.now() if status == "ok" else ag["last_ok"],
-                   "" if status == "ok" else detail, p.agent))
+                   "" if status == "ok" else detail, ag["name"]))
         if status == "error":
             fail_body = f"⚠ hook dispatch #{did} → {p.agent} 실패: {detail}"
             c.execute("INSERT INTO comments (issue_id, author, body, ts) VALUES (?,?,?,?)",
