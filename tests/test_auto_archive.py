@@ -116,18 +116,7 @@ def test_completed_before_필터는_나이로_직접_고른다(client, tmp_path)
     assert [c["id"] for c in r.json()] == [old_i["id"]]
 
 
-def test_probe_스윕은_409를_조용히_넘긴다(monkeypatch):
-    import probe.core
-    calls = []
-    def fake(url, path, method="GET", body=None):
-        calls.append((method, path))
-        if path.startswith("/issues?"):
-            return [{"id": "CARD-1"}]
-        import urllib.error
-        raise urllib.error.HTTPError(path, 409, "ancestor missing", None, None)
-    monkeypatch.setattr(probe.core, "api", fake)
-    probe.core.execute("http://x", {"agent": "probe", "action": "archive-sweep", "days": 14})
-    assert ("POST", "/issues/CARD-1/archive") in calls
+
 
 
 def test_재개된_카드는_archived가_해제된다(client):
@@ -152,28 +141,27 @@ def test_재개된_카드는_archived가_해제된다(client, tmp_path):
     assert client.get(f"/issues/{i['id']}").json()["archived"] == 0
 
 
-def test_스윕은_페이지를_전진해_보존_뒤_후보를_본다(monkeypatch):
-    """P77 R4: 500장 보존 페이지 뒤의 오래된 루트도 수집된다."""
+def test_스윕은_서버_엔드포인트를_한_번_걷는다(monkeypatch):
+    """P77 R4 최종: probe는 POST /maintenance/archive-sweep 단 한 번."""
     import probe.core
-    pages = [
-        [{"id": f"KEEP-{n}", "state": "done"} for n in range(500)],
-        [{"id": "OLD-ROOT", "state": "done"}],
-    ]
-    seen, posts = [], []
+    calls = []
 
     def fake(url, path, method="GET", body=None):
-        seen.append(path)
-        if path.startswith("/issues?"):
-            page = pages.pop(0) if pages else []
-            return page
-        posts.append(path)
-        import urllib.error
-        raise urllib.error.HTTPError(path, 409, "ancestor missing", None, None)
+        calls.append((method, path))
+        return {"archived": 3, "preserved": 1}
 
     monkeypatch.setattr(probe.core, "api", fake)
     probe.core.execute("http://x", {"agent": "probe", "action": "archive-sweep", "days": 14})
-    assert any("offset=500" in p for p in seen)      # 두 번째 페이지 전진
-    assert "/issues/OLD-ROOT/archive" in posts        # 뒤 페이지 후보도 호출
+    assert calls == [("POST", "/maintenance/archive-sweep")]
+
+
+def test_스윕은_비활성_409를_조용히_넘긴다(monkeypatch):
+    import probe.core
+    import urllib.error
+    def fake(url, path, method="GET", body=None):
+        raise urllib.error.HTTPError(path, 409, "disabled", None, None)
+    monkeypatch.setattr(probe.core, "api", fake)  # 예외 없이 통과해야 한다
+    probe.core.execute("http://x", {"agent": "probe", "action": "archive-sweep", "days": 14})
 
 
 def test_스윕은_나이순이라_보존이_뒤를_가리지_못한다(client, tmp_path):

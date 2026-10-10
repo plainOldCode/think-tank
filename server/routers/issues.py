@@ -227,11 +227,21 @@ def archive_sweep(ctx: Ctx = Depends(get_ctx)):
         raise HTTPException(409, "auto-archive disabled (TT_ARCHIVE_AFTER_DAYS=0)")
     cutoff = _archive_cutoff(days)
     archived = preserved = 0
+    cand = []
     with ctx.con() as c:
-        cand = [r["id"] for r in c.execute(
-            "SELECT id FROM issues WHERE state='done' AND archived=0 "
-            "AND completed_at IS NOT NULL AND completed_at < ? "
-            "ORDER BY completed_at ASC LIMIT 50000", (cutoff,)).fetchall()]
+        # keyset 전수 순회 — 상한 없음. 보존 행이 몇 만 장이어도 마지막 후보까지 닿는다.
+        last_ca, last_id = "", ""
+        while True:
+            rows = c.execute(
+                "SELECT id, completed_at FROM issues WHERE state='done' AND archived=0 "
+                "AND completed_at IS NOT NULL AND completed_at < ? "
+                "AND (completed_at > ? OR (completed_at = ? AND id > ?)) "
+                "ORDER BY completed_at ASC, id ASC LIMIT 1000",
+                (cutoff, last_ca, last_ca, last_id)).fetchall()
+            if not rows:
+                break
+            cand += [r["id"] for r in rows]
+            last_ca, last_id = rows[-1]["completed_at"], rows[-1]["id"]
     for iid in cand:
         with ctx.con() as c:
             c.execute("BEGIN IMMEDIATE")

@@ -594,44 +594,23 @@ def _review_dispatch_msg(act, agent):
 
 
 def _archive_sweep(url, days):
-    """후보(completed_before 직접 질의 — R4 기아 방지)를 골라 서버 검증형 아카이브
-    엔드포인트에 넘긴다. 나이·조상 체인·사이클 판정은 서버 트랜잭션이 원자적으로
-    수행(M3ZRGTSF-N95X 확정 기준) — probe는 409를 조용히 넘기고 다음 사이클에 재시도."""
+    """서버 내장 스윕 호출 — 후보 선정·나이·조상 체인 검증은 전부 서버가 나이순으로
+    원자 수행(M3ZRGTSF-N95X). probe는 사이클당 한 번 걸어줄 뿐이다."""
     if days <= 0:
         return
-    cutoff = time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(time.time() - days * 86400))
-    # 1단계: 후보 id를 페이지네이션으로 전수 수집 — 보존(409) 행이 뒤 페이지를
-    # 영구히 가리는 기아 방지(P77 리뷰 R4). 수집 후 2단계에서 검증 호출.
-    cards, offset = [], 0
     try:
-        while True:
-            page = api(url, f"/issues?state=done&archived=no"
-                             f"&completed_before={urllib.parse.quote(cutoff)}"
-                             f"&limit=500&offset={offset}") or []
-            cards += page
-            if len(page) < 500:
-                break
-            offset += 500
-            if offset >= 5000:  # 안전 상한 — 한 스윕 5천 장 초과는 없다고 본다
-                break
-    except Exception as e:
-        print(time.strftime("%F %T"), f"[archive] 스윕 실패(목록): {e}", flush=True)
+        res = api(url, "/maintenance/archive-sweep", "POST", {})
+    except urllib.error.HTTPError as e:
+        if e.code not in (404, 409):
+            print(time.strftime("%F %T"), f"[archive] 스윕 실패: HTTP {e.code}", flush=True)
         return
-    n = skipped = 0
-    for card in cards or []:
-        try:
-            api(url, f"/issues/{card['id']}/archive", "POST", {})
-            n += 1
-        except urllib.error.HTTPError as e:
-            if e.code not in (404, 409):
-                print(time.strftime("%F %T"), f"[archive] {card['id']} 실패: HTTP {e.code}", flush=True)
-            skipped += 1
-        except Exception as e:
-            print(time.strftime("%F %T"), f"[archive] {card['id']} 실패: {e}", flush=True)
-            skipped += 1
-    if n or skipped:
+    except Exception as e:
+        print(time.strftime("%F %T"), f"[archive] 스윕 실패: {e}", flush=True)
+        return
+    if isinstance(res, dict) and (res.get("archived") or res.get("preserved")):
         print(time.strftime("%F %T"),
-              f"[archive] {n}카드 아카이브, {skipped}보존 (done+{days}일, 조상 done)", flush=True)
+              f"[archive] {res.get('archived', 0)}카드 아카이브, "
+              f"{res.get('preserved', 0)}보존 (done+{days}일, 조상 done)", flush=True)
 
 
 def _now_dt():
