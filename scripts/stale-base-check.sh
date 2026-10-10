@@ -9,9 +9,14 @@ cd "${1:-.}"
 BASE="${2:-origin/main}"
 WARN="${TT_STALE_WARN:-0}"
 
-# base 해석: 로컬에 없으면 원격에서 가져온다 (네트워크 실패 시 기존 ref로 판단)
+# base 해석: 원격 참조(예: origin/main)는 항상 새로 고친다 — 캐시된 ref는 뒤처진
+# base를 '최신'으로 오판한다(P75 리뷰 R2). 네트워크 실패 시 기존 ref로 판단(문서된 폴백).
+case "$BASE" in
+  */*) git fetch -q --no-tags "${BASE%%/*}" "${BASE#*/}" 2>/dev/null || true ;;
+esac
 if ! git rev-parse --verify --quiet "$BASE" >/dev/null; then
-  git fetch -q --no-tags "${BASE%%/*}" 2>/dev/null || true
+  echo "stale-base: base ref '$BASE' 없음 — 검사 생략" >&2
+  exit 0
 fi
 if ! git rev-parse --verify --quiet "$BASE" >/dev/null; then
   echo "stale-base: base ref '$BASE' 없음 — 검사 생략" >&2
@@ -24,7 +29,7 @@ HEAD_REF="$(git rev-parse --verify --quiet HEAD 2>/dev/null || true)"
 BEHIND="$(git rev-list --count "HEAD..$BASE" 2>/dev/null || echo 0)"
 [[ "$BEHIND" -eq 0 ]] && exit 0  # main이 우리 커밋을 포함(리베이스/병합 완료 상태)
 
-MSG="stale-base: 브랜치가 $BASE보다 ${BEHIND}커밋 뒤처짐 — PR 생성 전 재기반 필요
+MSG="stale-base: 브랜치가 ${BASE}보다 ${BEHIND}커밋 뒤처짐 — PR 생성 전 재기반 필요
   git fetch origin && git rebase $BASE   (또는 git merge $BASE)
 충돌 정리 전 PR을 만들면 리뷰·머지가 CONFLICTING으로 무효화된다 (PR #53~58 전멸 사고)."
 if [[ "$WARN" == "1" ]]; then

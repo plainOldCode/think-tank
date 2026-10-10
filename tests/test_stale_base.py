@@ -76,3 +76,31 @@ def test_base_ref_없으면_생략(tmp_path):
     repo = make_repo(tmp_path)
     p = check(repo, args=["refs/heads/없음"])
     assert p.returncode == 0 and "생략" in p.stderr
+
+
+def test_캐시된_origin_main도_새로_고친다(tmp_path):
+    """회귀(P75 R2): 로컬 origin/main이 뒤처져 있으면 갱신 후 판정한다."""
+    repo = make_repo(tmp_path)
+    git(repo, "checkout", "-q", "feature")
+    commit(repo, "f.txt", ["f1"], "feature 작업")  # feature 전진
+    git(repo, "checkout", "-q", "main")
+    git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")  # 아직 feature 이전
+    git(repo, "checkout", "-q", "feature")
+    p = check(repo)  # fetch 실패(가짜 URL) → 기존 ref 폴백: 여전히 최신으로 통과
+    assert p.returncode == 0
+    # 이제 가짜 원격을 구성해 fetch가 실제로 갱신하는 경우를 본다
+    bare = tmp_path / "remote.git"
+    git(tmp_path, "clone", "-q", "--bare", str(repo), str(bare))
+    git(repo, "remote", "remove", "origin")
+    git(repo, "remote", "add", "origin", str(bare))
+    git(repo, "fetch", "-q", "origin")
+    git(repo, "update-ref", "refs/remotes/origin/main",
+        subprocess.run(["git", "rev-parse", "main"], cwd=repo, check=True,
+                       capture_output=True).stdout.decode().strip())
+    git(repo, "checkout", "-q", "main")
+    commit(repo, "m.txt", ["m1"], "main 이동")
+    git(repo, "push", "-q", "origin", "main")
+    git(repo, "update-ref", "refs/remotes/origin/main", "HEAD~1")  # 로컬 캐시를 뒤로
+    git(repo, "checkout", "-q", "feature")  # feature는 main 이전 — 뒤처짐
+    p = check(repo)
+    assert p.returncode == 1 and "rebase" in p.stderr
