@@ -219,3 +219,63 @@ def test_마커_코멘트로_수령자를_기억해_판정을_인정한다(monke
     acts = dispatchd.decide(_snap([done], _pr(), [_agent("cross@t")]))
     assert [a for a in acts if a["action"] == "merge"]
     assert not [a for a in acts if a["action"] == "review-claim"]
+
+
+# --- 저위험 자동병합 (M4DEK6WC-MQYS) ---
+
+def test_policy_저위험_라벨은_계약_없어도_리뷰_수령_가능():
+    ok, why = policy.review_eligible(
+        _i(work_contract=None, labels=["docs"]), now=NOW, agent="a2@t")
+    assert ok is True and why is None
+    # 라벨 없는 무계약 카드는 여전히 no_contract
+    assert policy.review_eligible(_i(work_contract=None), now=NOW, agent="a2@t")[1] == "no_contract"
+    # 라벨은 소문자 정규화 — "Docs"도 인정
+    assert policy.review_eligible(_i(work_contract=None, labels=["Docs"]),
+                                  now=NOW, agent="a2@t")[0] is True
+
+
+def test_저위험_무계약_카드는_독립_리뷰를_자동_수령한다(monkeypatch):
+    monkeypatch.setenv("TT_REVIEW_AGENT", "fallback@t")
+    card = _i(work_contract=None, labels=["docs"])
+    acts = dispatchd.decide(_snap([card], _pr(), [_agent("a2@t")]))
+    claims = [a for a in acts if a["action"] == "review-claim"]
+    assert len(claims) == 1 and claims[0]["agent"] == "a2@t"
+
+
+def test_무계약_무라벨_카드는_병합_후보에서_제외된다(monkeypatch):
+    monkeypatch.setenv("TT_REVIEW_AGENT", "fallback@t")
+    acts = dispatchd.decide(_snap([_i(work_contract=None)], _pr(), [_agent("a2@t")]))
+    assert not [a for a in acts if a["action"] == "merge"]
+
+
+def test_저위험_제출전_카드는_병합_후보가_아니다(monkeypatch):
+    monkeypatch.setenv("TT_REVIEW_AGENT", "fallback@t")
+    card = _i(work_contract=None, labels=["docs"], state="todo")
+    acts = dispatchd.decide(_snap([card], _pr(), [_agent("a2@t")]))
+    assert not [a for a in acts if a["action"] == "merge"]
+    assert not [a for a in acts if a["action"] == "review-claim"]
+
+
+def test_저위험_무계약_카드는_approve시_병합_액션(monkeypatch):
+    monkeypatch.setenv("TT_REVIEW_AGENT", "fallback@t")
+    card = _i(work_contract=None, labels=["docs"], reviewer="cross@t",
+              comments=[{"author": "cross@t", "body": "review: approve\nPR#9@" + SHA8}])
+    acts = dispatchd.decide(_snap([card], _pr(), [_agent("cross@t")]))
+    merges = [a for a in acts if a["action"] == "merge"]
+    assert len(merges) == 1 and merges[0]["low_risk"] is True
+
+
+def test_저위험_병합은_server_runner_경로면_차단된다(monkeypatch):
+    monkeypatch.setenv("TT_REVIEW_AGENT", "fallback@t")
+    card = _i(id="M4ABCDEF-GH12", work_contract=None, labels=["docs"],
+              reviewer="cross@t",
+              comments=[{"author": "cross@t", "body": "review: approve\nPR#9@" + SHA8}])
+    flags = []
+    monkeypatch.setattr(probe.core, "api", lambda *a, **k: flags.append(a) or {})
+    monkeypatch.setattr(probe.core, "gh_json", lambda *a, **k: {"files": [{"path": "server/app.py"}]})
+    monkeypatch.setattr(probe.core, "gh_exec", lambda *a, **k: (_ for _ in ()).throw(AssertionError("merge 금지")))
+    probe.core.execute("http://x", {"agent": "probe", "issue": "M4ABCDEF-GH12",
+                                    "action": "merge", "pr": 9,
+                                    "repo": "plainOldCode/think-tank",
+                                    "low_risk": True})
+    assert any("저위험 경로 아님" in str(f) for f in flags)

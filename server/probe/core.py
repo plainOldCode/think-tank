@@ -271,8 +271,22 @@ def decide(snap):
         i = by_id.get(iid) if iid else None
         if not iid or i is None or i["state"] in ("done", "cancelled"):
             continue
-        if not i.get("work_contract") or (i.get("execution_attempt") or 0) < 1:
+        # 저위험 클래스(M4DEK6WC-MQYS): docs/i18n 라벨 PR — 계약·회차 없어도 제출
+        # (review) 상태면 독립 리뷰+CI green 후 무인 병합 대상. server/runner 경로는
+        # execute에서 최종 차단(사람 승인 필요).
+        pr_labels = {x.strip().lower() for x in (p.get("labels") or [])}
+        card_labels = i.get("labels")
+        if isinstance(card_labels, str):
+            try:
+                card_labels = json.loads(card_labels)
+            except (ValueError, TypeError):
+                card_labels = []
+        low_risk = bool({x.strip().lower() for x in (card_labels or [])}
+                        & set(policy.LOW_RISK_LABELS)) or bool(pr_labels & set(policy.LOW_RISK_LABELS))
+        if (not i.get("work_contract") or (i.get("execution_attempt") or 0) < 1) and not low_risk:
             continue
+        if low_risk and not i.get("work_contract") and i["state"] != "review":
+            continue  # 저위험 무계약 병합은 '제출된' 카드만 — todo/backlog는 대상 아님
         if p.get("isDraft"):
             continue  # draft 병합 시도 금지(HHP5) — ⓪b에서 ready 요청 1회
         want = card_repo(i)
@@ -340,7 +354,7 @@ def decide(snap):
                 gated.discard(iid)
             actions.append({"agent": "probe", "issue": iid, "action": "merge", "pr": p["number"],
                             "head_sha": p.get("head_sha", ""),
-                            "repo": pr_repo,
+                            "repo": pr_repo, "low_risk": bool(low_risk),
                             "reason": f"CI green + 카드 계약/수령 검증 — gh pr merge ({pr_repo})"})
 
     # ⓪b review 카드 중 병합 불가 후보 — 사람 판단 요청 코멘트 (M3R7M0ZR-YF99).
@@ -519,7 +533,7 @@ def collect_prs(repos=None):
     for repo in dict.fromkeys(pool):
         try:
             prs = gh_json("pr", "list", "--repo", repo, "--state", "open",
-                          "--json", "number,headRefName,headRefOid,title,isDraft") or []
+                          "--json", "number,headRefName,headRefOid,title,isDraft,labels") or []
         except Exception:
             continue
         for p in prs:
@@ -529,7 +543,9 @@ def collect_prs(repos=None):
                 checks = []
             out.append({"number": p["number"], "repo": repo, "branch": p.get("headRefName", ""),
                         "title": p.get("title", ""), "head_sha": p.get("headRefOid", ""),
-                        "isDraft": bool(p.get("isDraft")), "checks": checks})
+                        "isDraft": bool(p.get("isDraft")),
+                        "labels": [l.get("name", "") for l in (p.get("labels") or [])],
+                        "checks": checks})
     return out
 
 
@@ -596,6 +612,20 @@ def execute(url, act):
         # 스킵해도 중복 병합은 구조적으로 발생하지 않는다.
         # 실측: gh pr view 는 번호 위치 인자, 단일 필드도 JSON 객체
         # '{"headRefOid":"<sha>"}' 로 온다(문자열 strip('"')면 영구 불일치).
+        if act.get("low_risk"):
+            # 저위험 무계약 병합의 최종 경로 차단(M4DEK6WC-MQYS) — server/runner
+            # 변경은 사람 승인 대상이다. 라벨만으로 우회하지 않는다.
+            try:
+                files = gh_json("pr", "view", act["pr"], "--repo", repo,
+                                "--json", "files") or []
+                paths = [f.get("path", "") for f in (files.get("files") or [])]
+            except Exception as e:
+                _probe_flag(url, act, f"probe merge skip: 저위험 경로 확인 실패({e}) — 관측")
+                return
+            if any(p.startswith(("server/", "runner/")) for p in paths):
+                _probe_flag(url, act, "probe merge skip: 저위험 경로 아님 "
+                            "(server/runner 포함) — 표준 게이트로")
+                return
         expected = act.get("head_sha") or ""
         if expected:
             try:
