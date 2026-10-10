@@ -448,6 +448,13 @@ def decide(snap):
         if why:
             actions.append({"agent": actor or "dispatchd", "issue": i["id"],
                             "action": "needs-human", "reason": why})
+    # ④ 자동 아카이브 스윕(M3ZRGTSF-N95X) — TT_ARCHIVE_AFTER_DAYS>0일 때 사이클당 1회
+    try:
+        _ad = int(os.environ.get("TT_ARCHIVE_AFTER_DAYS", "0") or 0)
+    except ValueError:
+        _ad = 0
+    if _ad > 0:
+        actions.append({"agent": "probe", "action": "archive-sweep", "days": _ad})
     return actions
 
 
@@ -584,6 +591,83 @@ def _review_dispatch_msg(act, agent):
             f"TT 코멘트 author는 '{agent}'로 게시.")
 
 
+def _archive_sweep(url, days):
+    """done 후 days일 경과 카드를 archived=1로. 상위 체인(모든 조상)이 done이 아니면
+    보존한다(M3ZRGTSF-N95X 확정 기준: 14일·모든 조상·done만). 실패는 로그만 — 스윕은
+    다음 사이클에 재시도되므로 카드 코멘트를 남기지 않는다."""
+    if days <= 0:
+        return
+    now = _now_dt()
+    if now is None:
+        return
+    try:
+        cards = api(url, "/issues?state=done&archived=no&limit=1000")
+    except Exception as e:
+        print(time.strftime("%F %T"), f"[archive] 스윕 실패(목록): {e}", flush=True)
+        return
+    anc_state = {}
+    n = 0
+    for card in cards or []:
+        if card.get("state") != "done" or card.get("archived"):
+            continue
+        completed = card.get("completed_at")
+        if not completed:
+            continue
+        done_dt = _parse_iso(completed)
+        if done_dt is None or (now - done_dt).total_seconds() < days * 86400:
+            continue
+        # 모든 조상 done 확인 — 부모 체인을 실제로 걷는다(캐시는 상태만)
+        pid, ok = card.get("parent_id"), True
+        while pid:
+            if pid not in anc_state:
+                try:
+                    anc_state[pid] = (api(url, f"/issues/{pid}") or {}).get("state", "")
+                except Exception:
+                    ok = False
+                    break
+            if anc_state[pid] != "done":
+                ok = False
+                break
+            if anc_state.get(pid + "|parent") is None:
+                try:
+                    anc_state[pid + "|parent"] = (api(url, f"/issues/{pid}") or {}).get("parent_id")
+                except Exception:
+                    ok = False
+                    break
+            pid = anc_state[pid + "|parent"]
+        if not ok:
+            continue
+        try:
+            cur = api(url, f"/issues/{card['id']}")
+            api(url, f"/issues/{card['id']}", "PATCH",
+                {"archived": True, "version": cur["version"]})
+            n += 1
+        except Exception as e:
+            print(time.strftime("%F %T"), f"[archive] {card['id']} 실패: {e}", flush=True)
+    if n:
+        print(time.strftime("%F %T"), f"[archive] {n}카드 아카이브 (done+{days}일, 조상 done)", flush=True)
+
+
+def _now_dt():
+    try:
+        from datetime import datetime, timezone
+        return datetime.now(timezone.utc)
+    except Exception:
+        return None
+
+
+def _parse_iso(s):
+    try:
+        from datetime import datetime
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            from datetime import timezone
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except (ValueError, TypeError):
+        return None
+
+
 def execute(url, act):
     kind = act["action"]
     if kind == "release-reviewer":
@@ -604,6 +688,9 @@ def execute(url, act):
             if cur.get("lease_by") == act.get("reviewer"):
                 fields.update({"lease_by": "", "lease_expires": None})
             api(url, f"/issues/{act['issue']}", "PATCH", fields)
+        return
+    if kind == "archive-sweep":
+        _archive_sweep(url, int(act.get("days") or 0))
         return
     if kind == "merge":
         repo = act.get("repo") or REPO
