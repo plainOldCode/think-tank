@@ -49,7 +49,8 @@ def main():
     client = TestClient(app)
 
     client.post("/agents", json={"name": "drift-bot", "base_url": base, "secret": SECRET})
-    iid = client.post("/issues", json={"title": "드리프트 확인", "body": "b"}).json()["id"]
+    iid = client.post("/issues", json={"title": "드리프트 확인", "body": "b",
+                                       "acceptance": "드리프트 확인 스크립트 통과"}).json()["id"]
     did = client.post(f"/issues/{iid}/dispatch",
                       json={"agent": "drift-bot", "message": "m"}).json()["id"]
 
