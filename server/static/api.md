@@ -159,9 +159,10 @@ curl -s -H 'content-type: application/json' -X PATCH /issues/ID -d '{"state":"do
 |---|---|---|---|
 | GET | `/health` | – | `{status:"ok"}` server health check |
 | GET | `/work-contract` | – | `{version, instructions, report_required}` base methodology and completion-report policy |
-| POST | `/pull` | `{"agent":STR, "require_label"?STR, "hours"?1~6}` | Atomically claims one from todo + **lease-expired in_progress**, by priority then creation order. With require_label, only that label. `null` if none. 409 if 2 active leases |
+| POST | `/pull` | `{"agent":STR, "require_label"?STR, "hours"?1~6}` | Atomically claims one from todo + **lease-expired in_progress**, by priority then creation order. With require_label, only that label. Candidates re-checked by the busy/eligible policy (TT improvement #3b) — budget-exhausted or leased rows are skipped in favor of the next candidate. `null` if none. 409 if 2 active leases |
 | POST | `/issues` | `{title, acceptance, body?, parent_id?, priority?1-4, labels?[STR], state?="todo"|"backlog", nominee?}` | Register. Without parent_id it is a root. **`acceptance` required (TT improvement #3a)** — the machine-readable done-criteria autonomous pull depends on; missing/blank → 422. Existing cards fill it gradually via PATCH (empty rejected). **Self-nomination rule (TT improvement #3d)**: `labels` containing `self` require `nominee` (the self-nominating agent, becomes assignee), start in `backlog` regardless of requested state, WIP 1 open self card per agent (2nd → 409). Promotion to `todo` = human/triage only — PATCH must carry `promoted: true` (else 409). 201 |
-| POST | `/issues/{id}/claim` | `{"agent":STR, "hours"?1~6}` | Claim a specific id. Only todo+unassigned, otherwise 409 |
+| POST | `/issues/{id}/claim` | `{"agent":STR, "hours"?1~6}` | Claim a specific id. Only todo+unassigned, otherwise 409 (rejection body carries the shared policy code, e.g. `cannot claim: state is in_progress [policy: lease_held]`) |
+| POST | `/issues/{id}/claim-review` | `{"agent":STR, "hours"?1~6}` | Reviewer claim — review-state cards only (409 otherwise), marks `reviewer`+review lease without touching state/attempt. Response carries the review contract. Own-work cards are rejected 409 (cross-review rule, TT improvement #3c); double-claim 409 unless the prior reviewer's lease expired |
 | POST | `/issues/{id}/lease` | `{"agent":STR, "hours"?1~6}` | Heartbeat. Holder only (409), extends TTL. Does not bump the version |
 | GET | `/issues` | – | Filters: `?state=&parent=&label=&assignee=&q=&limit=200&archived=no` · `parent=none` roots only. `archived`: no (default)/all/only |
 | GET | `/issues/{id}` | – | `{...issue, children:[...], comments:[...]}` |
@@ -223,6 +224,27 @@ backlog ──→ todo ──(pull/claim)──→ in_progress ──→ done
 - in_progress→todo = release (assignee auto-cleared, other agents can claim)
 - done→todo reopen allowed; the completion time (completed_at) is updated
 - **Parent done guard**: if even one child is unfinished (not done/cancelled), parent done is 409. Close the children first
+
+## Busy/eligible policy — one gate, stable reason codes (TT improvement #3b/#3c)
+
+`server/policy.py` is the single source for "can this card take new work / a review claim". probe (auto-assignment), `POST /pull`, and `POST /issues/{id}/claim` share it, and rejections surface the code verbatim (claim 409 `[policy: <code>]`, probe `[probe] cycle ... skips={"iid":"code"}` log line, probe `needs-human` reasons).
+
+| code | meaning |
+| --- | --- |
+| `state:terminal` | done/cancelled — no new work |
+| `archived` | archived card |
+| `state:backlog` / `state:blocked` / `state:review` / `state:in_progress` / `state:todo` | state-specific blockers (for **review claims** `state:review` is the *target*, see `review_eligible`) |
+| `lease_held` | active work lease — **runner running is the same dimension, one code**; an expired lease is re-claimable (not busy) |
+| `budget:dispatch-tries>=2` / `budget:attempt>=2` | assignment budget from TT improvement #1 — probe stops dispatching and emits `needs-human` |
+| `not_auto` | probe auto mode only: card lacks the `auto` label |
+
+Review-claim eligibility (`policy.review_eligible`): card must be `review` + have a work contract, must not be the agent's own work (`own_work` — also enforced server-side by claim-review 409), and must not carry another reviewer's active lease (`review_occupied`).
+
+Cross-review auto-claim (TT improvement #3c): when a PR awaits a verdict, probe picks an idle agent (no active lease, not the card assignee, not already allocated this cycle) and emits `review-claim` — the agent is auto-claimed via claim-review and dispatched with the review contract. The request is deduplicated by the `[review-req #pr/sha8]` marker comment; verdicts are honored from the env reviewer, the card's claimed reviewer, and agents recorded in that marker.
+
+## Metrics & 2-week experiment (TT improvement #3e)
+
+Definitions/collection for the 5 operating metrics (intake time, review pass rate, rework rate, stall recovery, interventions — card count is NOT a metric) and the 2-week experiment design: `docs/metrics-2week-experiment.md`. Collector: `scripts/metrics_collect.py` (reads `GET /issues`, `GET /events?after_seq=`, `GET /issues/{id}/dispatches` — all above). Event history starts 2026-10-09 (#2 deploy); metrics are valid within the experiment window only.
 
 ## Rules and pitfalls
 
