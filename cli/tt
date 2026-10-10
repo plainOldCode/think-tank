@@ -335,6 +335,7 @@ case "$cmd" in
       || git -C "$repo" rev-parse "origin/$branch" 2>/dev/null \
       || echo HEAD)"
     (cd "$repo" && TT_SCAN_DIFF="$base" scripts/secret-scan.sh .) || { echo "비밀 스캔 실패 — push 중단 (위 패턴 확인)" >&2; exit 1; }
+    (cd "$repo" && TT_STALE_WARN=1 scripts/stale-base-check.sh . "origin/main")  # 뒤처진 base 경고 — push는 진행, PR 생성 전 재기반 권장
     unpushed="$(git -C "$repo" log --oneline @{push}.. 2>/dev/null || git -C "$repo" log --oneline origin/"$branch".."$branch" 2>/dev/null || git -C "$repo" log --oneline -1)"
     [[ -n "$(git -C "$repo" status --porcelain)" ]] && echo "경고: 커밋되지 않은 변경 있음 (push 대상 아님)" >&2
     git -C "$repo" push -q mini:tt-repo "$branch" >/dev/null || { echo "실패: mini 중계 push" >&2; exit 1; }
