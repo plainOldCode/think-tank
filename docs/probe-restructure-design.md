@@ -82,7 +82,7 @@ TT에는 별도 관계 테이블이 없다. probe가 쓰는 관계 대부분은 
 | --- | --- | --- | --- |
 | `[policy: <code>]` | claim 409 본문(issues.py:131-138), probe_skips 로그, needs-human 사유 | Card —ineligibleBecause→ ReasonCode(안정 enum) | 문자열(안정 계약 — `policy.py` docstring 6-15, 형식 변경 금지) |
 | `[review-req #pr/sha8] … → agent` | probe 코멘트 | Agent —requestedToReview→ PR@sha8 (for Card) | `_requested_reviewers` core.py:140-156 |
-| `review: approve\|request-changes` + `PR#n@sha8` | 리뷰어 코멘트 | Verdict(by Agent) —on→ PR@sha8 | `REVIEW_LINE`/`PR_SHA` core.py:115-116 + author 필터 |
+| `review: approve` 또는 `request-changes` + `PR#n@sha8` | 리뷰어 코멘트 | Verdict(by Agent) —on→ PR@sha8 | `REVIEW_LINE`/`PR_SHA` core.py:115-116 + author 필터 |
 | `[review-fix #pr/sha8]` | probe 코멘트 | Card —fixRequestedFor→ PR@sha8 (dedup) | 부분 문자열(core.py:324) |
 | `[needs-merge a<n>]` | probe 코멘트 | Card@attempt —escalatedToHuman | 부분 문자열(core.py:385) |
 | `[ci-fix a<n> #pr/sha8]` | probe 코멘트 | Card@attempt —ciFixDelegated→ PR@sha8 | 부분 문자열(core.py:417) |
@@ -286,7 +286,7 @@ probe 코멘트 마커 7종의 범위 키를 표 하나로 고정한다. 지금�
 | 오판(proxy) — 잘못된 승인 | probe merge 이후 같은 카드 ID를 참조하는 revert PR 수 / merge 후 verify 실패 코멘트 수 / merge 후 같은 카드 review→todo 수 | gh + 코멘트 + events | **proxy** |
 | 오판(proxy) — 잘못된 에스컬레이션 | needs-human 라벨을 사람이 제거하고 **재작업 없이**(attempt 불변) done된 건수 | events(labels) | **proxy** |
 | shadow 불일치 | `mode=shadow`에서 `output ≠ rule_output`인 건수(지점별) | 판단 로그 | "누가 맞았나"는 측정 불가. 불일치 사례 목록만 사람 검토용으로 보존 |
-| LLM 일관성 | 같은 `input_hash`에서 출력이 달라진 횟수 / 후보 순서를 섞었을 때 순위가 뒤바뀐 횟수 | 판단 로그 | judge 흔들림·위치 편향 관측(§12.1 — 이 정의는 해당 연구의 측정법과 같은 모양이다) |
+| LLM 일관성 | 같은 `input_hash`에서 출력이 달라진 횟수 / 후보 순서를 섞었을 때 순위가 뒤바뀐 횟수 | 판단 로그 | judge 흔들림·위치 편향 관측(§12.1 — 이 정의는 해당 연구의 측정법과 같은 모양이다). 반복 호출의 출력 정합은 다수결(k회)로 본다(§12.1 방법론) |
 | 사람 개입 | #3e 정의 재사용(사람 액터 코멘트/메시지 + blocked 실진입, 창 안) + `verify --human`/force_done 수 + probe가 손댄 카드의 사람 라벨 변경 수 | events | #3e와 같은 proxy 표기 |
 | 판단 지연 | 지점별 `latency_ms` p50(+p90), `cycle_ms` p50, `judge_timeout` 수, `fallback` 수 | 판단 로그 | |
 | 서버 회귀 | §7.3의 `slow_req`, `err_req`, `cycle_over` | 외부 프로브 | mini 상주 후보일 때만 |
@@ -523,3 +523,32 @@ accuracy, precision/recall, "올바른 배정률", "리뷰 품질" 등 **사람�
 | probe 테스트 8파일 | **130 passed, 41 warnings** (Python 3.11.16, pytest 8.3.5) | `pytest -q` |
 
 경고 41건은 fastapi `on_event` 비권장 안내 등 기존 경고다 — 본 문서와 무관하다.
+
+## 검증
+
+본 문서 작성 과정에서 실제로 수행한 검증이다(2026-10-10, `545d0c0` 체크아웃).
+
+1. **코드 참조 재대조**: `server/probe/core.py`(986줄 전수), `server/policy.py`(116줄 전수), `server/routers/issues.py`(claim 131-138 / claim-review 262-276 / done→review 391·428-438 / verify 560-572 구간), `server/service.py`(27, 56, 149-171, 377), `server/app.py`(probe 내장화 구간), `server/config.py`(55-62)를 직접 대독했다. 본문의 모든 `file:symbol:line` 참조는 이 체크아웃에서 산출했다 — 원문(af5aec8)의 줄 번호를 그대로 쓰지 않았다(§1.2).
+2. **grep 실측**: §3.2와 부록 C의 카운트(10곳/6곳/21곳/문자열 위치/데드코드)는 `grep -c`·`grep -n` 실측값이다.
+3. **회귀 테스트**: probe 관련 8개 테스트 파일 — **130 passed, 41 warnings**(1.08s, Python 3.11.16 + pytest 8.3.5). 41건의 경고는 기존 것(fastapi `on_event` 비권장 등)으로 본 변경과 무관하다. 본 PR은 문서 추가뿐이라 코드 동작은 변하지 않는다.
+4. **시크릿**: `bash scripts/secret-scan.sh` 통과. 추가로 본 문서에 대해 IPv4·hostname·토큰 패턴 grep을 직접 수행해 0건을 확인했다. 서버 주소는 `TT_URL`로만 표기했다.
+5. **마크다운**: 코드펜스 8개(짝수, 언어 태그 json만), 표 16개 — 열 수 불일치 0행, `## ` 절 16개. 본문 상호 참조(§7.3↔§12.1, §8.1↔§12.5, §8.2↔§12.1)의 존재를 확인했다.
+6. **변경 범위**: `git diff main --stat` — `docs/probe-restructure-design.md` 신규 1개 파일 외 변경 없음. 코드·기존 문서·설정은 건드리지 않았다.
+
+재현 명령:
+
+```sh
+git clone https://github.com/plainOldCode/think-tank.git src && cd src && git checkout 545d0c0
+wc -l server/probe/core.py server/policy.py server/routers/issues.py   # 986 / 116 / 700
+grep -c 'c.get("author") == "probe"' server/probe/core.py              # 10
+grep -c '_probe_marker(' server/probe/core.py                          # 6
+grep -n 'probe merge skip' server/probe/core.py                        # 568/570 + 발생점 6곳
+python3 -m venv .venv311 && .venv311/bin/pip install pytest fastapi httpx pydantic uvicorn
+.venv311/bin/python -m pytest -q -p no:cacheprovider tests/test_policy.py \
+  tests/test_cross_review.py tests/test_review_gate.py tests/test_dispatchd.py \
+  tests/test_probe_embed.py tests/test_probe_pr_adopt.py \
+  tests/test_completion_via_merge.py tests/test_execute_merge_head_guard.py
+# → 130 passed, 41 warnings (Python 3.11 기준; 3.9은 PEP 604 유니온으로 미지원)
+bash scripts/secret-scan.sh
+git diff main --stat   # docs/probe-restructure-design.md 1개 파일만
+```
