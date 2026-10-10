@@ -63,7 +63,8 @@ def create_issue(p: IssueCreate, ctx: Ctx = Depends(get_ctx)):
 @router.get("/issues")
 def list_issues(state: str | None = None, parent: str | None = None, label: str | None = None,
                 assignee: str | None = None, q: str | None = None, limit: int = 200,
-                archived: str = "no",
+                archived: str = "no", completed_before: str | None = None,
+                offset: int = 0,
                 ctx: Ctx = Depends(get_ctx)):
     sql = "SELECT * FROM issues WHERE 1=1"
     args: list = []
@@ -71,6 +72,11 @@ def list_issues(state: str | None = None, parent: str | None = None, label: str 
         sql += " AND archived=0"
     elif archived == "only":
         sql += " AND archived=1"
+    if completed_before:
+        # 자동 아카이브 후보 직접 질의(M3ZRGTSF-N95X) — created_at DESC 페이지에
+        # 가려진 오래된 done이 영구 기아하지 않게 한다(리뷰 R4).
+        sql += " AND completed_at IS NOT NULL AND completed_at < ?"
+        args.append(completed_before)
     if state:
         sql += " AND state=?"
         args.append(state)
@@ -88,8 +94,9 @@ def list_issues(state: str | None = None, parent: str | None = None, label: str 
     if q:
         sql += " AND (title LIKE ? OR body LIKE ?)"
         args += [f"%{q}%", f"%{q}%"]
-    sql += " ORDER BY created_at DESC LIMIT ?"
-    args.append(max(1, min(limit, 1000)))
+    sql += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+    args.append(max(0, min(limit, 1000)))
+    args.append(max(0, offset))
     with ctx.con() as c:
         rows = c.execute(sql, args).fetchall()
         return [service.enrich_blocked(c, dbmod.to_dict(r)) for r in rows]
@@ -145,6 +152,112 @@ def claim(issue_id: str, p: ClaimIn, ctx: Ctx = Depends(get_ctx)):
                                    "todo_since": None}, row["version"])
         row = service.get_issue(c, issue_id)
     return dbmod.to_dict(row)
+
+
+def _archive_days() -> int:
+    import os
+    try:
+        return int(os.environ.get("TT_ARCHIVE_AFTER_DAYS", "0") or 0)
+    except ValueError:
+        return 0
+
+
+def _archive_one(c, issue_id: str, days: int, cutoff: str):
+    """카드 1장 검증+아카이브 — 호출자가 BEGIN IMMEDIATE 상태의 연결을 넘긴다.
+    성공 시 1, 보존 사유 문자열, 미존재 None."""
+    row = c.execute("SELECT * FROM issues WHERE id=?", (issue_id,)).fetchone()
+    if not row:
+        return None
+    if row["archived"]:
+        return "already"
+    if row["state"] != "done":
+        return f"state is {row['state']}"
+    if not row["completed_at"]:
+        return "completed_at 없음"
+    if cutoff and row["completed_at"] >= cutoff:
+        return f"not aged {days}d yet"
+    # 모든 조상이 done이어야 한다 — 사이클·유실은 보수적으로 보존.
+    seen, pid = set(), row["parent_id"]
+    while pid:
+        if pid in seen:
+            return f"ancestor cycle at {pid}"
+        seen.add(pid)
+        prow = c.execute("SELECT state, parent_id FROM issues WHERE id=?", (pid,)).fetchone()
+        if not prow:
+            return f"ancestor {pid} missing"
+        if prow["state"] != "done":
+            return f"ancestor {pid} is {prow['state']}"
+        pid = prow["parent_id"]
+    c.execute("UPDATE issues SET archived=1, version=version+1, updated_at=? WHERE id=?",
+              (dbmod.now(), issue_id))
+    service.log_event(c, "issue.updated", "issue", issue_id,
+                      {"archived": True, "via": "auto-archive"})
+    return None
+
+
+@router.post("/issues/{issue_id}/archive")
+def archive_issue(issue_id: str, ctx: Ctx = Depends(get_ctx)):
+    days = _archive_days()
+    if days <= 0:
+        raise HTTPException(409, "auto-archive disabled (TT_ARCHIVE_AFTER_DAYS=0)")
+    with ctx.con() as c:
+        # 후보·조상 검증과 갱신을 한 쓰기 트랜잭션으로 — SELECT 사이 재개 경합을
+        # 원자적으로 막는다(P77 리뷰 R2/R3: ctx.con()만으론 SELECT가 트랜잭션 밖).
+        c.execute("BEGIN IMMEDIATE")
+        cutoff = _archive_cutoff(days)
+        why = _archive_one(c, issue_id, days, cutoff)
+        if why is None:
+            row = service.get_issue(c, issue_id)
+        elif why == "already":
+            row = service.get_issue(c, issue_id)  # 멱등
+        else:
+            c.rollback()  # 보존 — 변경 없음
+            raise HTTPException(409, why)
+    return dbmod.to_dict(row)
+
+
+@router.post("/maintenance/archive-sweep",
+             summary="자동 아카이브 전수 스윕 — 서버가 나이순(completed_at ASC)으로 검증",
+             description="TT_ARCHIVE_AFTER_DAYS 기준. 후보를 completed_at ASC(가장 오래된 것부터)로 "
+                         "전수 검증해 아카이브한다 — 보존 행이 뒤 후보를 가리지 못한다(P77 R4 최종). "
+                         "카드당 독립 트랜잭션. {archived, preserved} 반환.")
+def archive_sweep(ctx: Ctx = Depends(get_ctx)):
+    days = _archive_days()
+    if days <= 0:
+        raise HTTPException(409, "auto-archive disabled (TT_ARCHIVE_AFTER_DAYS=0)")
+    cutoff = _archive_cutoff(days)
+    archived = preserved = 0
+    cand = []
+    with ctx.con() as c:
+        # keyset 전수 순회 — 상한 없음. 보존 행이 몇 만 장이어도 마지막 후보까지 닿는다.
+        last_ca, last_id = "", ""
+        while True:
+            rows = c.execute(
+                "SELECT id, completed_at FROM issues WHERE state='done' AND archived=0 "
+                "AND completed_at IS NOT NULL AND completed_at < ? "
+                "AND (completed_at > ? OR (completed_at = ? AND id > ?)) "
+                "ORDER BY completed_at ASC, id ASC LIMIT 1000",
+                (cutoff, last_ca, last_ca, last_id)).fetchall()
+            if not rows:
+                break
+            cand += [r["id"] for r in rows]
+            last_ca, last_id = rows[-1]["completed_at"], rows[-1]["id"]
+    for iid in cand:
+        with ctx.con() as c:
+            c.execute("BEGIN IMMEDIATE")
+            why = _archive_one(c, iid, days, cutoff)
+            if why is None:
+                archived += 1
+            else:
+                c.rollback()
+                preserved += 1
+    return {"archived": archived, "preserved": preserved}
+
+
+def _archive_cutoff(days: int) -> str:
+    """completed_at 비교용 컷오프 — dbmod.now()와 같은 포맷(%z 붙은 ISO)."""
+    import time as _t
+    return _t.strftime("%Y-%m-%dT%H:%M:%S%z", _t.localtime(_t.time() - days * 86400))
 
 
 @router.post("/issues/{issue_id}/claim-review")
@@ -364,6 +477,10 @@ def patch_issue(issue_id: str, p: IssuePatch, ctx: Ctx = Depends(get_ctx)):
                 fields.update({"lease_by": "", "lease_expires": None})
         if p.archived is not None:
             fields["archived"] = 1 if p.archived else 0
+        # done 이탈(재개) 시 자동 아카이브 플래그 해제 — todo+archived 잔존 방지(P77 R2)
+        new_state = fields.get("state") or row["state"]
+        if new_state not in ("done", "cancelled") and row["state"] in ("done", "cancelled"):
+            fields["archived"] = 0
         # blocked 사족 (①): waiting_for는 4종 enum만, 상태가 blocked일 때만 유효.
         # 미입력(미지정)이면 기존 동작 그대로 — 하위 호환.
         if p.waiting_for is not None:

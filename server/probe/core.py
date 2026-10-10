@@ -10,6 +10,8 @@ import re
 import shutil
 import subprocess
 import time
+import urllib.error
+import urllib.parse
 import urllib.request
 
 from service import REVIEW_CONTRACT
@@ -448,6 +450,13 @@ def decide(snap):
         if why:
             actions.append({"agent": actor or "dispatchd", "issue": i["id"],
                             "action": "needs-human", "reason": why})
+    # ④ 자동 아카이브 스윕(M3ZRGTSF-N95X) — TT_ARCHIVE_AFTER_DAYS>0일 때 사이클당 1회
+    try:
+        _ad = int(os.environ.get("TT_ARCHIVE_AFTER_DAYS", "0") or 0)
+    except ValueError:
+        _ad = 0
+    if _ad > 0:
+        actions.append({"agent": "probe", "action": "archive-sweep", "days": _ad})
     return actions
 
 
@@ -584,6 +593,46 @@ def _review_dispatch_msg(act, agent):
             f"TT 코멘트 author는 '{agent}'로 게시.")
 
 
+def _archive_sweep(url, days):
+    """서버 내장 스윕 호출 — 후보 선정·나이·조상 체인 검증은 전부 서버가 나이순으로
+    원자 수행(M3ZRGTSF-N95X). probe는 사이클당 한 번 걸어줄 뿐이다."""
+    if days <= 0:
+        return
+    try:
+        res = api(url, "/maintenance/archive-sweep", "POST", {})
+    except urllib.error.HTTPError as e:
+        if e.code not in (404, 409):
+            print(time.strftime("%F %T"), f"[archive] 스윕 실패: HTTP {e.code}", flush=True)
+        return
+    except Exception as e:
+        print(time.strftime("%F %T"), f"[archive] 스윕 실패: {e}", flush=True)
+        return
+    if isinstance(res, dict) and (res.get("archived") or res.get("preserved")):
+        print(time.strftime("%F %T"),
+              f"[archive] {res.get('archived', 0)}카드 아카이브, "
+              f"{res.get('preserved', 0)}보존 (done+{days}일, 조상 done)", flush=True)
+
+
+def _now_dt():
+    try:
+        from datetime import datetime, timezone
+        return datetime.now(timezone.utc)
+    except Exception:
+        return None
+
+
+def _parse_iso(s):
+    try:
+        from datetime import datetime
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            from datetime import timezone
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except (ValueError, TypeError):
+        return None
+
+
 def execute(url, act):
     kind = act["action"]
     if kind == "release-reviewer":
@@ -604,6 +653,9 @@ def execute(url, act):
             if cur.get("lease_by") == act.get("reviewer"):
                 fields.update({"lease_by": "", "lease_expires": None})
             api(url, f"/issues/{act['issue']}", "PATCH", fields)
+        return
+    if kind == "archive-sweep":
+        _archive_sweep(url, int(act.get("days") or 0))
         return
     if kind == "merge":
         repo = act.get("repo") or REPO
