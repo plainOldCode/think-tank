@@ -49,8 +49,63 @@ For merge candidates (card link + work_contract + attempt≥1 + non-draft + repo
 - Reviewer: a single agent name in env `TT_REVIEW_AGENT`. **Unset = gate off**
   (existing behavior — the same default-off safety pattern as TT_PROBE_INTERVAL). mini activation starts
   when the launchd plist env is added (after the reviewer runner 2HZF is ready).
+  Since M4JTJ970-WS3C the env is the **legacy fallback only** — see the routing ruleset below.
 - Cards excluded from merge by the review gate are **excluded** from the ⓪b needs-merge comment targets (noise prevention).
 - CI red is handled by the existing ci-fix first — review only comes after green.
+
+## Reviewer routing ruleset — counterpart per implementing agent (M4JTJ970-WS3C)
+
+The reviewer is the **implementing agent's counterpart** — nobody reviews their own family's work.
+The implementing agent is the card's `assignee` — the same source the server's own-work rule
+(claim-review 409) uses. Unmarked/unmatched defaults to **codex**; if the implementing family is
+`codex*` (any prefix variant), the fallback reviewer is **claude** instead — self-review
+prevention takes priority over the codex default (issuer decision 2026-10-10).
+
+| implementing agent | reviewer |
+|---|---|
+| codex (incl. `codex@host`, `codex-*` prefix variants) | claude |
+| hermes (incl. `hermes@host`) | codex |
+| opencode (incl. `opencode-tp13`) | codex |
+| claude | codex |
+| unmarked / unmatched (incl. qw-flash, agy, tt-reviewer) | **codex (default)** — but a `codex*` implementing family routes to claude |
+| CI bots (`doc-check`, `e2e`) | not implementing agents — treated as unmarked |
+
+- **Family normalization**: agent IDs drift by host/variant suffix (`codex` vs `codex@host` are
+  mixed in verdict comments). Matching is by family prefix: strip `@host`, then longest known
+  family prefix wins. If the base matches no family and the ID is `user@host`, the **host alias**
+  map is consulted (`tp-13` → opencode — the board's second-most-common assignee form
+  `skshim@tp-13` is an opencode-family implementer, F2); extendable via
+  `TT_HOST_FAMILY_MAP=host->family`. `TT_REVIEW_MAP=codex->claude,claude->codex,...` overrides/extends the
+  default table (parsed as `family->reviewer`, comma separated). The self-review guard uses a
+  **fixed** family vocabulary plus the adapter alias (`kanban-adapter` ≡ hermes, its standing
+  delegate) and the author's exact identity — mapping extensions cannot route around it.
+- **Unavailable reviewer fallback** (issuer decision 2026-10-10): if the routed reviewer is
+  unavailable — offline (not a registered+enabled agent) or holding an active lease (judged
+  **per resolved agent name, not per family** — one busy family member must not block an idle
+  sibling, F3) — or refusing the claim (`claim-review` 409), walk **claude → kanban-adapter
+  (hermes's board adapter) → codex**. codex is last because its availability is the flakiest.
+  The author's identity and implementing family stay excluded through the whole chain (self-review
+  prevention holds). If nobody in the chain is claimable, the probe does **not** widen to a general
+  idle scan (F1 — an unassigned agent would end up reviewing); the legacy fallback applies:
+  `TT_REVIEW_AGENT` env, or the `kanban-adapter` default — and a legacy reviewer that is the
+  author (or their family) is not dispatched either.
+- **Routing scope — both dispatch paths**: the auto-claim (`review-claim`) targets **only** the
+  `pick_reviewer` result — the routed counterpart walked down the fallback chain (F1). The
+  `review-request` dispatch carries the routed reviewer (absent when the whole chain is
+  unavailable — the executor then resolves the legacy reviewer). Verdict format, the
+  `PR#<n>@<sha8>` staleness rule, and the dispatch template are unchanged. The
+  server's own-work 409 (exact `assignee` match) is unchanged — probe-side selection excludes
+  the author's identity and family so it never nominates one.
+- **Claim handoff** (refusal recovery): the probe claims the review on the target's behalf
+  before dispatching and only then records the `[review-req …]` marker. A 409 refusal walks to
+  the next candidate; if every candidate refuses (or the card's review is actively held by
+  another reviewer's lease), no request marker is left — the next cycle re-judges and retries
+  instead of being blocked permanently. Refusals are noted once per PR+head
+  (`[review-claim-fail …]`); candidates eliminated entirely by the self-review guard (no request
+  sent at all) are noted separately (`[review-guard-skip …]`) instead of being logged as 409 (F4).
+  If the claim succeeded but the dispatch itself fails, the probe **releases the reviewer lease**
+  before noting — a stranded lease would 409 every other reviewer until expiry (F4, observed
+  live on M4JTJ970-WS3C PR#80).
 
 ## POC constraints (intentional simplifications)
 
@@ -100,4 +155,6 @@ PR push → CI green → probe: no review → [review-req] dispatch → reviewer
 | claude (tt-runner) | ~4 min | deep verdict — identified duplicates, CONFLICTING, regressions |
 | hermes MoA | ~80 min | built for work, too slow as a reviewer |
 
-Gate operation: `TT_REVIEW_AGENT=codex`. claude is the cross-review engine; hermes is excluded from review dispatch targets.
+Gate operation: `TT_REVIEW_AGENT=codex` (legacy single-value mode — superseded by the
+counterpart routing ruleset above; the env value now serves as the last-resort fallback).
+claude is the cross-review engine; hermes is excluded from review dispatch targets.

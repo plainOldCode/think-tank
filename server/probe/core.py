@@ -156,9 +156,215 @@ def _requested_reviewers(i, pr_no, sha8):
     return out
 
 
+# --- 카운터파트 리뷰어 라우팅 (M4JTJ970-WS3C, docs/review-gate.md 룰셋) ---
+
+# 자기 리뷰 방지용 고정 가족 어휘 — TT_REVIEW_MAP 확장과 무관하게 이 어휘로만 제외한다
+# (매핑 키 codex-labs->codex로 가족 경유 자기 리뷰를 만들 수 없다)
+REVIEW_FAMILIES = ("codex", "claude", "hermes", "opencode")
+# 어댑터 별칭 — kanban-adapter는 hermes의 리뷰 대행자다(발령자 결정 2026-10-10)
+FAMILY_ALIASES = {"kanban-adapter": "hermes"}
+# host 별칭 — assignee가 user@host 형식이고 base로 가족을 못 찾을 때 host로 추정한다(F2).
+# 실제 보드 assignee 2위 형식(skshim@tp-13)은 등록 에이전트명과 달라 가족 정규화에
+# 걸리지 않는다. 카드 표 "opencode (tp-13 포함)" — env TT_HOST_FAMILY_MAP으로 확장.
+HOST_FAMILY_ALIASES = {"tp-13": "opencode"}
+# 발령자 결정(2026-10-10) 기본 카운터파트 표 — TT_REVIEW_MAP env로 override·확장
+DEFAULT_REVIEW_MAP = {"codex": "claude", "claude": "codex",
+                      "hermes": "codex", "opencode": "codex"}
+# 리뷰어 미가용 폴백 순서 — codex는 최후순위, hermes 자리는 kanban 어댑터가 대행
+REVIEW_FALLBACK = ("claude", "kanban-adapter", "codex")
+# CI 봇은 구현 에이전트가 아니다 — 미표기 취급(기본 라우팅)
+CI_BOTS = ("doc-check", "e2e")
+
+
+def parse_review_map(raw):
+    """TT_REVIEW_MAP='codex->claude,claude->codex' → dict. 빈 칸·불량 항목은 무시."""
+    out = {}
+    for part in (raw or "").split(","):
+        if "->" not in part:
+            continue
+        k, _, v = part.partition("->")
+        k, v = k.strip().lower(), v.strip()
+        if k and v:
+            out[k] = v
+    return out
+
+
+def effective_review_map():
+    """기본 카운터파트 표 + env override — decide가 사이클당 1회 산출."""
+    return {**DEFAULT_REVIEW_MAP, **parse_review_map(os.getenv("TT_REVIEW_MAP", ""))}
+
+
+def parse_host_family_map(raw):
+    """TT_HOST_FAMILY_MAP='tp-13->opencode,foo->claude' → dict. 빈 칸·불량 항목은 무시."""
+    out = {}
+    for part in (raw or "").split(","):
+        if "->" not in part:
+            continue
+        k, _, v = part.partition("->")
+        k, v = k.strip().lower(), v.strip().lower()
+        if k and v:
+            out[k] = v
+    return out
+
+
+def effective_host_family_map():
+    """기본 host 별칭 + env 확장 — agent_family가 host로 가족을 추정할 때 사용(F2)."""
+    return {**HOST_FAMILY_ALIASES, **parse_host_family_map(os.getenv("TT_HOST_FAMILY_MAP", ""))}
+
+
+def agent_family(name):
+    """에이전트 가족 정규화(자기 리뷰 방지 기준) — host 접미사 흡수 + 고정 어휘 prefix.
+
+    어댑터 별칭 우선(kanban-adapter→hermes 대행). base에서 가족을 못 찾고 user@host
+    형식이면 host 별칭으로 가족을 추정한다(F2 — skshim@tp-13 → opencode). 미매칭
+    (None)은 가족 미지 에이전트(qw-flash, agy 등) — 본인 신원 제외만 적용되고
+    가족 제외는 없다.
+    """
+    s = (name or "").strip().lower()
+    base, _, host = s.partition("@")
+    if base in FAMILY_ALIASES:
+        return FAMILY_ALIASES[base]
+    for fam in sorted(REVIEW_FAMILIES, key=len, reverse=True):
+        if base.startswith(fam):
+            return fam
+    if host:
+        hmap = effective_host_family_map()
+        if host in hmap:
+            return hmap[host]
+    return None
+
+
+def _routing_family(name, rmap):
+    """라우팅 lookup용 가족 — 매핑 키(최장 prefix) 우선, 다음 고정 가족."""
+    base = (name or "").strip().lower().split("@", 1)[0]
+    for fam in sorted(set(rmap), key=len, reverse=True):
+        if base.startswith(fam):
+            return fam
+    return agent_family(name)
+
+
+def _impl_family(assignee):
+    """구현 에이전트의 가족 — CI 봇은 구현 에이전트가 아니라 None."""
+    a = (assignee or "").strip()
+    return None if a.lower() in CI_BOTS else agent_family(a)
+
+
+def route_reviewer(assignee, rmap):
+    """구현 에이전트 → 카운터파트 리뷰어(순수 — 가용성 무관).
+
+    미표기(CI 봇 포함)·미매칭 가족 → codex 기본. codex* 가족 구현은 매핑값(claude)으로 —
+    자기 리뷰 방지 원칙이 codex 기본보다 우선(발령자 결정 2026-10-10).
+    구현 에이전트 소스는 카드 assignee — 서버 own_work 판정(claim-review 409)과 동일.
+    """
+    a = (assignee or "").strip()
+    if a.lower() in CI_BOTS:
+        a = ""
+    fam = _routing_family(a, rmap)
+    if fam and fam in rmap:
+        return rmap[fam]
+    return "codex"
+
+
+def _resolve_agent(cand, agents):
+    """후보 → 실제 dispatch 대상 등록 에이전트 이름. 정확 일치 우선, 다음 가족 매칭.
+
+    등록 에이전트 스냅샷(decide의 enabled+base_url 필터 통과 집합)에 없으면
+    None — 오프라인 판정의 기준.
+    """
+    fam = agent_family(cand)
+    for a in agents or []:
+        if a.get("name") == cand:
+            return cand
+    for a in agents or []:
+        if fam and agent_family(a.get("name")) == fam:
+            return a.get("name")
+    return None
+
+
+def pick_reviewer(assignee, agents, busy, rmap):
+    """라우팅 + 미가용 폴백(순수). 전부 미가용이면 None — 레거시 폴백으로.
+
+    agents: 등록+활성 에이전트 스냅샷(오프라인 판정), busy: 활성 lease 보유
+    에이전트 이름 집합. 리스 보유는 에이전트 단위로만 판정한다(F3 — 가족 한 명의
+    lease가 가족 전체 후보를 막지 않는다, 검증기준 ①). 가족 매칭은 자기 리뷰
+    가드에만 쓴다. 작성자 본인 신원과 구현 가족(고정 어휘·어댑터 별칭·host 별칭
+    포함)은 매핑 확장과 무관하게 끝까지 제외된다 — 자기 리뷰 방지 유지.
+    """
+    a = (assignee or "").strip()
+    impl_fam = _impl_family(a)
+    primary = route_reviewer(assignee, rmap)
+    for cand in [primary] + [c for c in REVIEW_FALLBACK if c != primary]:
+        cand_fam = agent_family(cand)
+        if cand == a or (impl_fam and cand_fam == impl_fam):
+            continue  # 자기 리뷰 방지 — 본인 신원·구현 가족 후보 제외
+        name = _resolve_agent(cand, agents)
+        if name is None:
+            continue  # 오프라인
+        if name in (busy or []):
+            continue  # 리스 보유 — 에이전트 단위 판정(F3)
+        return name
+    return None
+
+
 def _probe_marker(i, marker):
     return any(marker in (c.get("body") or "") for c in (i.get("comments") or [])
                if c.get("author") == "probe")
+
+
+def _claim_refused_note(url, act, cur, code):
+    """리뷰 수령 거부 기록 — review-req 마커를 남기지 않아 다음 사이클 재판정·재시도(R3).
+
+    같은 head당 1회만 공지(review-claim-fail 마커 dedup) — 반복 실패 사이클의 소음 방지.
+    """
+    sha8 = (act.get("head_sha") or "")[:8]
+    marker = f"[review-claim-fail #{act.get('pr')}/{sha8}]"
+    if any(marker in (c.get("body") or "") for c in (cur.get("comments") or [])
+           if c.get("author") == "probe"):
+        return
+    try:
+        api(url, f"/issues/{act['issue']}/comments", "POST",
+            {"author": "probe", "body": f"{marker} 리뷰어 수령 거부(HTTP {code}) — "
+                                        "다음 사이클 재시도"})
+    except Exception:
+        pass
+
+
+def _guard_skipped_note(url, act, cur):
+    """자기 리뷰 가드로 후보가 전부 제외된 기록 — 실제 요청은 없었음(F4).
+
+    HTTP 409로 기록하면 요청조차 안 한 사실을 오독하므로 사유 코드를 분리한다.
+    review-req 마커를 남기지 않아 다음 사이클 재판정(R3) — head당 1회 dedup.
+    """
+    sha8 = (act.get("head_sha") or "")[:8]
+    marker = f"[review-guard-skip #{act.get('pr')}/{sha8}]"
+    if any(marker in (c.get("body") or "") for c in (cur.get("comments") or [])
+           if c.get("author") == "probe"):
+        return
+    try:
+        api(url, f"/issues/{act['issue']}/comments", "POST",
+            {"author": "probe", "body": f"{marker} 리뷰 후보 전원 자기 리뷰 가드로 제외"
+                                        "(요청 없음) — 다음 사이클 재판정"})
+    except Exception:
+        pass
+
+
+def _reviewer_lease_release(url, issue, reviewer):
+    """claim 성공 후 dispatch 실패 시 리뷰어 lease 반납(F4).
+
+    lease 잔존은 만료까지 타 리뷰어 claim-review를 409로 막아 재발령을 방해한다.
+    점유가 방금 claim한 리뷰어 본인일 때만 지운다 — 남이 재claim한 새 lease는
+    보존한다(release-reviewer와 동일 가드, R5).
+    """
+    try:
+        cur = api(url, f"/issues/{issue}") or {}
+        if (cur.get("reviewer") or "") != (reviewer or ""):
+            return
+        fields: dict = {"reviewer": ""}
+        if cur.get("lease_by") == reviewer:
+            fields.update({"lease_by": "", "lease_expires": None})
+        api(url, f"/issues/{issue}", "PATCH", fields)
+    except Exception:
+        pass
 
 
 def hydrate_reviews(url, snap):
@@ -267,6 +473,7 @@ def decide(snap):
     # 리뷰 게이트(N0AN, docs/review-gate.md): TT_REVIEW_AGENT 설정 시 승인 코멘트 필요.
     by_id = {i["id"]: i for i in issues}
     reviewer = os.environ.get("TT_REVIEW_AGENT", "").strip()
+    rmap = effective_review_map()  # 카운터파트 라우팅(M4JTJ970-WS3C) — env override 포함
     gated = set()  # 리뷰 진행 중 카드 — ⓪b needs-merge 소음 제외
     for p in snap.get("prs") or []:
         iid = pr_card_id(p)
@@ -332,26 +539,45 @@ def decide(snap):
                     continue
                 if verdict is None:  # 미리뷰 또는 stale — (재)요청
                     marker = f"[review-req #{p['number']}/{sha8}]"
-                    # TT 개선#3c: 교차리뷰 자동 수령 — 본인 카드가 아닌 유휴 에이전트가 claim
-                    cross = next((a["name"] for a in agents
-                                  if a["name"] != i.get("assignee") and a["name"] not in busy_agents
-                                  and a["name"] not in claimed
-                                  and policy.review_eligible(i, now=now, agent=a["name"],
-                                                             low_risk=low_risk)[0]), None)
-                    if cross and not _probe_marker(i, marker):
-                        actions.append({"agent": cross, "issue": iid, "action": "review-claim",
-                                        "pr": p["number"], "repo": pr_repo,
-                                        "branch": p.get("branch", ""),
-                                        "head_sha": p.get("head_sha", ""), "marker": marker,
-                                        "reason": f"PR#{p['number']} 리뷰 대기 — 유휴 에이전트 자동 수령(교차리뷰)"})
-                        claimed.add(cross)  # R3: 한 사이클에 리뷰 1건
-                        continue
                     if not _probe_marker(i, marker):
-                        actions.append({"agent": "probe", "issue": iid, "action": "review-request",
-                                        "pr": p["number"], "repo": pr_repo,
-                                        "branch": p.get("branch", ""),
-                                        "head_sha": p.get("head_sha", ""), "marker": marker,
-                                        "reason": f"PR#{p['number']} CI green — 리뷰 요청 → {reviewer}"})
+                        # 카운터파트 라우팅 — 구현 에이전트(assignee) 기준 리뷰어 결정.
+                        # 수령 방식(review-claim 선점)은 #3c 그대로, 대상 선정만 양 경로가
+                        # 같은 카운터파트/가족 정책을 따른다(R1).
+                        routed = pick_reviewer(i.get("assignee"), agents,
+                                               busy_agents | claimed, rmap)
+                        # F1: 교차 수령 후보는 pick_reviewer 결과(라우팅 1순위 + 3a
+                        # 폴백 체인)로 한정한다 — 전원 미가용이면 일반 유휴 스캔으로
+                        # 확장하지 않는다(발령자가 지정하지 않은 에이전트의 수령 방지).
+                        # pick_reviewer가 자기 리뷰 가드·오프라인·리스 보유를 이미
+                        # 반영하므로, 남은 카드 수준 자격(review_eligible)만 재확인한다.
+                        cross = None
+                        if routed and routed not in busy_agents and routed not in claimed \
+                                and routed != i.get("assignee") \
+                                and policy.review_eligible(i, now=now, agent=routed,
+                                                           low_risk=low_risk)[0]:
+                            cross = routed
+                        if cross:
+                            actions.append({"agent": cross, "issue": iid, "action": "review-claim",
+                                            "pr": p["number"], "repo": pr_repo,
+                                            "branch": p.get("branch", ""),
+                                            "head_sha": p.get("head_sha", ""), "marker": marker,
+                                            "reason": f"PR#{p['number']} 리뷰 대기 — 유휴 에이전트 자동 수령(교차리뷰)"})
+                            claimed.add(cross)  # R3: 한 사이클에 리뷰 1건
+                        else:
+                            # 활성 점유(타인 리뷰 lease)면 요청하지 않는다 — 마커도 없어
+                            # lease 만료 후 다음 사이클 재판정(R3: 수령 거부 뒤 영구 차단 방지).
+                            _ok, _why = policy.review_eligible(i, now=now, agent=routed or "~")
+                            if _why != "review_occupied":
+                                # 전원 미가용이면 reviewer 키 없이 액션만(실행측 레거시 폴백).
+                                actions.append({"agent": "probe", "issue": iid,
+                                                "action": "review-request",
+                                                "pr": p["number"], "repo": pr_repo,
+                                                "branch": p.get("branch", ""),
+                                                "head_sha": p.get("head_sha", ""),
+                                                "marker": marker,
+                                                "reason": f"PR#{p['number']} CI green — 리뷰 요청 → "
+                                                          f"{routed or reviewer or 'kanban-adapter'}",
+                                                **({"reviewer": routed} if routed else {})})
                     continue
                 # approve — 아래 merge로 통과
                 gated.discard(iid)
@@ -774,15 +1000,23 @@ def execute(url, act):
         if any(act["marker"] in (c.get("body") or "") for c in (cur.get("comments") or [])
                if c.get("author") == "probe"):
             return  # 경합 방어 — decide 판정 후 재확인
-        api(url, f"/issues/{act['issue']}/claim-review", "POST", {"agent": act["agent"]})
+        try:
+            api(url, f"/issues/{act['issue']}/claim-review", "POST", {"agent": act["agent"]})
+        except urllib.error.HTTPError as e:
+            # 수령 거부(점유 경합 등) — 사이클 전멸 대신 기록만 남기고 다음 사이클 재시도.
+            # review-req 마커를 남기지 않으므로 decide는 재판정한다(R3).
+            _claim_refused_note(url, act, cur, e.code)
+            return
         try:
             api(url, f"/issues/{act['issue']}/dispatch", "POST",
                 {"agent": act["agent"], "message": _review_dispatch_msg(act, act["agent"]),
                  "work_contract": REVIEW_CONTRACT})
         except Exception as e:
+            # F4 — claim 점유만 남기고 죽으면 만료까지 타 리뷰어가 409다: 반납 후 기록
+            _reviewer_lease_release(url, act["issue"], act["agent"])
             api(url, f"/issues/{act['issue']}/comments", "POST",
                 {"author": "probe", "body": f"{act['marker']} 리뷰 dispatch 실패({str(e)[:80]}) — "
-                                            "사람 판단 대기"})
+                                            "리뷰어 lease 반납, 사람 판단 대기"})
             return
         api(url, f"/issues/{act['issue']}/comments", "POST",
             {"author": "probe", "body": f"{act['marker']} PR#{act['pr']} CI green — "
@@ -794,15 +1028,45 @@ def execute(url, act):
         if any(act["marker"] in (c.get("body") or "") for c in (cur.get("comments") or [])
                if c.get("author") == "probe"):
             return  # 경합 방어 — decide 판정 후 재확인
-        agent = os.environ.get("TT_REVIEW_AGENT", "").strip() or "kanban-adapter"
+        # M4JTJ970-WS3C: decide가 라우팅한 카운터파트 리뷰어 우선 — env는 레거시 폴백.
+        # 작성자 본인 신원·구현 가족(고정 어휘·어댑터 별칭)은 매핑 확장과 무관하게 제외(R2).
+        author = (cur.get("assignee") or "").strip()
+        author_fam = _impl_family(author)
+        if act.get("reviewer"):
+            cands = [act["reviewer"]] + [c for c in REVIEW_FALLBACK if c != act["reviewer"]]
+        else:
+            legacy = os.environ.get("TT_REVIEW_AGENT", "").strip() or "kanban-adapter"
+            cands = [legacy]
+        cands = [c for c in cands
+                 if c != author and not (author_fam and agent_family(c) == author_fam)]
+        # 동기 수령 — claim-review 거부(409)면 다음 후보로 폴백(R3). 성공 전에는
+        # review-req 마커를 남기지 않아 전원 거부 시 다음 사이클이 재판정한다.
+        agent = None
+        for cand in cands:
+            try:
+                api(url, f"/issues/{act['issue']}/claim-review", "POST", {"agent": cand})
+                agent = cand
+                break
+            except urllib.error.HTTPError as e:
+                if e.code != 409:
+                    raise
+        if agent is None:
+            # F4 — 가드로 후보가 전부 걸러진 경우와 실제 거부(409)는 사유가 다르다
+            if cands:
+                _claim_refused_note(url, act, cur, 409)
+            else:
+                _guard_skipped_note(url, act, cur)
+            return
         msg = _review_dispatch_msg(act, agent)
         try:
             api(url, f"/issues/{act['issue']}/dispatch", "POST",
                 {"agent": agent, "message": msg, "work_contract": REVIEW_CONTRACT})
         except Exception as e:
+            # F4 — claim 점유만 남기고 죽으면 만료까지 타 리뷰어가 409다: 반납 후 기록
+            _reviewer_lease_release(url, act["issue"], agent)
             api(url, f"/issues/{act['issue']}/comments", "POST",
                 {"author": "probe", "body": f"{act['marker']} 리뷰 dispatch 실패({str(e)[:80]}) — "
-                                            "사람 판단 대기"})
+                                            "리뷰어 lease 반납, 사람 판단 대기"})
             return
         api(url, f"/issues/{act['issue']}/comments", "POST",
             {"author": "probe", "body": f"{act['marker']} PR#{act['pr']} CI green — "
