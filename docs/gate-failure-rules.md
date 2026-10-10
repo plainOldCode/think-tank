@@ -203,3 +203,4 @@ probe-restructure-design.md §5.2의 단조성 — LLM 출력은 `hold`/`escalat
 - 코드 참조: core.py 행 번호는 origin/main 5a90bad 실측(2026-10-10 fetch). 커밋 후 이동 시 file:symbol 기준으로 재확인할 것.
 - 수치: 집계는 모두 매트릭스 초안 코멘트 인용(코멘트 패턴 추정) — 원본 census 미대조로 확인 안 됨 항목은 §8에 그대로 보존.
 - 기존 파일: 무수정(git status 기준 docs/ 신규 1개만).
+- 최종 실측(커밋 ad64f4c blob): 205줄, 표 6개, `## ` 절 14개, 코드펜스 0개 — §8 자기 점검 수치와 일치. 집계 인용 수치(no_pr 20 등 15행 전체)는 매트릭스 초안 코멘트 원문 대조 확인.
