@@ -139,3 +139,11 @@ def test_claim_review는_review_카드만_받는다(cli):
         pass
     p2 = run("claim-review", iid)
     assert "본인 작업" in p2.stderr
+
+
+def test_인자_누락시_usage_안내(cli):
+    """회귀: claim/claim-review/state에 인자가 없으면 $1 unbound 대신 usage를 출력한다."""
+    run, url, api, db = cli
+    for cmd in ("claim", "claim-review", "state"):
+        p = run(cmd)
+        assert p.returncode != 0 and "usage:" in p.stderr, (cmd, p.stderr)

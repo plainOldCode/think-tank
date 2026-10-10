@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # tt — think-tank issue tracker CLI (server: REST API, see docs/API.md)
 set -uo pipefail
-URL="${TT_URL:-http://127.0.0.1:7800}"
+URL="${TT_URL:-http://100.122.96.16:7800}"
 AGENT="${TT_AGENT:-$USER@$(hostname -s)}"
 JQ="jq -r"
 # TT 개선#3f: CLI 버전 — 서버 openapi 해시와 함께 `tt version`으로 표기(드리프트 감지)
@@ -197,6 +197,7 @@ case "$cmd" in
     <<<"$out" $JQ '"● \(.id) alive \(.heartbeat_at)"' ;;
 
   claim)
+    [[ $# -lt 1 ]] && { echo "usage: tt claim ID [--hours N]" >&2; exit 1; }
     id="$1"; shift; hours=""
     [[ "${1:-}" == --hours ]] && hours="$2"
     cl_payload="$(jq -cn --arg a "$AGENT" --arg h "$hours" '{agent:$a} + (if $h=="" then {} else {hours:($h|tonumber)} end)')"
@@ -206,6 +207,7 @@ case "$cmd" in
 
   claim-review)
     # TT 개선#3c: 리뷰어 점유 — review 카드만, 본인 작업 카드는 409(교차리뷰)
+    [[ $# -lt 1 ]] && { echo "usage: tt claim-review ID [--hours N]" >&2; exit 1; }
     id="$1"; shift; hours=""
     [[ "${1:-}" == --hours ]] && hours="$2"
     cr_payload="$(jq -cn --arg a "$AGENT" --arg h "$hours" '{agent:$a} + (if $h=="" then {} else {hours:($h|tonumber)} end)')"
@@ -250,6 +252,7 @@ case "$cmd" in
     fi ;;
 
   state)
+    [[ $# -lt 2 ]] && { echo "usage: tt state ID STATE" >&2; exit 1; }
     out="$(req -X PATCH "$URL/issues/$1" -d "{\"state\":\"$2\"}")" || { echo "실패: 존재하지 않거나 금지된 전이" >&2; exit 1; }
     <<<"$out" $JQ '"■ \(.id) → \(.state)"' ;;
 
@@ -396,4 +399,5 @@ case "$cmd" in
 
   help|*) usage ;;
 esac
+
 
