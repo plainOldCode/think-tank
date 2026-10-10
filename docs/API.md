@@ -11,18 +11,31 @@ backlog → todo → in_progress → blocked/review/done. review → todo/blocke
 | | |
 |---|---|
 | `GET /work-contract` | `{version, instructions, report_required}` — also delivered on claim/pull/dispatch |
-| `POST /issues` | `{title, body?, parent_id?, priority?(1-4), labels?[], state?=todo|backlog}` |
+| `POST /issues` | `{title, acceptance, body?, parent_id?, priority?(1-4), labels?[], state?=todo|backlog, nominee?}` — **`acceptance` required (TT improvement #3a)**: machine-readable done-criteria, missing/blank → 422; existing cards fill gradually via PATCH (empty rejected). **Self-nomination (TT improvement #3d)**: labels containing `self` require `nominee` (becomes assignee), force `backlog` start, WIP 1 open self card per nominee (2nd → 409); todo promotion is human/triage only — PATCH must carry `promoted: true` |
 | `GET /issues?state=&parent=&label=&assignee=&q=&limit=&archived=` | parent=none → roots only. archived: `no` (default, hidden) `all` `only` |
 | `GET /issues/{id}` | + children, comments |
 | `GET /issues/{id}/tree` | recursive tree |
-| `POST /issues/{id}/claim` | `{agent}` — todo+unassigned only, 409 otherwise |
-| `POST /pull` | `{agent}` — atomically claims one by priority (p1..p4) then creation order; `null` if none |
+| `POST /issues/{id}/claim` | `{agent}` — todo+unassigned only, 409 otherwise. Non-todo rejections are annotated with the shared policy code when one applies (e.g. `cannot claim: state is in_progress [policy: lease_held]`) — probe and `/pull` enforce eligibility; direct `/claim` only annotates and does not block budget-exhausted cards |
+| `POST /issues/{id}/claim-review` | `{agent, hours?}` — reviewer claim, review-state cards only (409 otherwise); marks `reviewer`+review lease without touching state/attempt; response carries the review contract. Own-work cards 409 (cross-review rule, TT improvement #3c); a different reviewer 409 while an active review lease is held — the same reviewer may re-claim to refresh |
+| `POST /pull` | `{agent, require_label?, hours?}` — atomically claims one by priority (p1..p4) then creation order; candidates re-checked by the busy/eligible policy (TT improvement #3b) so budget-exhausted/leased rows are skipped; `null` if none |
 | `PATCH /issues/{id}` | transition guards + `expected_version` optimistic lock, `clear_parent`/`clear_priority`, `archived:true/false`, `waiting_for` (blocked-only: dependency|human|gate|external) + `waiting_actor`/`blocked_detail`, `force_done` (approval exception), `completion_report` (structured completion report) |
 | `POST /issues/{id}/verify` | `{verifier, evidence?, completion_report?, expected_version?}` — review→done report receipt. Non-review/round conflict 409, report errors 422 |
 | `POST /issues/{id}/comments` | `{author, body}` |
 | `GET /issues/{id}/why-blocked` | blocked-reason projection: gate, criteria, dependencies, missing, release_ready, evidence, next_commands. 409 if not blocked |
 
 Concurrent claims use the `version` column as an optimistic lock — `pull` is designed and tested so concurrent calls hand out different issues.
+
+## Busy/eligible policy — single gate, stable reason codes (TT improvement #3b/#3c)
+
+`server/policy.py` is the one source for "can this card take new work / a review claim" — probe auto-assignment and `POST /pull` **enforce** it (ineligible candidates are skipped / never dispatched), while `POST /issues/{id}/claim` uses it to **annotate** applicable non-todo rejections (the `[policy: <code>]` suffix may be absent; budget-exhausted todo cards are not blocked on direct claim). Codes surface verbatim in claim 409 bodies, probe logs (`[probe] cycle ... skips={...}`) and `needs-human` reasons:
+
+`state:terminal` · `archived` · `state:backlog` · `state:blocked` · `state:review` · `state:in_progress` · `state:todo` · `lease_held` (= runner running; expired leases are re-claimable, not busy) · `budget:dispatch-tries>=2` · `budget:attempt>=2` · `not_auto` (probe auto mode: no `auto` label).
+
+Review-claim eligibility (`policy.review_eligible`): `review` state + work contract (`no_contract`), not the agent's own work (`own_work` — also enforced by claim-review 409), no other reviewer's active lease (`review_occupied`). Cross-review auto-claim: probe picks an idle non-author agent and dispatches the review contract; requests dedupe via the `[review-req #pr/sha8]` marker comment.
+
+## Metrics & 2-week experiment (TT improvement #3e)
+
+Metric definitions (intake time, review pass rate, rework rate, stall recovery, interventions — card count is NOT a metric) and the 2-week experiment: `docs/metrics-2week-experiment.md`; collector `scripts/metrics_collect.py` reads `GET /issues` + `GET /events?after_seq=`. Event history starts 2026-10-09 (#2 deploy).
 
 ## Methodology and completion reports
 
@@ -103,6 +116,7 @@ Agent-to-agent communication is async-first — the TT board (cards+comments) is
 
 - 2026-09-29: **3-1 branch convention (DEQ1 v5)** — code work merges to main only via a per-card branch `tt/<cardID>-<slug>` → GitHub PR (merge authority and timing belong to the user). No direct pushes to main. Exceptions only when explicitly stated in the dispatch message (the primary maintainer's workstation = the mini relay sync path). The v2 block carries the same wording — the v1 block also gained the same clause (safe because old pinned cards use their stored copy at claim time).
 - 2026-09-29: **`/m` build auto-refresh** — `const BUILD` (file mtime) is injected just before the response; clients compare via a HEAD-style fetch every 5 minutes and, on mismatch, leave their state (DRAFT/OPEN) in localStorage and auto-reload. A structural fix for a long-open mobile getting stuck on an old build (the 5CCS case).
+- 2026-10-10: **TT improvement #3 shipped** — acceptance mandatory on create (#3a), unified busy/eligible policy with stable reason codes (#3b), cross-review auto-claim + claim-review own-work 409 (#3c), self-nomination rule (self label: nominee+backlog start+WIP 1+gated promotion) (#3d), metrics/2-week experiment docs + collector (#3e), CLI schema conformance + full 422 error output + --body-file + tt version drift hash (#3f). Serving contract: `server/static/api.md`.
 - 2026-09-29: **contract v2 (three stages required)** — when switching to `TT_CONTRACT_VERSION=2`, new claim/pull pins the `tt-tdd-v2` contract: the report JSON requires all three blocks `design` (criteria+verification+evidence)/`implementation` (summary+commands)/`verification` (commands+evidence), method `tdd|planned` (alternative retired). The schema is a single-model version gate — v1 reports pass only on v1-pinned cards, mixing 422. A valid-report done stays done as self-completion (verification_status=reported); a report-less done is demoted to review (as before).
 - 2026-09-26: **Version-pinned work contract and completion reports** — `/work-contract`, contract delivery on claim/pull/dispatch, runner injection into new and resumed prompts, `TT_REQUIRE_REPORT=1` opt-in report-required mode. Validation of the completion_report's TDD/alternative verification, success, round, and version; `verification_status` distinguishes reported/approved/legacy records. Error fixes: completion judgment from evidence containing only failures/keywords, reuse of stale evidence across reopen/scope change/new claim, state bypass at creation. CLI done removed a duplicate PATCH, aborts on comment failure, and `--json` is honored for review too. Existing routes and approval exceptions are preserved.
 
