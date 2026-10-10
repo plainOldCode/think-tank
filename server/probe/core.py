@@ -156,6 +156,107 @@ def _requested_reviewers(i, pr_no, sha8):
     return out
 
 
+# --- 카운터파트 리뷰어 라우팅 (M4JTJ970-WS3C, docs/review-gate.md 룰셋) ---
+
+# 가족 어휘 — 접미사가 흔들리는 ID(#3e: codex vs codex@host 혼재)를 가족 단위로 판정
+REVIEW_FAMILIES = ("codex", "claude", "hermes", "opencode")
+# 발령자 결정(2026-10-10) 기본 카운터파트 표 — TT_REVIEW_MAP env로 override·확장
+DEFAULT_REVIEW_MAP = {"codex": "claude", "claude": "codex",
+                      "hermes": "codex", "opencode": "codex"}
+# 리뷰어 미가용 폴백 순서 — codex는 최후순위, hermes 자리는 kanban 어댑터가 대행
+REVIEW_FALLBACK = ("claude", "kanban-adapter", "codex")
+# CI 봇은 구현 에이전트가 아니다 — 미표기 취급(기본 라우팅)
+CI_BOTS = ("doc-check", "e2e")
+
+
+def parse_review_map(raw):
+    """TT_REVIEW_MAP='codex->claude,claude->codex' → dict. 빈 칸·불량 항목은 무시."""
+    out = {}
+    for part in (raw or "").split(","):
+        if "->" not in part:
+            continue
+        k, _, v = part.partition("->")
+        k, v = k.strip().lower(), v.strip()
+        if k and v:
+            out[k] = v
+    return out
+
+
+def effective_review_map():
+    """기본 카운터파트 표 + env override — decide가 사이클당 1회 산출."""
+    return {**DEFAULT_REVIEW_MAP, **parse_review_map(os.getenv("TT_REVIEW_MAP", ""))}
+
+
+def agent_family(name, families=REVIEW_FAMILIES):
+    """에이전트 가족 정규화 — host 접미사 흡수(codex@host→codex) + prefix 매칭.
+
+    가장 긴 가족 prefix가 이긴다. 미매칭(None)은 가족 미지 에이전트
+    (qw-flash, kanban-adapter, agy 등) — 라우팅에서 codex 기본으로 흐른다.
+    """
+    base = (name or "").strip().lower().split("@", 1)[0]
+    for fam in sorted(set(families), key=len, reverse=True):
+        if base.startswith(fam):
+            return fam
+    return None
+
+
+def route_reviewer(assignee, rmap):
+    """구현 에이전트 → 카운터파트 리뷰어(순수 — 가용성 무관).
+
+    미표기(CI 봇 포함)·미매칭 가족 → codex 기본. codex* 가족 구현은 매핑값(claude)으로 —
+    자기 리뷰 방지 원칙이 codex 기본보다 우선(발령자 결정 2026-10-10).
+    구현 에이전트 소스는 카드 assignee — 서버 own_work 판정(claim-review 409)과 동일.
+    """
+    a = (assignee or "").strip()
+    if a.lower() in CI_BOTS:
+        a = ""
+    fam = agent_family(a, tuple(rmap) + REVIEW_FAMILIES)
+    if fam and fam in rmap:
+        return rmap[fam]
+    return "codex"
+
+
+def _resolve_agent(cand, agents, rmap):
+    """후보 → 실제 dispatch 대상 등록 에이전트 이름. 정확 일치 우선, 다음 가족 매칭.
+
+    등록 에이전트 스냅샷(decide의 enabled+base_url 필터 통과 집합)에 없으면
+    None — 오프라인 판정의 기준.
+    """
+    fam = agent_family(cand, tuple(rmap) + REVIEW_FAMILIES)
+    for a in agents or []:
+        if a.get("name") == cand:
+            return cand
+    for a in agents or []:
+        if fam and agent_family(a.get("name"), tuple(rmap) + REVIEW_FAMILIES) == fam:
+            return a.get("name")
+    return None
+
+
+def pick_reviewer(assignee, agents, busy, rmap):
+    """라우팅 + 미가용 폴백(순수). 전부 미가용이면 None — 레거시 폴백으로.
+
+    agents: 등록+활성 에이전트 스냅샷(오프라인 판정), busy: 활성 lease 보유
+    에이전트 이름 집합(리스 보유 판정). 폴백 시에도 구현 가족 후보는 제외 —
+    자기 리뷰 방지 유지(발령자 결정 2026-10-10).
+    """
+    a = (assignee or "").strip()
+    fam_vocab = tuple(rmap) + REVIEW_FAMILIES
+    impl_fam = None if a.lower() in CI_BOTS else agent_family(a, fam_vocab)
+    busy_fams = {agent_family(b, fam_vocab) for b in (busy or [])}
+    primary = route_reviewer(assignee, rmap)
+    for cand in [primary] + [c for c in REVIEW_FALLBACK if c != primary]:
+        cand_fam = agent_family(cand, fam_vocab)
+        if impl_fam and cand_fam == impl_fam:
+            continue  # 자기 리뷰 방지 — 구현 가족 후보 제외
+        name = _resolve_agent(cand, agents, rmap)
+        if name is None:
+            continue  # 오프라인
+        if name in (busy or []) or (cand_fam and cand_fam in busy_fams):
+            continue  # 리스 보유
+        return name
+    return None
+
+
 def _probe_marker(i, marker):
     return any(marker in (c.get("body") or "") for c in (i.get("comments") or [])
                if c.get("author") == "probe")
@@ -267,6 +368,7 @@ def decide(snap):
     # 리뷰 게이트(N0AN, docs/review-gate.md): TT_REVIEW_AGENT 설정 시 승인 코멘트 필요.
     by_id = {i["id"]: i for i in issues}
     reviewer = os.environ.get("TT_REVIEW_AGENT", "").strip()
+    rmap = effective_review_map()  # 카운터파트 라우팅(M4JTJ970-WS3C) — env override 포함
     gated = set()  # 리뷰 진행 중 카드 — ⓪b needs-merge 소음 제외
     for p in snap.get("prs") or []:
         iid = pr_card_id(p)
@@ -347,11 +449,17 @@ def decide(snap):
                         claimed.add(cross)  # R3: 한 사이클에 리뷰 1건
                         continue
                     if not _probe_marker(i, marker):
+                        # 카운터파트 라우팅 — 구현 에이전트(assignee) 기준 리뷰어 결정.
+                        # 전원 미가용이면 reviewer 키 없이 액션만(실행측 레거시 폴백).
+                        routed = pick_reviewer(i.get("assignee"), agents,
+                                               busy_agents | claimed, rmap)
                         actions.append({"agent": "probe", "issue": iid, "action": "review-request",
                                         "pr": p["number"], "repo": pr_repo,
                                         "branch": p.get("branch", ""),
                                         "head_sha": p.get("head_sha", ""), "marker": marker,
-                                        "reason": f"PR#{p['number']} CI green — 리뷰 요청 → {reviewer}"})
+                                        "reason": f"PR#{p['number']} CI green — 리뷰 요청 → "
+                                                  f"{routed or reviewer or 'kanban-adapter'}",
+                                        **({"reviewer": routed} if routed else {})})
                     continue
                 # approve — 아래 merge로 통과
                 gated.discard(iid)
@@ -794,7 +902,16 @@ def execute(url, act):
         if any(act["marker"] in (c.get("body") or "") for c in (cur.get("comments") or [])
                if c.get("author") == "probe"):
             return  # 경합 방어 — decide 판정 후 재확인
-        agent = os.environ.get("TT_REVIEW_AGENT", "").strip() or "kanban-adapter"
+        # M4JTJ970-WS3C: decide가 라우팅한 카운터파트 리뷰어 우선 —
+        # TT_REVIEW_AGENT 단일값 env는 레거시 폴백으로만 유지. 레거시가 구현
+        # 가족과 같으면 자기 리뷰 방지로 기본 어댑터로 대체(원칙 우선).
+        agent = act.get("reviewer")
+        if not agent:
+            agent = os.environ.get("TT_REVIEW_AGENT", "").strip() or "kanban-adapter"
+            rmap = effective_review_map()
+            impl_fam = agent_family(cur.get("assignee"), tuple(rmap) + REVIEW_FAMILIES)
+            if impl_fam and agent_family(agent, tuple(rmap) + REVIEW_FAMILIES) == impl_fam:
+                agent = "kanban-adapter"
         msg = _review_dispatch_msg(act, agent)
         try:
             api(url, f"/issues/{act['issue']}/dispatch", "POST",
