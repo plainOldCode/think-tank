@@ -279,3 +279,42 @@ def test_저위험_병합은_server_runner_경로면_차단된다(monkeypatch):
                                     "repo": "plainOldCode/think-tank",
                                     "low_risk": True})
     assert any("저위험 경로 아님" in str(f) for f in flags)
+
+
+def test_저위험은_기본_리뷰어_미설정에도_독립_승인이_필요하다(monkeypatch):
+    """R1: TT_REVIEW_AGENT 미설정 + 무계약 저위험 카드 — 승인 없으면 병합 금지."""
+    monkeypatch.delenv("TT_REVIEW_AGENT", raising=False)
+    card = _i(work_contract=None, labels=["docs"])
+    acts = dispatchd.decide(_snap([card], _pr(), [_agent("a2@t")]))
+    assert not [a for a in acts if a["action"] == "merge"]
+    # 독립 리뷰어가 승인하면 병합된다
+    approved = _i(work_contract=None, labels=["docs"], reviewer="cross@t",
+                  comments=[{"author": "cross@t", "body": "review: approve\nPR#9@" + SHA8}])
+    acts = dispatchd.decide(_snap([approved], _pr(), [_agent("cross@t")]))
+    assert [a for a in acts if a["action"] == "merge"]
+
+
+def test_pr_라벨만으로도_독립_리뷰_수령된다(monkeypatch):
+    """R3: 카드 라벨 없어도 PR 라벨로 후보화된 경우 review_eligible에 주입된다."""
+    monkeypatch.setenv("TT_REVIEW_AGENT", "fallback@t")
+    card = _i(work_contract=None, labels=[])
+    pr = dict(_pr()[0], labels=[" DoCs "])
+    acts = dispatchd.decide(_snap([card], [pr], [_agent("a2@t")]))
+    assert [a for a in acts if a["action"] == "review-claim"]
+
+
+def test_gh_파일목록이_불완전하면_병합하지_않는다(monkeypatch):
+    """R2: gh files 100 컷오프 — changedFiles와 불일치 시 보수적으로 거부."""
+    monkeypatch.setenv("TT_REVIEW_AGENT", "fallback@t")
+    flags = []
+    monkeypatch.setattr(probe.core, "api", lambda *a, **k: flags.append(a) or {})
+    monkeypatch.setattr(probe.core, "gh_json",
+                        lambda *a, **k: {"files": [{"path": "docs/x.md"}] * 100,
+                                         "changedFiles": 101})
+    monkeypatch.setattr(probe.core, "gh_exec",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("merge 금지")))
+    probe.core.execute("http://x", {"agent": "probe", "issue": "M4ABCDEF-GH12",
+                                    "action": "merge", "pr": 9,
+                                    "repo": "plainOldCode/think-tank",
+                                    "low_risk": True})
+    assert any("불완전" in str(f) for f in flags)

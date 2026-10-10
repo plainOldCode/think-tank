@@ -298,7 +298,7 @@ def decide(snap):
         if want != pr_repo:
             continue
         if ci_passed(p):
-            if reviewer:
+            if reviewer or low_risk:
                 if i["state"] != "review":
                     # 게이트 on: 제출 전 카드는 리뷰·병합 대상 아님 — 움직이는 대상 리뷰 낭비 방지.
                     # agent가 보고 제출(state=review)하면 다음 라운드에서 판정.
@@ -334,7 +334,8 @@ def decide(snap):
                     cross = next((a["name"] for a in agents
                                   if a["name"] != i.get("assignee") and a["name"] not in busy_agents
                                   and a["name"] not in claimed
-                                  and policy.review_eligible(i, now=now, agent=a["name"])[0]), None)
+                                  and policy.review_eligible(i, now=now, agent=a["name"],
+                                                             low_risk=low_risk)[0]), None)
                     if cross and not _probe_marker(i, marker):
                         actions.append({"agent": cross, "issue": iid, "action": "review-claim",
                                         "pr": p["number"], "repo": pr_repo,
@@ -616,11 +617,18 @@ def execute(url, act):
             # 저위험 무계약 병합의 최종 경로 차단(M4DEK6WC-MQYS) — server/runner
             # 변경은 사람 승인 대상이다. 라벨만으로 우회하지 않는다.
             try:
-                files = gh_json("pr", "view", act["pr"], "--repo", repo,
-                                "--json", "files") or []
-                paths = [f.get("path", "") for f in (files.get("files") or [])]
+                info = gh_json("pr", "view", act["pr"], "--repo", repo,
+                               "--json", "files,changedFiles") or []
+                fl = info.get("files") or []
+                paths = [f.get("path", "") for f in fl]
             except Exception as e:
                 _probe_flag(url, act, f"probe merge skip: 저위험 경로 확인 실패({e}) — 관측")
+                return
+            # gh files는 100개 컷오프(페이지네이션 없음) — changedFiles와 불일치면
+            # 목록이 불완전: 보수적으로 병합 거부(P76 리뷰 R2).
+            if len(paths) < (info.get("changedFiles") or 0):
+                _probe_flag(url, act, f"probe merge skip: 저위험 파일 목록 불완전 "
+                            f"({len(paths)}/{info.get('changedFiles')}) — 관측")
                 return
             if any(p.startswith(("server/", "runner/")) for p in paths):
                 _probe_flag(url, act, "probe merge skip: 저위험 경로 아님 "

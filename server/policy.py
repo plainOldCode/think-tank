@@ -87,7 +87,7 @@ def eligible(i, *, now="", auto=False):
     return (r is None, r)
 
 
-def review_eligible(i, *, now="", agent=""):
+def review_eligible(i, *, now="", agent="", low_risk=None):
     """리뷰 수령(claim-review) 가능 여부 — (가능, reason code).
 
     교차리뷰 전용 판정: 새 작업 배정과 달리 state:review가 '대상'이다.
@@ -108,7 +108,9 @@ def review_eligible(i, *, now="", agent=""):
     if rev and rev != agent and _get(i, "lease_by") == rev \
             and _get(i, "lease_expires") and (not now or i["lease_expires"] > now):
         return False, "review_occupied"
-    if not _get(i, "work_contract") and not is_low_risk(i):
-        # 저위험(문서·번역) 라벨 카드는 계약 없이도 독립 리뷰 가능(M4DEK6WC-MQYS)
+    if not _get(i, "work_contract") and not (is_low_risk(i) or low_risk):
+        # 저위험(문서·번역) 라벨 카드는 계약 없이도 독립 리뷰 가능(M4DEK6WC-MQYS).
+        # low_risk 인자: PR 라벨만으로 후보가 된 경우(decide에서 산출) — 카드 라벨과
+        # 동일한 단일 관문을 태우기 위한 주입값.
         return False, "no_contract"
     return True, None
