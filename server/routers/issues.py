@@ -64,6 +64,7 @@ def create_issue(p: IssueCreate, ctx: Ctx = Depends(get_ctx)):
 def list_issues(state: str | None = None, parent: str | None = None, label: str | None = None,
                 assignee: str | None = None, q: str | None = None, limit: int = 200,
                 archived: str = "no", completed_before: str | None = None,
+                offset: int = 0,
                 ctx: Ctx = Depends(get_ctx)):
     sql = "SELECT * FROM issues WHERE 1=1"
     args: list = []
@@ -93,8 +94,9 @@ def list_issues(state: str | None = None, parent: str | None = None, label: str 
     if q:
         sql += " AND (title LIKE ? OR body LIKE ?)"
         args += [f"%{q}%", f"%{q}%"]
-    sql += " ORDER BY created_at DESC LIMIT ?"
-    args.append(max(1, min(limit, 1000)))
+    sql += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+    args.append(max(0, min(limit, 1000)))
+    args.append(max(0, offset))
     with ctx.con() as c:
         rows = c.execute(sql, args).fetchall()
         return [service.enrich_blocked(c, dbmod.to_dict(r)) for r in rows]
@@ -166,6 +168,9 @@ def archive_issue(issue_id: str, ctx: Ctx = Depends(get_ctx)):
     if days <= 0:
         raise HTTPException(409, "auto-archive disabled (TT_ARCHIVE_AFTER_DAYS=0)")
     with ctx.con() as c:
+        # 후보·조상 검증과 갱신을 한 쓰기 트랜잭션으로 — SELECT 사이 재개 경합을
+        # 원자적으로 막는다(P77 리뷰 R2/R3: ctx.con()만으론 SELECT가 트랜잭션 밖).
+        c.execute("BEGIN IMMEDIATE")
         row = c.execute("SELECT * FROM issues WHERE id=?", (issue_id,)).fetchone()
         if not row:
             raise HTTPException(404, "no such issue")
@@ -421,6 +426,10 @@ def patch_issue(issue_id: str, p: IssuePatch, ctx: Ctx = Depends(get_ctx)):
                 fields.update({"lease_by": "", "lease_expires": None})
         if p.archived is not None:
             fields["archived"] = 1 if p.archived else 0
+        # done 이탈(재개) 시 자동 아카이브 플래그 해제 — todo+archived 잔존 방지(P77 R2)
+        new_state = fields.get("state") or row["state"]
+        if new_state not in ("done", "cancelled") and row["state"] in ("done", "cancelled"):
+            fields["archived"] = 0
         # blocked 사족 (①): waiting_for는 4종 enum만, 상태가 blocked일 때만 유효.
         # 미입력(미지정)이면 기존 동작 그대로 — 하위 호환.
         if p.waiting_for is not None:

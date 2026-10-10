@@ -128,3 +128,49 @@ def test_probe_스윕은_409를_조용히_넘긴다(monkeypatch):
     monkeypatch.setattr(probe.core, "api", fake)
     probe.core.execute("http://x", {"agent": "probe", "action": "archive-sweep", "days": 14})
     assert ("POST", "/issues/CARD-1/archive") in calls
+
+
+def test_재개된_카드는_archived가_해제된다(client):
+    """P77 R2 후속: done→todo 재개 시 archived=1 잔존 방지."""
+    i = _mk(client)
+    _done(client, i["id"])
+    _age(tmp_path_factory(), i["id"]) if False else None
+    # (나이 무관 — archived 플래그만 확인)
+    import sqlite3
+    con = sqlite3.connect(str(client.app.state.db_path) if hasattr(client.app, "state") else None)
+
+
+def test_재개된_카드는_archived가_해제된다(client, tmp_path):
+    """P77 R2 후속: done→todo 재개 시 archived=1 잔존 방지."""
+    i = _mk(client)
+    _done(client, i["id"])
+    _age(tmp_path, i["id"])
+    r = client.post(f"/issues/{i['id']}/archive")
+    assert r.status_code == 200 and r.json()["archived"] == 1
+    # 재개 → archived 자동 해제
+    client.patch(f"/issues/{i['id']}", json={"state": "todo", "expected_version": 4})
+    assert client.get(f"/issues/{i['id']}").json()["archived"] == 0
+
+
+def test_스윕은_페이지를_전진해_보존_뒤_후보를_본다(monkeypatch):
+    """P77 R4: 500장 보존 페이지 뒤의 오래된 루트도 수집된다."""
+    import probe.core
+    pages = [
+        [{"id": f"KEEP-{n}", "state": "done"} for n in range(500)],
+        [{"id": "OLD-ROOT", "state": "done"}],
+    ]
+    seen, posts = [], []
+
+    def fake(url, path, method="GET", body=None):
+        seen.append(path)
+        if path.startswith("/issues?"):
+            page = pages.pop(0) if pages else []
+            return page
+        posts.append(path)
+        import urllib.error
+        raise urllib.error.HTTPError(path, 409, "ancestor missing", None, None)
+
+    monkeypatch.setattr(probe.core, "api", fake)
+    probe.core.execute("http://x", {"agent": "probe", "action": "archive-sweep", "days": 14})
+    assert any("offset=500" in p for p in seen)      # 두 번째 페이지 전진
+    assert "/issues/OLD-ROOT/archive" in posts        # 뒤 페이지 후보도 호출

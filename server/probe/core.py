@@ -600,9 +600,20 @@ def _archive_sweep(url, days):
     if days <= 0:
         return
     cutoff = time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(time.time() - days * 86400))
+    # 1단계: 후보 id를 페이지네이션으로 전수 수집 — 보존(409) 행이 뒤 페이지를
+    # 영구히 가리는 기아 방지(P77 리뷰 R4). 수집 후 2단계에서 검증 호출.
+    cards, offset = [], 0
     try:
-        cards = api(url, f"/issues?state=done&archived=no"
-                         f"&completed_before={urllib.parse.quote(cutoff)}&limit=1000")
+        while True:
+            page = api(url, f"/issues?state=done&archived=no"
+                             f"&completed_before={urllib.parse.quote(cutoff)}"
+                             f"&limit=500&offset={offset}") or []
+            cards += page
+            if len(page) < 500:
+                break
+            offset += 500
+            if offset >= 5000:  # 안전 상한 — 한 스윕 5천 장 초과는 없다고 본다
+                break
     except Exception as e:
         print(time.strftime("%F %T"), f"[archive] 스윕 실패(목록): {e}", flush=True)
         return
