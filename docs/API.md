@@ -15,7 +15,7 @@ backlog → todo → in_progress → blocked/review/done. review → todo/blocke
 | `GET /issues?state=&parent=&label=&assignee=&q=&limit=&archived=` | parent=none → roots only. archived: `no` (default, hidden) `all` `only` |
 | `GET /issues/{id}` | + children, comments |
 | `GET /issues/{id}/tree` | recursive tree |
-| `POST /issues/{id}/claim` | `{agent}` — todo+unassigned only, 409 otherwise (rejection body carries the shared policy code, e.g. `cannot claim: state is in_progress [policy: lease_held]`) |
+| `POST /issues/{id}/claim` | `{agent}` — todo+unassigned only, 409 otherwise. Non-todo rejections are annotated with the shared policy code when one applies (e.g. `cannot claim: state is in_progress [policy: lease_held]`) — probe and `/pull` enforce eligibility; direct `/claim` only annotates and does not block budget-exhausted cards |
 | `POST /issues/{id}/claim-review` | `{agent, hours?}` — reviewer claim, review-state cards only (409 otherwise); marks `reviewer`+review lease without touching state/attempt; response carries the review contract. Own-work cards 409 (cross-review rule, TT improvement #3c); a different reviewer 409 while an active review lease is held — the same reviewer may re-claim to refresh |
 | `POST /pull` | `{agent, require_label?, hours?}` — atomically claims one by priority (p1..p4) then creation order; candidates re-checked by the busy/eligible policy (TT improvement #3b) so budget-exhausted/leased rows are skipped; `null` if none |
 | `PATCH /issues/{id}` | transition guards + `expected_version` optimistic lock, `clear_parent`/`clear_priority`, `archived:true/false`, `waiting_for` (blocked-only: dependency|human|gate|external) + `waiting_actor`/`blocked_detail`, `force_done` (approval exception), `completion_report` (structured completion report) |
@@ -27,7 +27,7 @@ Concurrent claims use the `version` column as an optimistic lock — `pull` is d
 
 ## Busy/eligible policy — single gate, stable reason codes (TT improvement #3b/#3c)
 
-`server/policy.py` is the one source for "can this card take new work / a review claim" — probe auto-assignment, `POST /pull`, and `POST /issues/{id}/claim` share it. Codes surface verbatim in claim 409 bodies (`[policy: <code>]`), probe logs (`[probe] cycle ... skips={...}`) and `needs-human` reasons:
+`server/policy.py` is the one source for "can this card take new work / a review claim" — probe auto-assignment and `POST /pull` **enforce** it (ineligible candidates are skipped / never dispatched), while `POST /issues/{id}/claim` uses it to **annotate** applicable non-todo rejections (the `[policy: <code>]` suffix may be absent; budget-exhausted todo cards are not blocked on direct claim). Codes surface verbatim in claim 409 bodies, probe logs (`[probe] cycle ... skips={...}`) and `needs-human` reasons:
 
 `state:terminal` · `archived` · `state:backlog` · `state:blocked` · `state:review` · `state:in_progress` · `state:todo` · `lease_held` (= runner running; expired leases are re-claimable, not busy) · `budget:dispatch-tries>=2` · `budget:attempt>=2` · `not_auto` (probe auto mode: no `auto` label).
 
