@@ -174,3 +174,25 @@ def test_스윕은_페이지를_전진해_보존_뒤_후보를_본다(monkeypatc
     probe.core.execute("http://x", {"agent": "probe", "action": "archive-sweep", "days": 14})
     assert any("offset=500" in p for p in seen)      # 두 번째 페이지 전진
     assert "/issues/OLD-ROOT/archive" in posts        # 뒤 페이지 후보도 호출
+
+
+def test_스윕은_나이순이라_보존이_뒤를_가리지_못한다(client, tmp_path):
+    """P77 R4 최종: created_at이 늦어도 completed_at이 오래된 루트가 먼저 처리된다."""
+    root = _mk(client)
+    for n in range(3):  # 루트보다 created_at이 늦은 보존 자식들
+        c = _mk(client, parent_id=root["id"])
+        _done(client, c["id"])
+    _done(client, root["id"])
+    # 루트 completed_at을 자식들보다 오래되게 (역전 시나리오)
+    import sqlite3
+    con = sqlite3.connect(str(tmp_path / "tt.db"))
+    con.execute("UPDATE issues SET completed_at='2026-09-01T09:00:00+0900' WHERE id=?", (root["id"],))
+    for row in con.execute("SELECT id FROM issues WHERE parent_id=?", (root["id"],)).fetchall():
+        con.execute("UPDATE issues SET completed_at='2026-09-20T09:00:00+0900' WHERE id=?", (row[0],))
+    con.commit(); con.close()
+    r = client.post("/maintenance/archive-sweep")
+    assert r.status_code == 200
+    body = r.json()
+    # 루트(9-01)가 나이순 첫 후보 — 자식 보존과 무관하게 아카이브된다
+    assert body["archived"] >= 1
+    assert client.get(f"/issues/{root['id']}").json()["archived"] == 1

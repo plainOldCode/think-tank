@@ -154,53 +154,94 @@ def claim(issue_id: str, p: ClaimIn, ctx: Ctx = Depends(get_ctx)):
     return dbmod.to_dict(row)
 
 
-@router.post("/issues/{issue_id}/archive",
-             summary="done 카드 자동 아카이브 — 서버가 나이·조상 체인을 트랜잭션으로 검증",
-             description="자동 아카이브 스윕(M3ZRGTSF-N95X) 전용. TT_ARCHIVE_AFTER_DAYS=0이면 409. "
-                         "done 아님·미성숙(completed_at+N일 미경과)·조상 미완(모든 조상이 done이어야 함)·"
-                         "조상 유실·사이클은 409로 보존 — probe는 다음 사이클에 재시도한다.")
-def archive_issue(issue_id: str, ctx: Ctx = Depends(get_ctx)):
+def _archive_days() -> int:
     import os
     try:
-        days = int(os.environ.get("TT_ARCHIVE_AFTER_DAYS", "0") or 0)
+        return int(os.environ.get("TT_ARCHIVE_AFTER_DAYS", "0") or 0)
     except ValueError:
-        days = 0
+        return 0
+
+
+def _archive_one(c, issue_id: str, days: int, cutoff: str):
+    """카드 1장 검증+아카이브 — 호출자가 BEGIN IMMEDIATE 상태의 연결을 넘긴다.
+    성공 시 1, 보존 사유 문자열, 미존재 None."""
+    row = c.execute("SELECT * FROM issues WHERE id=?", (issue_id,)).fetchone()
+    if not row:
+        return None
+    if row["archived"]:
+        return "already"
+    if row["state"] != "done":
+        return f"state is {row['state']}"
+    if not row["completed_at"]:
+        return "completed_at 없음"
+    if cutoff and row["completed_at"] >= cutoff:
+        return f"not aged {days}d yet"
+    # 모든 조상이 done이어야 한다 — 사이클·유실은 보수적으로 보존.
+    seen, pid = set(), row["parent_id"]
+    while pid:
+        if pid in seen:
+            return f"ancestor cycle at {pid}"
+        seen.add(pid)
+        prow = c.execute("SELECT state, parent_id FROM issues WHERE id=?", (pid,)).fetchone()
+        if not prow:
+            return f"ancestor {pid} missing"
+        if prow["state"] != "done":
+            return f"ancestor {pid} is {prow['state']}"
+        pid = prow["parent_id"]
+    c.execute("UPDATE issues SET archived=1, version=version+1, updated_at=? WHERE id=?",
+              (dbmod.now(), issue_id))
+    service.log_event(c, "issue.updated", "issue", issue_id,
+                      {"archived": True, "via": "auto-archive"})
+    return None
+
+
+@router.post("/issues/{issue_id}/archive")
+def archive_issue(issue_id: str, ctx: Ctx = Depends(get_ctx)):
+    days = _archive_days()
     if days <= 0:
         raise HTTPException(409, "auto-archive disabled (TT_ARCHIVE_AFTER_DAYS=0)")
     with ctx.con() as c:
         # 후보·조상 검증과 갱신을 한 쓰기 트랜잭션으로 — SELECT 사이 재개 경합을
         # 원자적으로 막는다(P77 리뷰 R2/R3: ctx.con()만으론 SELECT가 트랜잭션 밖).
         c.execute("BEGIN IMMEDIATE")
-        row = c.execute("SELECT * FROM issues WHERE id=?", (issue_id,)).fetchone()
-        if not row:
-            raise HTTPException(404, "no such issue")
-        if row["archived"]:
-            return dbmod.to_dict(row)  # 멱등 — 이미 아카이브됨
-        if row["state"] != "done":
-            raise HTTPException(409, f"state is {row['state']}")
-        if not row["completed_at"]:
-            raise HTTPException(409, "completed_at 없음 — 수동 확인 필요")
         cutoff = _archive_cutoff(days)
-        if cutoff and row["completed_at"] >= cutoff:
-            raise HTTPException(409, f"not aged {days}d yet (completed_at={row['completed_at']})")
-        # 모든 조상이 done이어야 한다 — 사이클·유실은 보수적으로 보존(409).
-        seen, pid = set(), row["parent_id"]
-        while pid:
-            if pid in seen:
-                raise HTTPException(409, f"ancestor cycle at {pid}")
-            seen.add(pid)
-            prow = c.execute("SELECT state, parent_id FROM issues WHERE id=?", (pid,)).fetchone()
-            if not prow:
-                raise HTTPException(409, f"ancestor {pid} missing")
-            if prow["state"] != "done":
-                raise HTTPException(409, f"ancestor {pid} is {prow['state']}")
-            pid = prow["parent_id"]
-        c.execute("UPDATE issues SET archived=1, version=version+1, updated_at=? WHERE id=?",
-                  (dbmod.now(), issue_id))
-        service.log_event(c, "issue.updated", "issue", issue_id,
-                          {"archived": True, "via": "auto-archive"})
-        row = service.get_issue(c, issue_id)
+        why = _archive_one(c, issue_id, days, cutoff)
+        if why is None:
+            row = service.get_issue(c, issue_id)
+        elif why == "already":
+            row = service.get_issue(c, issue_id)  # 멱등
+        else:
+            c.rollback()  # 보존 — 변경 없음
+            raise HTTPException(409, why)
     return dbmod.to_dict(row)
+
+
+@router.post("/maintenance/archive-sweep",
+             summary="자동 아카이브 전수 스윕 — 서버가 나이순(completed_at ASC)으로 검증",
+             description="TT_ARCHIVE_AFTER_DAYS 기준. 후보를 completed_at ASC(가장 오래된 것부터)로 "
+                         "전수 검증해 아카이브한다 — 보존 행이 뒤 후보를 가리지 못한다(P77 R4 최종). "
+                         "카드당 독립 트랜잭션. {archived, preserved} 반환.")
+def archive_sweep(ctx: Ctx = Depends(get_ctx)):
+    days = _archive_days()
+    if days <= 0:
+        raise HTTPException(409, "auto-archive disabled (TT_ARCHIVE_AFTER_DAYS=0)")
+    cutoff = _archive_cutoff(days)
+    archived = preserved = 0
+    with ctx.con() as c:
+        cand = [r["id"] for r in c.execute(
+            "SELECT id FROM issues WHERE state='done' AND archived=0 "
+            "AND completed_at IS NOT NULL AND completed_at < ? "
+            "ORDER BY completed_at ASC LIMIT 50000", (cutoff,)).fetchall()]
+    for iid in cand:
+        with ctx.con() as c:
+            c.execute("BEGIN IMMEDIATE")
+            why = _archive_one(c, iid, days, cutoff)
+            if why is None:
+                archived += 1
+            else:
+                c.rollback()
+                preserved += 1
+    return {"archived": archived, "preserved": preserved}
 
 
 def _archive_cutoff(days: int) -> str:
