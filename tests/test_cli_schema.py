@@ -99,3 +99,23 @@ def test_verify_페이로드는_계약_스키마와_정합(cli):
     p = run("verify", iid, "--report", str(f))
     got = api(f"/issues/{iid}")
     assert got["state"] == "done" and got["verified"], p.stderr + p.stdout
+
+
+def test_body_file은_끝_개행까지_보존한다(cli, tmp_path):
+    """R1 회귀: 파일 끝 LF·연속 LF·내용 그대로 라운드트립."""
+    run, url, api, db = cli
+    for name, content in [("lf", "본문\n"), ("lflf", "본문\n\n"), ("noeol", "본문")]:
+        f = tmp_path / f"{name}.md"
+        f.write_text(content, encoding="utf-8")
+        out = json.loads(run("new", f"끝개행 {name}", "-a", "완료 기준: 보존",
+                             "--body-file", str(f), "--json").stdout)
+        assert api(f"/issues/{out['id']}")["body"] == content, name
+
+
+def test_body_file_읽기_실패시_생성_하지_않는다(cli, tmp_path):
+    """R2 회귀: 디렉터리를 --body-file로 주면 POST 없이 실패."""
+    run, url, api, db = cli
+    before = len(api("/issues?limit=1000"))
+    p = run("new", "실패 카드", "-a", "완료 기준: 중단", "--body-file", str(tmp_path))
+    assert p.returncode != 0
+    assert len(api("/issues?limit=1000")) == before, "읽기 실패에도 카드가 생성되면 안 된다"

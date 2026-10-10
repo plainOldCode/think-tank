@@ -95,11 +95,14 @@ case "$cmd" in
 
   version)
     echo "cli $TT_CLI_VERSION"
-    # 서버 openapi 해시 — 스키마가 바뀌면 해시가 바뀐다(드리프트 감지 표기)
-    if hash_val="$(curl -sS --max-time 5 "$URL/openapi.json" | sha256sum | cut -c1-8)"; then
-      echo "server openapi $hash_val"
+    # 서버 openapi 해시 — 스키마가 바뀌면 해시가 바뀐다(드리프트 감지 표기).
+    # R3: HTTP 상태 확인 전에 해시하지 않는다 — 에러 페이지를 스키마로 오인 방지
+    resp="$(curl -sS --max-time 5 -w '\n%{http_code}' "$URL/openapi.json" 2>/dev/null)"
+    status="${resp##*$'\n'}"
+    if [[ "$status" != 2?? ]]; then
+      echo "server openapi 조회 실패 (HTTP ${status:-no-response})" >&2
     else
-      echo "server openapi 조회 실패" >&2
+      echo "server openapi $(printf '%s' "${resp%$'\n'*}" | sha256sum | cut -c1-8)"
     fi ;;
 
   health)
@@ -117,9 +120,14 @@ case "$cmd" in
     # 공백·탭·개행만 있는 값도 거부(서버 422를 유저에게 보이기 전에 차단)
     [[ -z "${acceptance//[[:space:]]/}" ]] && { echo "acceptance(완료 기준) 필요: tt new \"제목\" -a \"끝낼 조건\""; exit 1; }
     PARENT_JSON=null; [[ -n "$parent" ]] && PARENT_JSON="\"$parent\""
-    # TT 개선#3f: 다중행 본문은 파일로 — 셸 인용·백틱 command substitution 취약 제거
-    [[ -n "$body_file" ]] && { [[ -r "$body_file" ]] || { echo "본문 파일을 읽을 수 없음: $body_file" >&2; exit 1; }; body="$(cat "$body_file")"; }
-    body_esc="$(printf '%s' "$body" | jq -Rs .)"
+    # TT 개선#3f: 다중행 본문은 파일로 — 셸 인용·백틱 command substitution 취약 제거.
+    # R1: jq -Rs가 파일을 직접 읽어 끝 개행·CRLF까지 보존(command substitution은 끝 LF를 잘라버린다)
+    # R2: 읽기 실패 시 POST 전에 중단 — 가독성 검사만으론 디렉터리를 못 걸러낸다
+    if [[ -n "$body_file" ]]; then
+      body_esc="$(jq -Rs . "$body_file")" || { echo "본문 파일을 읽을 수 없음: $body_file" >&2; exit 1; }
+    else
+      body_esc="$(printf '%s' "$body" | jq -Rs .)"
+    fi
     acc_esc="$(printf '%s' "$acceptance" | jq -Rs .)"
     payload="$(jq -cn --arg t "$title" --arg s "$state" --argjson p "$PARENT_JSON" --argjson pr "$prio" --argjson l "$labels" --argjson b "$body_esc" --argjson a "$acc_esc" \
       '{title:$t,state:$s,parent_id:$p,priority:$pr,labels:$l,body:$b,acceptance:$a}')"
