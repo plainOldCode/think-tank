@@ -103,7 +103,7 @@ case "$cmd" in
     if [[ "$status" != 2?? ]]; then
       echo "server openapi 조회 실패 (HTTP ${status:-no-response})" >&2
     else
-      echo "server openapi $(printf '%s' "${resp%$'\n'*}" | sha256sum | cut -c1-8)"
+      echo "server openapi $(printf '%s' "${resp%$'\n'*}" | { sha256sum 2>/dev/null || shasum -a 256; } | cut -c1-8)"
     fi ;;
 
   health)
