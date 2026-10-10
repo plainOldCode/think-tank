@@ -10,6 +10,8 @@ import re
 import shutil
 import subprocess
 import time
+import urllib.error
+import urllib.parse
 import urllib.request
 
 from service import REVIEW_CONTRACT
@@ -592,60 +594,33 @@ def _review_dispatch_msg(act, agent):
 
 
 def _archive_sweep(url, days):
-    """done 후 days일 경과 카드를 archived=1로. 상위 체인(모든 조상)이 done이 아니면
-    보존한다(M3ZRGTSF-N95X 확정 기준: 14일·모든 조상·done만). 실패는 로그만 — 스윕은
-    다음 사이클에 재시도되므로 카드 코멘트를 남기지 않는다."""
+    """후보(completed_before 직접 질의 — R4 기아 방지)를 골라 서버 검증형 아카이브
+    엔드포인트에 넘긴다. 나이·조상 체인·사이클 판정은 서버 트랜잭션이 원자적으로
+    수행(M3ZRGTSF-N95X 확정 기준) — probe는 409를 조용히 넘기고 다음 사이클에 재시도."""
     if days <= 0:
         return
-    now = _now_dt()
-    if now is None:
-        return
+    cutoff = time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(time.time() - days * 86400))
     try:
-        cards = api(url, "/issues?state=done&archived=no&limit=1000")
+        cards = api(url, f"/issues?state=done&archived=no"
+                         f"&completed_before={urllib.parse.quote(cutoff)}&limit=1000")
     except Exception as e:
         print(time.strftime("%F %T"), f"[archive] 스윕 실패(목록): {e}", flush=True)
         return
-    anc_state = {}
-    n = 0
+    n = skipped = 0
     for card in cards or []:
-        if card.get("state") != "done" or card.get("archived"):
-            continue
-        completed = card.get("completed_at")
-        if not completed:
-            continue
-        done_dt = _parse_iso(completed)
-        if done_dt is None or (now - done_dt).total_seconds() < days * 86400:
-            continue
-        # 모든 조상 done 확인 — 부모 체인을 실제로 걷는다(캐시는 상태만)
-        pid, ok = card.get("parent_id"), True
-        while pid:
-            if pid not in anc_state:
-                try:
-                    anc_state[pid] = (api(url, f"/issues/{pid}") or {}).get("state", "")
-                except Exception:
-                    ok = False
-                    break
-            if anc_state[pid] != "done":
-                ok = False
-                break
-            if anc_state.get(pid + "|parent") is None:
-                try:
-                    anc_state[pid + "|parent"] = (api(url, f"/issues/{pid}") or {}).get("parent_id")
-                except Exception:
-                    ok = False
-                    break
-            pid = anc_state[pid + "|parent"]
-        if not ok:
-            continue
         try:
-            cur = api(url, f"/issues/{card['id']}")
-            api(url, f"/issues/{card['id']}", "PATCH",
-                {"archived": True, "version": cur["version"]})
+            api(url, f"/issues/{card['id']}/archive", "POST", {})
             n += 1
+        except urllib.error.HTTPError as e:
+            if e.code not in (404, 409):
+                print(time.strftime("%F %T"), f"[archive] {card['id']} 실패: HTTP {e.code}", flush=True)
+            skipped += 1
         except Exception as e:
             print(time.strftime("%F %T"), f"[archive] {card['id']} 실패: {e}", flush=True)
-    if n:
-        print(time.strftime("%F %T"), f"[archive] {n}카드 아카이브 (done+{days}일, 조상 done)", flush=True)
+            skipped += 1
+    if n or skipped:
+        print(time.strftime("%F %T"),
+              f"[archive] {n}카드 아카이브, {skipped}보존 (done+{days}일, 조상 done)", flush=True)
 
 
 def _now_dt():

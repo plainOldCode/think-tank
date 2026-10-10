@@ -63,7 +63,7 @@ def create_issue(p: IssueCreate, ctx: Ctx = Depends(get_ctx)):
 @router.get("/issues")
 def list_issues(state: str | None = None, parent: str | None = None, label: str | None = None,
                 assignee: str | None = None, q: str | None = None, limit: int = 200,
-                archived: str = "no",
+                archived: str = "no", completed_before: str | None = None,
                 ctx: Ctx = Depends(get_ctx)):
     sql = "SELECT * FROM issues WHERE 1=1"
     args: list = []
@@ -71,6 +71,11 @@ def list_issues(state: str | None = None, parent: str | None = None, label: str 
         sql += " AND archived=0"
     elif archived == "only":
         sql += " AND archived=1"
+    if completed_before:
+        # 자동 아카이브 후보 직접 질의(M3ZRGTSF-N95X) — created_at DESC 페이지에
+        # 가려진 오래된 done이 영구 기아하지 않게 한다(리뷰 R4).
+        sql += " AND completed_at IS NOT NULL AND completed_at < ?"
+        args.append(completed_before)
     if state:
         sql += " AND state=?"
         args.append(state)
@@ -145,6 +150,58 @@ def claim(issue_id: str, p: ClaimIn, ctx: Ctx = Depends(get_ctx)):
                                    "todo_since": None}, row["version"])
         row = service.get_issue(c, issue_id)
     return dbmod.to_dict(row)
+
+
+@router.post("/issues/{issue_id}/archive",
+             summary="done 카드 자동 아카이브 — 서버가 나이·조상 체인을 트랜잭션으로 검증",
+             description="자동 아카이브 스윕(M3ZRGTSF-N95X) 전용. TT_ARCHIVE_AFTER_DAYS=0이면 409. "
+                         "done 아님·미성숙(completed_at+N일 미경과)·조상 미완(모든 조상이 done이어야 함)·"
+                         "조상 유실·사이클은 409로 보존 — probe는 다음 사이클에 재시도한다.")
+def archive_issue(issue_id: str, ctx: Ctx = Depends(get_ctx)):
+    import os
+    try:
+        days = int(os.environ.get("TT_ARCHIVE_AFTER_DAYS", "0") or 0)
+    except ValueError:
+        days = 0
+    if days <= 0:
+        raise HTTPException(409, "auto-archive disabled (TT_ARCHIVE_AFTER_DAYS=0)")
+    with ctx.con() as c:
+        row = c.execute("SELECT * FROM issues WHERE id=?", (issue_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "no such issue")
+        if row["archived"]:
+            return dbmod.to_dict(row)  # 멱등 — 이미 아카이브됨
+        if row["state"] != "done":
+            raise HTTPException(409, f"state is {row['state']}")
+        if not row["completed_at"]:
+            raise HTTPException(409, "completed_at 없음 — 수동 확인 필요")
+        cutoff = _archive_cutoff(days)
+        if cutoff and row["completed_at"] >= cutoff:
+            raise HTTPException(409, f"not aged {days}d yet (completed_at={row['completed_at']})")
+        # 모든 조상이 done이어야 한다 — 사이클·유실은 보수적으로 보존(409).
+        seen, pid = set(), row["parent_id"]
+        while pid:
+            if pid in seen:
+                raise HTTPException(409, f"ancestor cycle at {pid}")
+            seen.add(pid)
+            prow = c.execute("SELECT state, parent_id FROM issues WHERE id=?", (pid,)).fetchone()
+            if not prow:
+                raise HTTPException(409, f"ancestor {pid} missing")
+            if prow["state"] != "done":
+                raise HTTPException(409, f"ancestor {pid} is {prow['state']}")
+            pid = prow["parent_id"]
+        c.execute("UPDATE issues SET archived=1, version=version+1, updated_at=? WHERE id=?",
+                  (dbmod.now(), issue_id))
+        service.log_event(c, "issue.updated", "issue", issue_id,
+                          {"archived": True, "via": "auto-archive"})
+        row = service.get_issue(c, issue_id)
+    return dbmod.to_dict(row)
+
+
+def _archive_cutoff(days: int) -> str:
+    """completed_at 비교용 컷오프 — dbmod.now()와 같은 포맷(%z 붙은 ISO)."""
+    import time as _t
+    return _t.strftime("%Y-%m-%dT%H:%M:%S%z", _t.localtime(_t.time() - days * 86400))
 
 
 @router.post("/issues/{issue_id}/claim-review")
