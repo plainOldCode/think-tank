@@ -73,21 +73,29 @@ prevention takes priority over the codex default (issuer decision 2026-10-10).
 - **Family normalization**: agent IDs drift by host/variant suffix (`codex` vs `codex@host` are
   mixed in verdict comments). Matching is by family prefix: strip `@host`, then longest known
   family prefix wins. `TT_REVIEW_MAP=codex->claude,claude->codex,...` overrides/extends the
-  default table (parsed as `family->reviewer`, comma separated).
+  default table (parsed as `family->reviewer`, comma separated). The self-review guard uses a
+  **fixed** family vocabulary plus the adapter alias (`kanban-adapter` ≡ hermes, its standing
+  delegate) and the author's exact identity — mapping extensions cannot route around it.
 - **Unavailable reviewer fallback** (issuer decision 2026-10-10): if the routed reviewer is
-  unavailable — offline (not a registered+enabled agent) or holding an active lease — walk
-  **claude → kanban-adapter (hermes's board adapter) → codex**. codex is last because its
-  availability is the flakiest. Candidates in the implementing family stay excluded during the
-  fallback (self-review prevention holds). If nobody is available, the legacy fallback applies:
-  `TT_REVIEW_AGENT` env, or the `kanban-adapter` default — and if the legacy reviewer is in the
-  implementing family, it is replaced by `kanban-adapter` too.
-- **Routing scope**: the `review-request` dispatch (the former single-value path). The
-  cross-review auto-claim (`review-claim`, TT improvement #3c) keeps its existing idle-agent
-  selection and conventions; own-work 409 (server-side) is unchanged — routing simply never
-  nominates the author's own family.
-- Verdict honoring, the `PR#<n>@<sha8>` staleness rule, and the dispatch template are unchanged;
-  the routed reviewer's name appears in the `[review-req #<pr>/<sha8>] … → <agent>` probe
-  comment, so cross-review verdict recognition (`_requested_reviewers`) keeps working.
+  unavailable — offline (not a registered+enabled agent), holding an active lease, or refusing
+  the claim (`claim-review` 409) — walk **claude → kanban-adapter (hermes's board adapter) →
+  codex**. codex is last because its availability is the flakiest. The author's identity and
+  implementing family stay excluded through the whole chain (self-review prevention holds); if
+  nobody is claimable, the legacy fallback applies: `TT_REVIEW_AGENT` env, or the
+  `kanban-adapter` default — and a legacy reviewer that is the author (or their family) is not
+  dispatched either.
+- **Routing scope — both dispatch paths**: the auto-claim (`review-claim`) prefers the routed
+  counterpart when it is claim-eligible (idle, unoccupied), then any idle agent outside the
+  implementing family; the `review-request` dispatch carries the routed reviewer. Verdict
+  format, the `PR#<n>@<sha8>` staleness rule, and the dispatch template are unchanged. The
+  server's own-work 409 (exact `assignee` match) is unchanged — probe-side selection excludes
+  the author's identity and family so it never nominates one.
+- **Claim handoff** (refusal recovery): the probe claims the review on the target's behalf
+  before dispatching and only then records the `[review-req …]` marker. A 409 refusal walks to
+  the next candidate; if every candidate refuses (or the card's review is actively held by
+  another reviewer's lease), no request marker is left — the next cycle re-judges and retries
+  instead of being blocked permanently. Refusals are noted once per PR+head
+  (`[review-claim-fail …]`).
 
 ## POC constraints (intentional simplifications)
 

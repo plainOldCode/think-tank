@@ -140,6 +140,7 @@ class Rec:
         self.dispatches = []
         self.commented = []
         self.patched = []
+        self.claims = []  # probe가 대신 거는 claim-review(코멘트 아님)
         self.fail = dispatch_fail
 
     def __call__(self, url, path, method="GET", body=None):
@@ -148,6 +149,9 @@ class Rec:
         if method == "PATCH":
             self.patched.append(body)
             return {**self.card, "state": body.get("state")}
+        if path.endswith("/claim-review") and method == "POST":
+            self.claims.append(body)
+            return {"ok": True}
         if path.endswith("/dispatch") and method == "POST":
             if self.fail:
                 raise RuntimeError("no receiver")
