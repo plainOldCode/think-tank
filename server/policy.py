@@ -14,7 +14,29 @@ reason code는 안정(stable) 문자열 — 로그·코멘트 파싱 전제라 �
 - "not_auto"              auto 모드인데 auto 라벨 없음(probe 한정)
 """
 
+import json
+
 TERMINAL = ("done", "cancelled")
+
+# 저위험 클래스(M4DEK6WC-MQYS): 문서·번역 라벨 카드/PR — 계약 없이도 독립 리뷰를
+# 받을 수 있고, CI green+approve면 무인 병합된다. 라벨은 저위험 클래스 '선택'일 뿐
+# 게이트 대체가 아니다(독립 리뷰+CI green은 여전히 필수 — codex 의견 반영).
+LOW_RISK_LABELS = ("docs", "documentation", "i18n", "문서", "번역")
+
+
+def _labels(i):
+    v = _get(i, "labels")
+    if isinstance(v, str):
+        try:
+            v = json.loads(v)
+        except (ValueError, TypeError):
+            return []
+    return [str(x).strip().lower() for x in (v or [])]
+
+
+def is_low_risk(i):
+    """카드 라벨 기준 저위험 판정 — 라벨 문자열 대소문자 무시."""
+    return any(x in LOW_RISK_LABELS for x in _labels(i))
 
 
 def _get(i, k, default=None):
@@ -65,7 +87,7 @@ def eligible(i, *, now="", auto=False):
     return (r is None, r)
 
 
-def review_eligible(i, *, now="", agent=""):
+def review_eligible(i, *, now="", agent="", low_risk=None):
     """리뷰 수령(claim-review) 가능 여부 — (가능, reason code).
 
     교차리뷰 전용 판정: 새 작업 배정과 달리 state:review가 '대상'이다.
@@ -86,6 +108,9 @@ def review_eligible(i, *, now="", agent=""):
     if rev and rev != agent and _get(i, "lease_by") == rev \
             and _get(i, "lease_expires") and (not now or i["lease_expires"] > now):
         return False, "review_occupied"
-    if not _get(i, "work_contract"):
+    if not _get(i, "work_contract") and not (is_low_risk(i) or low_risk):
+        # 저위험(문서·번역) 라벨 카드는 계약 없이도 독립 리뷰 가능(M4DEK6WC-MQYS).
+        # low_risk 인자: PR 라벨만으로 후보가 된 경우(decide에서 산출) — 카드 라벨과
+        # 동일한 단일 관문을 태우기 위한 주입값.
         return False, "no_contract"
     return True, None

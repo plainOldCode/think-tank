@@ -142,7 +142,7 @@ def test_decide_merges_green_pr_with_card():
     # head_sha 동봉: execute가 병합 직전 재확인(expected)으로 쓴다(t_501e6ec3)
     assert acts == [{"agent": "probe", "issue": "M3PXXXXX-9ABC", "action": "merge", "pr": 3,
                      "head_sha": "abc",
-                     "repo": "plainOldCode/think-tank",
+                     "repo": "plainOldCode/think-tank", "low_risk": False,
                      "reason": "CI green + 카드 계약/수령 검증 — gh pr merge (plainOldCode/think-tank)"}]
 
 
