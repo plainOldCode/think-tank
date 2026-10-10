@@ -66,10 +66,13 @@ def _idem_key(issue_id: str, agent: str, attempt: int, message: str) -> str:
     return f"{issue_id}:{agent}:{attempt}:{digest}"
 
 
-def _dispatch_payload(issue, ag, p, did, issue_id, request, ctx, prev, tail):
+def _dispatch_payload(issue, ag, p, did, issue_id, request, ctx, prev, tail,
+                      agent_name=None):
     return {
         "dispatch_id": did, "issue_id": issue_id, "issue_title": issue["title"],
-        "agent": p.agent, "author": p.author, "message": p.message,
+        # 러너가 페이로드의 agent로 프로필을 정확 매칭한다 — 등록명(폴백 해석 후)을
+        # 실어 보내야 codex@m2max → codex 폴백이 실제 세션을 연다(WGT4 리뷰 R1).
+        "agent": agent_name or p.agent, "author": p.author, "message": p.message,
         "context": prev["context"] if prev else "", "comments": tail,
         "tt_url": str(request.base_url).rstrip("/"),
         "model": ag["model"] or "",  # RZ20: 감사 추적 — 이 회차가 어떤 모델로 실행되는지 선언값
@@ -156,6 +159,12 @@ def dispatch(issue_id: str, p: DispatchIn, request: Request, ctx: Ctx = Depends(
     with ctx.con() as c:
         issue = service.get_issue(c, issue_id)
         ag = c.execute("SELECT * FROM agents WHERE name=?", (p.agent,)).fetchone()
+        if not ag and "@" in p.agent:
+            # 본명@호스트 형식 assignee(tt CLI 기본 신원)를 등록 에이전트 단축명으로
+            # 폴백 — probe review-fix가 assignee에 재dispatch할 때 404로 무한 실패했던
+            # 버그(M4CJG2A5-WGT4). 정확명이 있으면 항상 우선한다.
+            ag = c.execute("SELECT * FROM agents WHERE name=?",
+                           (p.agent.split("@", 1)[0],)).fetchone()
         if not ag:
             raise HTTPException(404, f"agent {p.agent} 미등록 — POST /agents")
         if not ag["enabled"]:
@@ -163,6 +172,7 @@ def dispatch(issue_id: str, p: DispatchIn, request: Request, ctx: Ctx = Depends(
         # 기수락 멱등키 (TT 개선#1 요구 3): 동일 issue+agent+attempt+본문 재전송은
         # 코멘트·dispatch 행 없이 기존 행을 반환한다. error 상태 행은 재전달 대상 —
         # 동일 did로 재시도(러너 장부 키 안정성 유지), 신규 코멘트는 다시 만들지 않는다.
+        agent_name = ag["name"]  # 폴백 해석 후 실제 등록명 — 장부·이벤트는 등록명 기준
         idem = _idem_key(issue_id, p.agent, issue["execution_attempt"], p.message)
         existing = c.execute("SELECT * FROM dispatches WHERE idem_key=? "
                              "ORDER BY id DESC LIMIT 1", (idem,)).fetchone()
@@ -173,7 +183,7 @@ def dispatch(issue_id: str, p: DispatchIn, request: Request, ctx: Ctx = Depends(
             # resume context는 신규 행 INSERT 전에 조회해야 이전 회차를 가리킨다
             # (INSERT 후 조회하면 방금 만든 빈 context 행이 최신이 되어버림).
             prev = c.execute("SELECT context FROM dispatches WHERE issue_id=? AND agent=? "
-                             "ORDER BY id DESC LIMIT 1", (issue_id, p.agent)).fetchone()
+                             "ORDER BY id DESC LIMIT 1", (issue_id, agent_name)).fetchone()
             c.execute("INSERT INTO comments (issue_id, author, body, ts) VALUES (?,?,?,?)",
                       (issue_id, p.author, p.message, dbmod.now()))
             service.log_event(c, "comment.added", "issue", issue_id,
@@ -185,11 +195,11 @@ def dispatch(issue_id: str, p: DispatchIn, request: Request, ctx: Ctx = Depends(
             try:
                 did = c.execute("INSERT INTO dispatches (issue_id, agent, author, message, context, status, ts, model, idem_key, attempt, delivery_lease) "
                                 "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                                (issue_id, p.agent, p.author, p.message, inh_ctx, "queued", dbmod.now(),
+                                (issue_id, agent_name, p.author, p.message, inh_ctx, "queued", dbmod.now(),
                                  ag["model"] or "", idem, issue["execution_attempt"],
                                  dbmod.now())).lastrowid
                 service.log_event(c, "dispatch.created", "dispatch", did,
-                                  {"agent": p.agent, "issue_id": issue_id,
+                                  {"agent": agent_name, "issue_id": issue_id,
                                    "preview": p.message[:120]})
             except sqlite3.IntegrityError:
                 # 동시 중복 POST — 유니크 인덱스가 원자적으로 승자를 결정한다.
@@ -222,7 +232,8 @@ def dispatch(issue_id: str, p: DispatchIn, request: Request, ctx: Ctx = Depends(
             prev = claimed
         tail = dbmod.comments_of(c, issue_id)[-20:]
         c.commit()
-    payload = _dispatch_payload(issue, ag, p, did, issue_id, request, ctx, prev, tail)
+    payload = _dispatch_payload(issue, ag, p, did, issue_id, request, ctx, prev, tail,
+                                agent_name=agent_name)
     status, detail, dctx = "ok", "", ""
     try:
         code, dctx = service.deliver(ag["base_url"], ag["secret"], payload)
@@ -240,7 +251,7 @@ def dispatch(issue_id: str, p: DispatchIn, request: Request, ctx: Ctx = Depends(
                       (status, detail, did))
         c.execute("UPDATE agents SET last_ok=?, last_err=? WHERE name=?",
                   (dbmod.now() if status == "ok" else ag["last_ok"],
-                   "" if status == "ok" else detail, p.agent))
+                   "" if status == "ok" else detail, ag["name"]))
         if status == "error":
             fail_body = f"⚠ hook dispatch #{did} → {p.agent} 실패: {detail}"
             c.execute("INSERT INTO comments (issue_id, author, body, ts) VALUES (?,?,?,?)",
