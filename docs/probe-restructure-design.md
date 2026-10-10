@@ -49,7 +49,7 @@ action은 13종이다: `work, resume, merge, release-reviewer, review-claim, rev
 
 ### 1.4 범위 밖
 
-- 서버 스키마 변경(lease kind 컬럼 등) — 별도 결정 사항으로 §10.3에만 옵션으로 둔다.
+- 서버 스키마 변경(lease kind 컬럼 등) — 별도 결정 사항으로 §10 Q3에만 옵션으로 둔다.
 - 관계형 그래프 DB(RDF/OWL, Neo4j) 도입 — 불필요하다고 판단한다. 투영은 현 snapshot `limit=500`(core.py:906) 규모의 in-memory 구조면 충분하다.
 - 코드 수정. 본 문서는 설계만 담는다.
 
@@ -274,7 +274,7 @@ probe 코멘트 마커 7종의 범위 키를 표 하나로 고정한다. 지금�
  "fallback": false}
 ```
 
-이 스키마는 OPA Decision Logs의 필드 구성(decision_id, 판단에 쓰인 정책 버전, input, result, metrics)과 같은 모양이며 §12.5에서 필드 대응을 둔다. 저장 위치는 열린 질문 Q2(§10.2)로 구현 카드에서 결정한다. 사이클마다 이벤트가 늘어나므로 저장 비용 측정을 P0 수용 조건에 넣는다(§9).
+이 스키마는 OPA Decision Logs의 필드 구성(decision_id, 판단에 쓰인 정책 버전, input, result, metrics)과 같은 모양이며 §12.5에서 필드 대응을 둔다. 저장 위치는 열린 질문 Q2(§10)로 구현 카드에서 결정한다. 사이클마다 이벤트가 늘어나므로 저장 비용 측정을 P0 수용 조건에 넣는다(§9).
 
 ### 8.2 지표 (전부 count 또는 지연 분포)
 
@@ -334,6 +334,15 @@ accuracy, precision/recall, "올바른 배정률", "리뷰 품질" 등 **사람�
 
 - 사실: ci-fix 위임은 이미 env(`TT_CI_FIX_AGENT` 기본 kanban-adapter, `TT_CI_FIX_TARGET` 기본 agy, core.py:752-753)로 위임된다. shadow 주입점은 "위임 여부"가 아니라 dispatch 본문에 붙는 컨텍스트다.
 - 권고: 원문 제안(J9 요약 → ci-fix 분류 → J3 순위)을 그대로 유지한다. 재검증에서 새 근거는 나오지 않았다. ci-fix는 dispatch 본문 첨부가 자연스러운 주입점이고, J3 순위는 후보 수가 많은 사이클에만 의미가 있어 마지막이 적절하다.
+
+## 11. 이 설계가 주장하지 않는 것
+
+- "LLM이 코드보다 유지보수하기 쉽다": **확인 안 됨.** 프롬프트와 모델 버전도 버전 관리·회귀 테스트 대상이고, 비결정성 때문에 테스트 비용은 오히려 늘 수 있다.
+- "온톨로지화로 core.py가 N줄 줄어든다": 수치는 **확인 안 됨** — P1에서 측정한다. 감소 근거는 §3의 중복 패턴 개수뿐이다.
+- "정확도가 올라간다": 본 문서는 accuracy류 지표를 설계하지 않는다(§8.3). 이 설계가 검증하는 것은 동작 무변경(P1·P2)과 count 변화(P3)뿐이다.
+- 관계형 그래프 DB(RDF/OWL, Neo4j) 도입: 불필요하다고 판단한다. 투영은 현 snapshot 규모(limit=500)의 in-memory 구조로 충분하다.
+- 서버 스키마 변경(lease kind 컬럼): 본 설계 범위 밖 — Q3(§10)에서 별도 카드로만 검토한다.
+- 기존 계약의 변경: reason code, 마커 7종, 리뷰 판정 형식, 409 계약은 전부 유지한다(§5.3).
 
 ## 12. 선행 사례와 외부 근거 (웹 재조사)
 
@@ -495,3 +504,22 @@ accuracy, precision/recall, "올바른 배정률", "리뷰 품질" 등 **사람�
 - plainOldCode/think-tank — docs 8종(본 문서 추가로 9종), probe 관련 PR #22/#23/#24/#50/#63/#15/#16. "judge/LLM/ontology" 공개 검색 결과 없음
 - think-tank 내부 문서: docs/review-gate.md(리뷰어 엔진 실측), docs/dispatchd.md(30초 루프 설계), docs/metrics-2week-experiment.md(#3e 지표·수집기), docs/probe-e2e.md(실측 기록 포인터)
 - 내부 카드: M4DEJVY1-XFH2(리팩토링 에픽), M3M0GF1K-G1HT(온톨로지 업무플로우 설계 리뷰), M4GQ1HSK-P7KQ(dgx-local 서빙 제약 기록), M4FFCB9J-2AAB(#3e 지표), M4J9V1EW-VV45(원문 분석)
+
+## 부록 C. 기준 커밋 실측 정리 (HEAD 545d0c0)
+
+본 문서의 정량 서술은 아래 실측에 근거한다. 전부 2026-10-10 체크아웃에서 직접 수행했다(재현 명령은 §검증).
+
+| 항목 | 값 | 방법 |
+| --- | --- | --- |
+| server/probe/core.py | 986줄 (af5aec8 기준 934줄, +52) | `wc -l` |
+| server/policy.py | 116줄 (불변) | `wc -l` |
+| server/routers/issues.py | 700줄 | `wc -l` |
+| action 종류 | 13종 (archive-sweep 포함) | `decide`/`execute` 전수 대독 |
+| `c.get("author") == "probe"` | 10곳 | `grep -c` |
+| `_probe_marker(` | 6곳 (def 1 + 호출 5) | `grep -c` |
+| 코멘트 POST `/comments` | 21곳 전체 = execute 내 19 + `_probe_flag` 2 | `grep -c` (구간별) |
+| `probe merge skip` 문자열 | 카운트 568/570, 스킵 사유 발생점 6곳(677, 682, 686, 696, 699, 705) | `grep -n` |
+| `_now_dt`/`_parse_iso` | 정의만 존재(616-621, 624-633), 호출부 없음 | `grep -n` |
+| probe 테스트 8파일 | **130 passed, 41 warnings** (Python 3.11.16, pytest 8.3.5) | `pytest -q` |
+
+경고 41건은 fastapi `on_event` 비권장 안내 등 기존 경고다 — 본 문서와 무관하다.
