@@ -44,6 +44,34 @@ def test_host_접미사는_가족으로_흡수된다():
     assert route_reviewer("codex@host", RMAP) == "claude"
 
 
+def test_host_별칭으로_가족을_추정한다():
+    # F2 — 실제 보드 assignee 2위 형식(skshim@tp-13): base 미매칭이면 host로 추정
+    assert agent_family("skshim@tp-13") == "opencode"
+    assert route_reviewer("skshim@tp-13", RMAP) == "codex"
+
+
+def test_TT_HOST_FAMILY_MAP으로_host_별칭_확장(monkeypatch):
+    monkeypatch.setenv("TT_HOST_FAMILY_MAP", "macbookpro->hermes")
+    assert agent_family("skshim@macbookpro") == "hermes"
+    assert agent_family("skshim@unknown-host") is None
+
+
+def test_tp13_구현에_opencode_가족은_수령하지_못한다():
+    # F2 — host 별칭 가족에도 자기 리뷰 가드가 적용된다(own_work 정확 일치 한계 보완)
+    acts = dispatchd.decide(_snap([_i(assignee="skshim@tp-13")], _pr(),
+                                  _agents("opencode-tp13", "codex")))
+    assert len(_claim(acts)) == 1 and _claim(acts)[0]["agent"] == "codex"
+
+
+def test_가족_한명의_리스는_가족_후보를_막지_않는다():
+    # F3 — busy는 에이전트 단위: codex-read-only가 lease 보유 중이어도 유휴 codex는 후보다
+    busy_card = _i(id="M4ZZZZZZ-BUSY", state="in_progress", assignee="codex-read-only",
+                   lease_by="codex-read-only", lease_expires="2026-10-10T11:00:00+0900")
+    acts = dispatchd.decide(_snap([_i(assignee="hermes@host"), busy_card], _pr(),
+                                  _agents("codex", "codex-read-only", "claude")))
+    assert len(_claim(acts)) == 1 and _claim(acts)[0]["agent"] == "codex"
+
+
 def test_어댑터는_헤르메스_대행_가족이다():
     assert agent_family("kanban-adapter") == "hermes"
 
@@ -217,13 +245,17 @@ def test_decide는_qw_flash를_codex_기본으로_수령시킨다():
     assert len(_claim(acts)) == 1 and _claim(acts)[0]["agent"] == "codex"
 
 
-def test_카운터파트_리스_보유시_다른가족_유휴에게_수령시킨다():
-    # claude가 타 카드 lease 보유 → 구현 가족 아닌 유휴(opencode)가 수령
+def test_카운터파트_전원_미가용이면_일반_유휴로_확장하지_않는다():
+    # F1 — claude busy, kanban-adapter 미등록, codex는 구현가족: 발령자 체인 밖
+    # 유휴(opencode)로 확장하지 않고 수령 없이 요청 경로로 넘어간다(3a 유지)
     busy_card = _i(id="M4ZZZZZZ-BUSY", state="in_progress", assignee="claude",
                    lease_by="claude", lease_expires="2026-10-10T11:00:00+0900")
     acts = dispatchd.decide(_snap([_i(assignee="codex"), busy_card], _pr(),
                                   _agents("codex", "opencode-tp13", "claude")))
-    assert len(_claim(acts)) == 1 and _claim(acts)[0]["agent"] == "opencode-tp13"
+    assert not _claim(acts)
+    reqs = _req(acts)
+    assert len(reqs) == 1
+    assert "reviewer" not in reqs[0]  # 후보 전원 미가용 — 레거시 폴백은 execute가 해석
 
 
 def test_전원_미가용이면_reviewer_키_없이_요청한다():
@@ -258,19 +290,25 @@ def test_decide는_활성_점유_카드에_요청을_만들지_않는다():
 
 # --- execute 배선: 동기 수령 인계, 409 폴백, 레거시 가드 ---
 
-def _api_double(card, claim_fail=(), fail_code=409):
-    """api 더블 — GET 카드, claim-review/기록. claim_fail 에이전트는 HTTPError."""
-    calls = {"claim": [], "dispatch": [], "comments": []}
+def _api_double(card, claim_fail=(), fail_code=409, dispatch_fail=False):
+    """api 더블 — GET 카드, claim-review/기록. claim_fail 에이전트는 HTTPError,
+    dispatch_fail이면 dispatch POST에서 예외(F4)."""
+    calls = {"claim": [], "dispatch": [], "comments": [], "patch": []}
 
     def fake(url, path, method="GET", body=None):
         if method == "GET":
             return dict(card)
+        if method == "PATCH":
+            calls["patch"].append((path, body))
+            return dict(card, **(body or {}))
         if path.endswith("/claim-review") and method == "POST":
             calls["claim"].append(body)
             if body and body.get("agent") in claim_fail:
                 raise urllib.error.HTTPError(path, fail_code, "refused", None, None)
             return {"id": card.get("id", "X")}
         if path.endswith("/dispatch") and method == "POST":
+            if dispatch_fail:
+                raise RuntimeError("dispatch unavailable")
             calls["dispatch"].append(body)
             return {"ok": True}
         calls["comments"].append(body)
@@ -348,7 +386,9 @@ def test_execute는_레거시_env가_구현가족이면_보내지_않는다(monk
     monkeypatch.setattr(probe.core, "api", fake)
     probe.core.execute("u", _act())
     assert not calls["dispatch"] and not calls["claim"]
-    assert any("[review-claim-fail #9/" in (c.get("body") or "") for c in calls["comments"])
+    # F4 — 요청조차 안 한 케이스는 409가 아니라 가드 사유로 기록된다
+    assert any("[review-guard-skip #9/" in (c.get("body") or "") for c in calls["comments"])
+    assert not any("[review-claim-fail #9/" in (c.get("body") or "") for c in calls["comments"])
 
 
 def test_execute는_레거시가_작성자_본인이면_보내지_않는다(monkeypatch):
@@ -360,7 +400,45 @@ def test_execute는_레거시가_작성자_본인이면_보내지_않는다(monk
     monkeypatch.setattr(probe.core, "api", fake)
     probe.core.execute("u", _act())
     assert not calls["dispatch"] and not calls["claim"]
-    assert any("[review-claim-fail #9/" in (c.get("body") or "") for c in calls["comments"])
+    # F4 — 본인 가드 제외도 요청 없음: 가드 사유로 기록
+    assert any("[review-guard-skip #9/" in (c.get("body") or "") for c in calls["comments"])
+
+
+def test_execute는_dispatch_실패시_리뷰어_lease를_반납한다(monkeypatch):
+    # F4 — claim 후 dispatch가 죽으면 lease 잔존은 타 리뷰어 409를 만든다: 반납
+    card = {"id": "M4JTJ970-WS3C", "state": "review", "version": 3, "comments": [],
+            "reviewer": "claude", "lease_by": "claude"}
+    fake, calls = _api_double(card, dispatch_fail=True)
+    monkeypatch.setattr(probe.core, "api", fake)
+    probe.core.execute("u", _act(reviewer="claude"))
+    assert calls["claim"] == [{"agent": "claude"}]
+    assert not calls["dispatch"]
+    assert {"reviewer": "", "lease_by": "", "lease_expires": None} in [b for _, b in calls["patch"]]
+    assert any("리뷰어 lease 반납" in (c.get("body") or "") for c in calls["comments"])
+
+
+def test_execute는_dispatch_실패시_남의_lease는_건드리지_않는다(monkeypatch):
+    # R5 — 반납 시점에 이미 다른 리뷰어가 재claim했다면 그 lease를 보존한다
+    card = {"id": "M4JTJ970-WS3C", "state": "review", "version": 3, "comments": [],
+            "reviewer": "codex", "lease_by": "codex"}
+    fake, calls = _api_double(card, dispatch_fail=True)
+    monkeypatch.setattr(probe.core, "api", fake)
+    probe.core.execute("u", _act(reviewer="claude"))
+    assert not [b for _, b in calls["patch"]]  # reviewer 불일치 — PATCH 없음
+
+
+def test_execute_review_claim은_dispatch_실패시_lease를_반납한다(monkeypatch):
+    # F4 — 교차 수령 경로도 동일: claim 후 dispatch 실패면 반납
+    card = {"id": "M4JTJ970-WS3C", "state": "review", "version": 3, "comments": [],
+            "reviewer": "a2@t", "lease_by": "a2@t"}
+    fake, calls = _api_double(card, dispatch_fail=True)
+    monkeypatch.setattr(probe.core, "api", fake)
+    probe.core.execute("u", {"action": "review-claim", "agent": "a2@t",
+                             "issue": "M4JTJ970-WS3C", "pr": 9,
+                             "repo": "plainOldCode/think-tank", "head_sha": "b" * 40,
+                             "marker": f"[review-req #9/{SHA8}]"})
+    assert not calls["dispatch"]
+    assert {"reviewer": "", "lease_by": "", "lease_expires": None} in [b for _, b in calls["patch"]]
 
 
 def test_execute는_미표기_카드의_레거시_env를_그대로_쓴다(monkeypatch):

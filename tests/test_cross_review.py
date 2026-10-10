@@ -64,14 +64,14 @@ def grace_off(monkeypatch):
     monkeypatch.setenv("TT_REVIEW_GRACE_MIN", "0")
 
 
-def test_유휴_타인_에이전트가_review_카드를_자동_수령한다(monkeypatch):
+def test_유휴_타인은_라우팅_후보가_아니면_수령시키지_않는다(monkeypatch):
+    # F1 — 교차 수령 후보는 라우팅 1순위+3a 체인으로 한정: 체인 밖 유휴 에이전트
+    # (a2@t)가 수령하지 않고 레거시 review-request로 넘어간다
     monkeypatch.setenv("TT_REVIEW_AGENT", "fallback@t")
     acts = dispatchd.decide(_snap([_i()], _pr(), [_agent("a2@t")]))
-    claims = [a for a in acts if a["action"] == "review-claim"]
-    assert len(claims) == 1 and claims[0]["agent"] == "a2@t"
-    assert claims[0]["issue"] == "M4ABCDEF-GH12"
-    # 수령이 이뤄지면 환경 리뷰어 dispatch(review-request)는 안 나간다
-    assert not [a for a in acts if a["action"] == "review-request"]
+    assert not [a for a in acts if a["action"] == "review-claim"]
+    reqs = [a for a in acts if a["action"] == "review-request"]
+    assert len(reqs) == 1 and "reviewer" not in reqs[0]
 
 
 def test_본인_작업_카드는_수령하지_않는다(monkeypatch):
@@ -234,12 +234,13 @@ def test_policy_저위험_라벨은_계약_없어도_리뷰_수령_가능():
                                   now=NOW, agent="a2@t")[0] is True
 
 
-def test_저위험_무계약_카드는_독립_리뷰를_자동_수령한다(monkeypatch):
+def test_저위험_무계약_카드는_독립_리뷰_요청으로_간다(monkeypatch):
+    # F1 — 후보 확장이 없어도 요청 경로로 독립 리뷰는 유지된다(레거시 env가 해석)
     monkeypatch.setenv("TT_REVIEW_AGENT", "fallback@t")
     card = _i(work_contract=None, labels=["docs"])
     acts = dispatchd.decide(_snap([card], _pr(), [_agent("a2@t")]))
-    claims = [a for a in acts if a["action"] == "review-claim"]
-    assert len(claims) == 1 and claims[0]["agent"] == "a2@t"
+    assert not [a for a in acts if a["action"] == "review-claim"]
+    assert [a for a in acts if a["action"] == "review-request"]
 
 
 def test_무계약_무라벨_카드는_병합_후보에서_제외된다(monkeypatch):
@@ -294,13 +295,15 @@ def test_저위험은_기본_리뷰어_미설정에도_독립_승인이_필요�
     assert [a for a in acts if a["action"] == "merge"]
 
 
-def test_pr_라벨만으로도_독립_리뷰_수령된다(monkeypatch):
-    """R3: 카드 라벨 없어도 PR 라벨로 후보화된 경우 review_eligible에 주입된다."""
+def test_pr_라벨만으로도_독립_리뷰_후보화된다(monkeypatch):
+    """R3: 카드 라벨 없어도 PR 라벨로 후보화된 경우 review_eligible에 주입된다.
+    F1 — 수령 대신 요청 경로로 가지만, 후보화 없이는 아예 판정 대상이 아니다."""
     monkeypatch.setenv("TT_REVIEW_AGENT", "fallback@t")
     card = _i(work_contract=None, labels=[])
     pr = dict(_pr()[0], labels=[" DoCs "])
     acts = dispatchd.decide(_snap([card], [pr], [_agent("a2@t")]))
-    assert [a for a in acts if a["action"] == "review-claim"]
+    assert not [a for a in acts if a["action"] == "review-claim"]
+    assert [a for a in acts if a["action"] == "review-request"]
 
 
 def test_gh_파일목록이_불완전하면_병합하지_않는다(monkeypatch):
