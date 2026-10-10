@@ -4,6 +4,8 @@ set -uo pipefail
 URL="${TT_URL:-http://127.0.0.1:7800}"
 AGENT="${TT_AGENT:-$USER@$(hostname -s)}"
 JQ="jq -r"
+# TT 개선#3f: CLI 버전 — 서버 openapi 해시와 함께 `tt version`으로 표기(드리프트 감지)
+TT_CLI_VERSION="2.2.0"
 jfilter() { if [[ "${JSON:-0}" == 1 ]]; then jq .; else jq -r "$@"; fi; }
 
 usage() {
@@ -36,11 +38,34 @@ tt — think-tank issue tracker ($URL)
   tt agent add NAME URL [secret] | tt agent rm NAME | tt agent enable|disable NAME
   tt agent release|notify NAME on|off  # 능력 플래그: release=종지 명령, notify=blocked(human) 알림 수신
   tt dispatch ID -A AGENT "지시"   # 보드→agent webhook 발송(지시는 댓글로 기록, 회신은 comments)
+  tt new ... --body-file F    # 다중행 본문을 파일로(셸 인용·백틱 취약 제거)
+  tt version                 # cli 버전 + 서버 openapi 해시(스키마 드리프트 감지)
   tt health                  # 서버 점검
 EOF
 }
 
-req() { curl -sf --max-time 10 -H 'content-type: application/json' "$@"; }
+# TT 개선#3f: 에러 응답 전문 출력 — 422 validation 배열을 필드명까지 풀어서 보인다.
+# ("실패: } ]" 같은 잘림 방지 — 이번 done 디버깅 3회 재시도의 원인)
+print_api_err() {
+  local body="$1" detail
+  detail="$(jq -r '
+    if (.detail? | type) == "array"
+    then .detail | map("  - \(.loc | map(tostring) | join(".")): \(.msg)") | join("\n")
+    elif .detail? != null then (.detail | tostring)
+    else (. | tostring) end' <<<"$body" 2>/dev/null)" || detail="$body"
+  echo "실패: $detail" >&2
+}
+
+req() {
+  local response status body
+  response="$(curl -sS --max-time 10 -H 'content-type: application/json' -w '\n%{http_code}' "$@")" || return 1
+  status="${response##*$'\n'}"; body="${response%$'\n'*}"
+  if [[ "$status" != 2?? ]]; then
+    print_api_err "$body"
+    return 1
+  fi
+  printf '%s\n' "$body"
+}
 
 # Preserve HTTP error detail without repeating a mutating request.
 completion_req() {
@@ -48,7 +73,7 @@ completion_req() {
   response="$(curl -sS --max-time 10 -H 'content-type: application/json' -w '\n%{http_code}' "$@")" || return 1
   status="${response##*$'\n'}"; body="${response%$'\n'*}"
   if [[ "$status" != 2?? ]]; then
-    echo "실패: $(jq -r '.detail // .' <<<"$body" 2>/dev/null || printf '%s' "$body")" >&2
+    print_api_err "$body"
     return 1
   fi
   printf '%s\n' "$body"
@@ -68,13 +93,23 @@ case "$cmd" in
   contract)
     req "$URL/work-contract" | $JQ '"[TT contract \(.version)]\n\(.instructions)"' ;;
 
+  version)
+    echo "cli $TT_CLI_VERSION"
+    # 서버 openapi 해시 — 스키마가 바뀌면 해시가 바뀐다(드리프트 감지 표기)
+    if hash_val="$(curl -sS --max-time 5 "$URL/openapi.json" | sha256sum | cut -c1-8)"; then
+      echo "server openapi $hash_val"
+    else
+      echo "server openapi 조회 실패" >&2
+    fi ;;
+
   health)
     req "$URL/health" | $JQ '"ok: \(.name) \(.status)"' ;;
 
   new)
-    title=""; parent=""; body=""; prio="null"; labels="[]"; state="todo"; acceptance=""
+    title=""; parent=""; body=""; prio="null"; labels="[]"; state="todo"; acceptance=""; body_file=""
     while [[ $# -gt 0 ]]; do case "$1" in
       -p) parent="$2"; shift 2;; -b) body="$2"; shift 2;; -a) acceptance="$2"; shift 2;;
+      --body-file) body_file="$2"; shift 2;;
       -P) prio="$(tr -d pP <<<"$2")"; shift 2;; -l) labels="$(jq -cn --arg L "$2" '$L|split(",")')"; shift 2;;
       -s) state="$2"; shift 2;; *) title="$1"; shift;; esac; done
     [[ -z "$title" ]] && { echo "제목 필요"; exit 1; }
@@ -82,8 +117,10 @@ case "$cmd" in
     # 공백·탭·개행만 있는 값도 거부(서버 422를 유저에게 보이기 전에 차단)
     [[ -z "${acceptance//[[:space:]]/}" ]] && { echo "acceptance(완료 기준) 필요: tt new \"제목\" -a \"끝낼 조건\""; exit 1; }
     PARENT_JSON=null; [[ -n "$parent" ]] && PARENT_JSON="\"$parent\""
-    body_esc="$(jq -Rs . <<<"$body")"
-    acc_esc="$(jq -Rs . <<<"$acceptance")"
+    # TT 개선#3f: 다중행 본문은 파일로 — 셸 인용·백틱 command substitution 취약 제거
+    [[ -n "$body_file" ]] && { [[ -r "$body_file" ]] || { echo "본문 파일을 읽을 수 없음: $body_file" >&2; exit 1; }; body="$(cat "$body_file")"; }
+    body_esc="$(printf '%s' "$body" | jq -Rs .)"
+    acc_esc="$(printf '%s' "$acceptance" | jq -Rs .)"
     payload="$(jq -cn --arg t "$title" --arg s "$state" --argjson p "$PARENT_JSON" --argjson pr "$prio" --argjson l "$labels" --argjson b "$body_esc" --argjson a "$acc_esc" \
       '{title:$t,state:$s,parent_id:$p,priority:$pr,labels:$l,body:$b,acceptance:$a}')"
     req -X POST "$URL/issues" -d "$payload" | $JQ '.id + " [" + .state + "] " + .title' ;;
