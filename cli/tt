@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # tt — think-tank issue tracker CLI (server: REST API, see docs/API.md)
 set -uo pipefail
-URL="${TT_URL:-http://100.122.96.16:7800}"
+URL="${TT_URL:-http://127.0.0.1:7800}"  # serve-time 주입 계약 — 설치본에 실 IP 금지(8a24220 회귀 테스트)
 AGENT="${TT_AGENT:-$USER@$(hostname -s)}"
 JQ="jq -r"
 # TT 개선#3f: CLI 버전 — 서버 openapi 해시와 함께 `tt version`으로 표기(드리프트 감지)
