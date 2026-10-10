@@ -335,6 +335,77 @@ accuracy, precision/recall, "올바른 배정률", "리뷰 품질" 등 **사람�
 - 사실: ci-fix 위임은 이미 env(`TT_CI_FIX_AGENT` 기본 kanban-adapter, `TT_CI_FIX_TARGET` 기본 agy, core.py:752-753)로 위임된다. shadow 주입점은 "위임 여부"가 아니라 dispatch 본문에 붙는 컨텍스트다.
 - 권고: 원문 제안(J9 요약 → ci-fix 분류 → J3 순위)을 그대로 유지한다. 재검증에서 새 근거는 나오지 않았다. ci-fix는 dispatch 본문 첨부가 자연스러운 주입점이고, J3 순위는 후보 수가 많은 사이클에만 의미가 있어 마지막이 적절하다.
 
+## 12. 선행 사례와 외부 근거 (웹 재조사)
+
+이 장은 M4JMYZAX-2BTP 웹조사 카드(2026-10-10)의 결과를 본 설계에 맞게 재구성한 것이다. 모든 출처를 검색 결과 제목이 아니라 원문 텍스트로 확인했다. 표기: [1차] = 공식 문서·논문 원문 직접 확인, [2차] = 블로그·커뮤니티 글, [확인 안 됨] = 원문을 직접 확인하지 못함. 외부 소스의 성능 수치는 "출처가 보고한 값"이며 TT 환경 실측이 아니다. 검색은 무료 폴백 백엔드로 수행됐으므로 같은 쿼리의 재검색은 결과가 달라질 수 있다.
+
+### 12.1 LLM-as-judge의 비결정성과 게이트 위치
+
+| 출처 | 등급 | 확인된 내용(출처가 보고한 값) | 이 설계에의 반영 |
+| --- | --- | --- | --- |
+| dev.to — "We gated CI on six open-source LLM eval frameworks …" (약 8개월 CI 머지큐 회고) | [2차·원문 직접 확인] | 변경 없는 같은 입력을 금요일 0.83, 월요일 0.78로 채점해 주말에 PR 14건+릴리스 1건 차단. "결정적 검사만 blocking, judge 점수는 advisory" 구성(Promptfoo·DeepEval)만 생존. "한 번이라도 무변경 입력에서 판정을 뒤집은 지표는 blocking 경로에 넣지 않는다" | J8 병합 게이트를 규칙 전용으로 유지하는 근거. judge 흔들림 관측은 §8.2 LLM 일관성 지표 |
+| OpenRouter — "How to Gate Pull Requests on LLM Evals in CI" (2026-10-01) | [1차·벤더 가이드] | 고정 eval 세트를 실패하는 유닛테스트처럼 취급. 임계치는 "무변경 브랜치에서 반복 실행해 잡음을 측정한 뒤" 산정. 반복 샘플링+다수결(majority vote)은 모든 모델에서 가능한 비결정성 완화법 | §7.3 W0 기준치를 무부하 창에서 먼저 측정하는 절차, §8.2 다수결 옵션의 방법론 근거 |
+| arXiv 2406.07791 — Judging the Judges: Position Bias in LLM-as-a-Judge (IJCNLP 2025) | [1차·논문] | 최신판(v9) 기준: judge 15종, 22 태스크, 15만+ 평가. 지표 3종 — repetition stability, position consistency, preference fairness. 위치 편향은 무작위가 아니며 품질 격차에 강하게 좌우됨. (버전별 수치 상이 — v5/v6은 12 judge/10만+. 인용 시 버전 명시) | §8.2 "같은 input_hash 출력 비교 / 후보 순서 교체" 지표 설계의 1차 근거 |
+| arXiv 2306.05685 — Judging LLM-as-a-Judge with MT-Bench and Chatbot Arena | [1차·논문] | GPT-4 판정 85% vs 인간-인간 일치 81%(비동점 투표, 첫 턴) | judge 성능의 상한선 참고점. 단, 대형 상용 모델·영어 대화 도메인 수치라 TT의 소형 로컬 모델·코드 도메인 전이는 **확인 안 됨** |
+| AI 코드리뷰 도구 운영 관행 (CodeRabbit·Greptile·Graphite Diamond 비교 글 다수) | [2차] | "AI 리뷰는 advisory로 시작해 자체 false-positive rate를 수 주간 측정한 뒤 required로 전환" 공통 권고. "같은 diff를 두 번 돌리면 코멘트가 달라진다 — required status check로 쓸 수 없다". "FP rate ~10% 이하에서 전환"은 한 글의 경험치(인용하지 않음) | §9 shadow→enforce 전환 절차의 관행 근거. 전환 기준치는 TT 자체 count로 정함 |
+| GitHub Copilot code review 공식 문서 | [1차·공식문서] | 기본은 "Comment" 리뷰 — required approvals에 불가산. 승인 리뷰는 opt-in(off by default). 승인 후 새 커밋 push 시 승인 해제(dismiss) | probe 리뷰 계약 — 승인은 리뷰어 에이전트의 명시적 `review: approve` 마커로만 받고 head 불일치는 폐기(J5) — 과 같은 구조의 1차 선례 |
+| Seldon Core shadow 배치 문서 | [1차·ML인프라] | 그림자 배치 응답은 버려지며 라이브 트래픽에 영향 없음 | P3 shadow 모드의 동작 원형(외부 효과 0) |
+
+**찾지 못한 것**: LLM이 머지·권한 판단을 직접 집행(enforce)하는 안정 운영 사례. 원문 조사와 이번 재조사 모두에서 발견된 구성은 전부 advisory/soft-gate였다. 본 설계는 이 관찰을 J8 규칙 유지의 근거로 쓴다.
+
+### 12.2 온톨로지/그래프 라우팅과 self-preference 정정
+
+- **직접 사례 미발견**: "관계를 1급 데이터(엣지)로 두어 파싱/dedup 코드를 줄였다"는 공개 사례·회고는 검색 범위(arXiv, 기술 블로그, GitHub)에서 **발견되지 않았다.** §4의 효과 검증은 외부 사례가 아니라 P1 내부 실측(골든 테스트 + core.py 줄 수 보고)으로만 한다.
+- arXiv 2510.05445 AgentRouter [1차·논문]: 질의·문맥 엔티티·에이전트를 지식그래프 노드로 합치고 학습 가능 엣지 + 이기종 GNN으로 태스크 인지 라우팅. 학습·감독 신호가 전제라 TT 규모(에이전트 수 개, 카드 하루 수십 건)에서 이득은 **확인 안 됨** — 채택하지 않는다. "ACL 2026 수록" 표기도 **확인 안 됨**(arXiv 사실만 확인).
+- arXiv 2511.18194 Agent-as-a-Graph [1차·논문]: 도구·상위 에이전트를 KG 동급 노드로 두고 벡터 검색 → 가중 재정렬 → 엣지 traversal로 에이전트를 얻는 검색 기법(Recall@5 +14.9%는 논문 보고치). 본 설계가 취하는 것은 성능이 아니라 **"관계를 엣지로 두면 질의가 traversal이 된다"는 데이터 모델**이다. 단, MCP 도구 검색 도메인이며 오케스트레이션 상태 관리가 아니다.
+- **정정**: 원문 분석 §3이 인용한 self-preference "+73.3pp"는 2차 요약 사이트의 수치로 원논문에서 확인되지 않는다. 1차 수치는 arXiv 2404.13076(NeurIPS 2024)의 "GPT-4 자기인식 정확도 73.5%"이며, 자기인식-자기선호 선형 상관과 "인간 기준 동품질 쌍에서도 자기선호"를 본문에서 직접 확인했다. §5.2 원칙 4(교차 원칙)의 근거는 이 1차 논문이다.
+
+### 12.3 하이브리드 규칙+LLM 게이트
+
+- Saltzer & Schroeder 1975 [1차·설계원칙]: "Fail-safe defaults: 접근 결정은 배제가 아니라 허용에 기반하라 — 명시적 허용을 주는 메커니즘의 실수는 허용을 거부하는 안전한 방향으로 실패한다." §5.2 원칙 1·2의 원전이다.
+- NVIDIA NeMo Guardrails [1차·공식문서]: 입력 레일(LLM 호출 전 allow/alter/reject)·출력 레일(생성 후 allow/edit/block)·실행 레일(도구 동작 검증). "LLM 제안 → 결정적 레일 검증 → 외부 효과" 구조의 공식 선례다.
+- AWS Cedar [1차 — 이번 조사에서 원문 미확인, **확인 안 됨** 유지]: forbid가 permit을 이긴다는 기술은 xslyl 개인 블로그 [2차]에 근거한다. "안전 규칙은 우연히 뒤집힐 수 없다"는 표현 수준으로만 쓴다.
+- Obex 0.1.0 [1차·패키지 문서]: zero-LLM 결정적 가드레일 + OPA식 감사 트레일(decision_id, policy_version, decision, blocking_rule, human_override, trace_id). 실사용 성숙도·커뮤니티 규모는 **확인 안 됨** — §8.1 감사 필드의 참고 예로만 쓴다.
+- Ordo, OpenAPPA: **확인 안 됨**(이번 재조사에서도 원문 미확보 — rate limit / 출처 미발견). allow/deny/ask 3값 구성 주장은 인용하지 않는다. 본 설계의 gate 3값(allow/deny/escalate)은 TT 자체 요구에서 유래한다.
+- 보조 [2차]: orkes.io("LLM guardrail은 의미 검사로 다뤄야지 결정적 규칙의 대체가 아니다"), codilime.com("에이전트가 허용을 결정하지 않는다; 정책엔진이 결정한다"), dev.to/aws("시스템 프롬프트는 강제가 아니라 문맥이다") — 같은 방향의 2차 보강.
+
+### 12.4 판단 로그·감사 트레일과 파생 뷰
+
+- OPA Decision Logs [1차·공식문서]: 이벤트마다 decision_id, labels, bundles[].revision(판단에 쓰인 정책 번들), path, query, input, result, requested_by, timestamp, metrics, erased/masked, trace_id/span_id. 목적은 "감사와 오프라인 디버깅"이다 — §8.1 스키마의 원형(필드 대응은 §12.5).
+- EU AI Act 제12조 [1차·법령 독해 사이트, 원전 EUR-Lex 32024R1689]: 고위험 AI 시스템은 자동 로깅 기능 의무 + 최소 6개월 보존(제19·26조). **TT는 EU 고위험 AI 시스템이 아니므로 적용 대상이 아니다** — "판단 로그가 부가 기능이 아니라 시스템 기능이라는 규제 기대치의 선례"로만 인용한다.
+- Event Sourcing / CQRS (Fowler) [1차]: 이벤트 로그가 1급 기록이고 상태·뷰는 파생 계산이다("Application state is purely derivable from the event log"). §4.1의 "마커 = 기록, 온톨로지 = 파생 뷰"가 새 패러다임이 아니라 20년 검증된 파생-데이터 패턴의 적용임을 보강하고, 그래프 DB 없이 in-memory 투영이면 충분하다는 판단의 근거가 된다.
+
+### 12.5 판단 로그 필드 대응 (§8.1 ↔ OPA Decision Logs)
+
+| 본 설계 §8.1 | OPA Decision Logs | 비고 |
+| --- | --- | --- |
+| `decision_id` | `decision_id` | 상관 추적용 고유 ID |
+| `judge`(git sha / model+prompt ver) | `bundles[].revision` | "무엇으로 판정했나"의 버전 고정 |
+| `input_hash` | `input` | 본 설계는 해시만 남긴다 — 원천은 카드·코멘트에 이미 존재 |
+| `output` / `rule_output` | `result` | `rule_output`는 shadow 비교용 확장 |
+| `gate`(allow/deny/escalate) | (없음 — 확장) | OPA는 결정 하나만 기록 |
+| `mode`(enforce/shadow) | (없음 — 확장) | |
+| `latency_ms` | `metrics` | |
+| `trace_id` | `trace_id`/`span_id` | W3C trace-context |
+| (해당 없음) | `erased`/`masked` | 민감 필드 마스킹 — TT는 기록 자체가 공개 카드라 불필요 |
+
+### 12.6 원문 분석 수치 대조·정정
+
+| 원문 주장 | 재조사 결과 | 본 문서 취급 |
+| --- | --- | --- |
+| dev.to judge 0.83→0.78, PR 14건 차단 | **원문 직접 확인** — 수치·맥락 일치 | §12.1 그대로 (개인 회고 한계 명시) |
+| self-preference "+73.3pp" (2차 요약 인용) | **원논문 미확인 수치** | **arXiv 2404.13076의 73.5%(자기인식 정확도)로 교체** |
+| arXiv 2406.07791 15 judge/22 태스크/15만+ | **최신판(v9) 초록으로 확인** — 구판은 12 judge/10만+ | 인용 시 버전 명시 |
+| AgentRouter "ACL 2026 수록" | **확인 안 됨** (arXiv 사실만 확인) | "arXiv 2510.05445"로만 표기 |
+| Obex/OpenAPPA/Ordo 성숙도 | Obex만 존재·내용 확인(v0.1.0). Ordo rate limit, OpenAPPA 미발견 | Obex는 감사 필드 예로만, 나머지는 인용하지 않음 |
+| "LLM이 머지·권한 판정을 직접 집행하는 안정 운영 사례 없음" | **재확인** — 이번에도 발견 없음(찾은 것은 전부 advisory/soft-gate) | §12.1 서두 서술 |
+
+### 12.7 think-tank 공개 소스
+
+- 레포는 공개(public)다. `docs/`는 8종이 존재하고 본 문서가 추가되면 9종이 된다. 조사 시점에 `probe-restructure-design.md`는 존재하지 않았다 — 신규 파일 요건과 정합.
+- probe 관련 공개 PR: #22(서버 내장화 TT_PROBE_INTERVAL), #23/#24(ZK3G e2e 문서), #50(코멘트 PR URL 채택), #63(busy/eligible policy 모듈), #15(CI 실패 위임), #16(draft 병합 중단) 등.
+- "judge OR LLM OR ontology" 키워드의 공개 PR·이슈 검색: **결과 없음** — 이 설계의 논의는 TT 카드(M4J9V1EW-VV45, M4JMYZAX-2BTP)에만 존재한다.
+
 ## 부록 A. 판정 지점 상세 (HEAD 545d0c0)
 
 ### A.1 J1~J12 코드 위치
@@ -386,3 +457,41 @@ accuracy, precision/recall, "올바른 배정률", "리뷰 품질" 등 **사람�
 | TT_REPO_SCAN_EXTRA | "" | core.py:74 | 추가 스캔 repo |
 | TT_ARCHIVE_AFTER_DAYS | 0 (비활성) | core.py:453-457 | 자동 아카이브 스윕 (신규) |
 | TT_AGENT | dispatchd | core.py:466 | API x-agent 헤더 |
+
+## 부록 B. 참고자료
+
+상태 표기는 §12와 같다([1차]/[2차]/[확인 안 됨]). 외부 수치는 "출처가 보고한 값"이며 TT 환경 실측이 아니다.
+
+**1차(공식 문서·논문·원전)**
+
+- arXiv 2406.07791 — Judging the Judges: Position Bias in LLM-as-a-Judge. judge 15종·22 태스크·15만+ 평가(최신판 v9 — 버전별 수치 상이). https://arxiv.org/abs/2406.07791
+- arXiv 2404.13076 — LLM Evaluators Recognize and Favor Their Own Generations (NeurIPS 2024). GPT-4 자기인식 정확도 73.5%, 자기인식-자기선호 선형 상관. https://arxiv.org/abs/2404.13076
+- arXiv 2306.05685 — Judging LLM-as-a-Judge with MT-Bench and Chatbot Arena. GPT-4 85% vs 인간-인간 81%(비동점 투표). https://arxiv.org/abs/2306.05685
+- arXiv 2510.05445 — AgentRouter: KG-가이드 에이전트 라우팅(학습 기반, QA 도메인). https://arxiv.org/abs/2510.05445
+- arXiv 2511.18194 — Agent-as-a-Graph: 도구·에이전트를 KG 노드로 둔 traversal 검색. https://arxiv.org/abs/2511.18194
+- Saltzer & Schroeder — The Protection of Information in Computer Systems (1975). Fail-safe defaults 원문. https://www.cs.virginia.edu/~evans/cs551/saltzer/
+- OPA Decision Logs — decision_id·input·result·bundle revision·metrics·trace_id 필드. https://openpolicyagent.org/docs/latest/management-decision-logs
+- NVIDIA NeMo Guardrails — input/output/execution rails. https://docs.nvidia.com/nemo/guardrails/about-nemo-guardrails-library/how-it-works
+- GitHub Copilot code review — 기본 Comment 리뷰(required approvals 불가산), 승인 opt-in, head push 시 승인 해제. https://docs.github.com/en/copilot/how-tos/agents/copilot-code-review/using-copilot-code-review
+- EU AI Act 제12조(기록 보존) — 자동 로깅 기능 의무, 최소 6개월 보존(제19·26조). https://artificialintelligenceact.eu/article/12/ (원전 EUR-Lex 32024R1689) — 직접 적용 대상 아님
+- Obex 0.1.0 — zero-LLM 강제, OPA식 감사 트레일. https://pypi.org/project/obex/ (성숙도는 확인 안 됨)
+- Martin Fowler — Event Sourcing / CQRS. 이벤트 로그 위의 파생 뷰. https://www.martinfowler.com/eaaDev/EventSourcing.html , https://martinfowler.com/bliki/CQRS.html
+- Seldon Core shadow 배치 — 그림자 응답은 폐기되며 라이브에 영향 없음. https://docs.seldon.ai/seldon-core-1/tutorials/notebooks/ambassador_shadow
+
+**2차(회고·벤더 가이드·커뮤니티)**
+
+- dev.to — We gated CI on six open-source LLM eval frameworks (약 8개월 실측 회고: judge 0.83→0.78 드리프트로 PR 14건 차단). https://dev.to/ethanwritesai/we-gated-ci-on-six-open-source-llm-eval-frameworks-only-two-survived-the-merge-queue-5elf
+- OpenRouter — How to Gate Pull Requests on LLM Evals in CI. 고정 eval 세트·임계치 측정법·다수결. https://openrouter.ai/blog/tutorials/how-to-gate-pull-requests-on-llm-evals-in-ci/
+- AI 코드리뷰 advisory-우선 관행 — nisai.dev, buildbyzaki.space, dev.to(pickuma) 등 2차 비교 글 다수
+- xslyl — Agent Policy Engine Design. PDP/PEP, Cedar forbid-우선(2차 경유), 정책엔진-감사 분리. https://xslyl.com/en/posts/agent-policy-engine.html
+- orkes.io / codilime.com / dev.to/aws — "LLM은 의미 검사, 최종 결정은 정책엔진" 보조 근거
+
+**확인 안 됨 (인용하지 않음)**
+
+- Ordo(https://gitblind.noratr.app/Ordo-Engine/Ordo — rate limit), OpenAPPA(원출처 미확보), AWS Cedar 1차 문서(https://aws.github.io/cedar — 미확인), AgentRouter의 ACL 2026 수록 여부, self-preference "+73.3pp"(원논문 미확인 수치 — §12.6에서 교체), 9B급 소형 모델의 go/stop 판정 정확성, jev류 프리필터 특성(~20ms), mini 호스트의 칩셋·여유 메모리, 운영 중 probe 주기 실측값
+
+**레포·공개 소스**
+
+- plainOldCode/think-tank — docs 8종(본 문서 추가로 9종), probe 관련 PR #22/#23/#24/#50/#63/#15/#16. "judge/LLM/ontology" 공개 검색 결과 없음
+- think-tank 내부 문서: docs/review-gate.md(리뷰어 엔진 실측), docs/dispatchd.md(30초 루프 설계), docs/metrics-2week-experiment.md(#3e 지표·수집기), docs/probe-e2e.md(실측 기록 포인터)
+- 내부 카드: M4DEJVY1-XFH2(리팩토링 에픽), M3M0GF1K-G1HT(온톨로지 업무플로우 설계 리뷰), M4GQ1HSK-P7KQ(dgx-local 서빙 제약 기록), M4FFCB9J-2AAB(#3e 지표), M4J9V1EW-VV45(원문 분석)
