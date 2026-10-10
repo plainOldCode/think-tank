@@ -4,6 +4,7 @@
 다중행 본문의 안전 입력 경로(--body-file)가 있는지 검증한다.
 """
 import json
+import re
 import subprocess
 import urllib.request
 
@@ -147,3 +148,11 @@ def test_인자_누락시_usage_안내(cli):
     for cmd in ("claim", "claim-review", "state"):
         p = run(cmd)
         assert p.returncode != 0 and "usage:" in p.stderr, (cmd, p.stderr)
+
+
+def test_version_해시는_이식가능_도구_사용(cli):
+    """회귀: macOS에 sha256sum이 없어도 shasum -a 256으로 폴백한다 (GVH6)."""
+    run, url, api, db = cli
+    out = run("version").stdout
+    m = re.search(r"server openapi ([0-9a-f]{8})", out)
+    assert m, out
