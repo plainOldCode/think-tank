@@ -107,6 +107,31 @@ prevention takes priority over the codex default (issuer decision 2026-10-10).
   before noting — a stranded lease would 409 every other reviewer until expiry (F4, observed
   live on M4JTJ970-WS3C PR#80).
 
+## Concurrent dispatch guard (M4N469TR-JWW0)
+
+The same card must not run parallel review/fix dispatches (PR#87 incident: manual re-review +
+probe auto-review + probe auto-review-fix on one PR simultaneously). The guard is two-layered:
+
+- **decide**: when a card has any in-progress dispatch (`run_state` in the active set — queued,
+  running, stalled, finalizing, held; surfaced as `busy_agents` on review/auto cards in the
+  snapshot), new `review-request`/`review-claim`/`review-fix` actions are **not** created —
+  skipped without a marker and re-judged next cycle (no permanent stall: once the dispatch
+  finishes, the next cycle spawns normally).
+  - **`held` implementer dispatch is intentional**: an implementer dispatch waiting on a human
+    approval gate keeps review spawns deferred (and leaves no note) until the gate resolves —
+    reviewing held/unfinished work would judge a stale head. The review resumes automatically
+    in the cycle after the gate is approved/rejected.
+- **execute** (defense-in-depth, re-checked just before spawning — decide's judgment can be
+  minutes old): `review-request` excludes busy candidates (all busy → silent skip, re-judged
+  next cycle; self-review-guard eliminations still get the `[review-guard-skip]` note);
+  `review-fix` skips the spawn when the target agent has an in-progress dispatch. A
+  `/dispatches` lookup failure is **fail-open by design** — the decide guard is the first line.
+- **`review-retry` (12MZ stall reissue) is exempt from the execute busy-guard**: a stalled
+  reviewer session is a dead zombie and the reissue is a **fresh session** (`fresh: True`) —
+  not concurrent execution. Blocking it would leave no round marker, so `REVIEW_RETRY_MAX`
+  and `[needs-human-review]` escalation could never fire (the exact silent stall 12MZ/WS3C
+  was built to break). Genuine lease conflicts are absorbed by the `claim-review` 409 fallback.
+
 ## POC constraints (intentional simplifications)
 
 - No separate GitHub account: review comments are also left with the plainOldCode token.
