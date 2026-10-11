@@ -1,6 +1,9 @@
 """BG97(M4MGV3B7) — 재작업 전달 보장: [fix-stall] 소비 + relay 마커 + 무반응 양도."""
 import pytest
+from fastapi.testclient import TestClient
 
+import service
+from app import create_app
 import dispatchd
 from probe import core as probe_core
 
@@ -183,7 +186,7 @@ def test_head_변경되면_양도하지_않는다(monkeypatch):
 
 
 def test_fallback_3회면_needs_human로_승격한다(monkeypatch):
-    card = _relayed_card(att=4, extra=[
+    card = _relayed_card(att=4, execution_attempt=4, extra=[
         {"author": "probe", "id": 7, "ts": "2026-10-04T07:00:00+0900",
          "body": "[rework-fallback a1] 원 워커 무반응 — assignee 해제+todo 회귀"},
         {"author": "probe", "id": 8, "ts": "2026-10-04T08:00:00+0900",
@@ -200,3 +203,160 @@ def test_타이머_미경과는_침묵한다(monkeypatch):
     card = _relayed_card(relay_ts="2026-10-04T15:00:00+0900")  # 1.5h — relay(6h) 미경과
     assert not [a for a in dispatchd.decide(_snap([card], _pr()))
                 if a["action"] == "rework-fallback"]
+
+
+# --- 리뷰 경계 계약(PR#95 리뷰 R1~R6) — 소비자 재확인 의무(docs §2) ---
+
+def _actions(card, prs=None):
+    return [a for a in dispatchd.decide(_snap([card], _pr() if prs is None else prs))]
+
+
+def test_old_attempt_stall_is_not_retagged_as_current_attempt():
+    """R1 — 과거 회차의 [fix-stall]을 현재 attempt로 재태깅하지 않는다."""
+    card = _issue(attempt=2, assignee="new-worker", comments=[STALL])
+    assert not [a for a in _actions(card) if a["action"] == "review-fix-relay"]
+
+
+def test_old_attempt_relay_cannot_unassign_new_worker():
+    """R1 — 과거 회차 relay 마커는 새 워커(attempt 승격)를 양도하지 않는다."""
+    card = _relayed_card(execution_attempt=2, assignee="new-worker")
+    assert not [a for a in _actions(card) if a["action"] == "rework-fallback"]
+
+
+def test_actual_head_change_without_a_probe_marker_blocks_fallback():
+    """R1 — head 변경 후 probe 코멘트가 없어도 구 head relay로 회귀하지 않는다."""
+    card = _relayed_card()
+    assert not [a for a in _actions(card, _pr(sha="c" * 40))
+                if a["action"] == "rework-fallback"]
+
+
+def test_runner_failure_is_not_permanent_worker_activity():
+    """R5 — runner 실패 기록은 워커 활동이 아니다 — 양도가 영구 차단되지 않는다."""
+    card = _relayed_card(extra=[{
+        "author": "runner@m2max", "id": 9,
+        "ts": "2026-10-04T10:00:00+0900",
+        "body": "runner:m2max dispatch#77 failed exit=1 session=dead",
+    }])
+    assert [a for a in _actions(card) if a["action"] == "rework-fallback"]
+
+
+def test_stall_cannot_redispatch_an_active_local_lease():
+    """R2 — 유효 임대 로컬 워커(claude)는 [fix-stall]로 재발령되지 않는다."""
+    card = _issue(comments=[STALL], lease_by="claude",
+                  lease_expires="2026-10-05T00:00:00+0900")
+    assert not [a for a in _actions(card) if a["action"] == "review-fix-relay"]
+
+
+def test_new_approval_makes_an_old_stall_ineligible_for_fix(monkeypatch):
+    """R2 — stall 이후 같은 head에 approve 판정이 기록되면 재발령 자격이 없다."""
+    monkeypatch.setenv("TT_REVIEW_AGENT", "codex")
+    card = _issue(comments=[STALL, {
+        "author": "codex", "id": 51, "ts": "2026-10-04T11:00:00+0900",
+        "body": f"review: approve\nPR#9@{SHA8}\nindependent review passed",
+    }])
+    assert not [a for a in _actions(card) if a["action"] == "review-fix-relay"]
+
+
+def test_blocked_for_human_decision_is_not_released_to_todo():
+    """R2 — blocked(사람 판단 대기) 카드는 양도 회귀로 되돌리지 않는다."""
+    card = _relayed_card(state="blocked", waiting_for="human",
+                         blocked_detail="scope approval required")
+    assert not [a for a in _actions(card) if a["action"] == "rework-fallback"]
+
+
+def test_execute_fallback_rechecks_a_new_lease(monkeypatch):
+    """R3 — execute 시점에 새 임대·회차가 보이면 PATCH하지 않는다."""
+    act = next(a for a in _actions(_relayed_card())
+               if a["action"] == "rework-fallback")
+    fresh = _relayed_card(execution_attempt=2, state="in_progress",
+                          assignee="claude", lease_by="claude",
+                          lease_expires="2099-10-05T00:00:00+0900")
+    rec = Rec(fresh)
+    monkeypatch.setattr(probe_core, "api", rec)
+    probe_core.execute("mock", act)
+    assert not rec.patched
+
+
+@pytest.fixture
+def local_api(tmp_path, monkeypatch):
+    monkeypatch.setenv("TT_PROBE_INTERVAL", "0")
+    monkeypatch.setenv("TT_NOTIFY_WORKER", "0")
+    with TestClient(create_app(str(tmp_path / "tt.db"))) as client:
+        def api(url, path, method="GET", body=None):
+            response = client.request(method, path, json=body)
+            response.raise_for_status()
+            return response.json()
+        monkeypatch.setattr(probe_core, "api", api)
+        yield client
+
+
+def _make_card(client):
+    card = client.post("/issues", json={"title": "local review race",
+        "acceptance": "independent review checks", "state": "todo"}).json()
+    client.post(f"/issues/{card['id']}/claim", json={"agent": "opencode-exact"})
+    client.patch(f"/issues/{card['id']}", json={"state": "review"})
+    return client.get(f"/issues/{card['id']}").json()
+
+
+def _relay_action(card):
+    return {"agent": "probe", "issue": card["id"], "action": "review-fix-relay",
+            "pr": 9, "repo": "plainOldCode/think-tank", "branch": "tt/test",
+            "head_sha": "b" * 40, "att": card["execution_attempt"]}
+
+
+def _register(client, name, url):
+    response = client.post("/agents", json={"name": name, "base_url": url})
+    assert response.status_code == 201
+
+
+def test_real_api_hook_error_is_human_relay_not_executing(local_api, monkeypatch):
+    """R4 — hook 전달 실패(status=error)는 '세션 실행 중'으로 기록하지 않는다."""
+    card = _make_card(local_api)
+    _register(local_api, "opencode-exact", "http://localhost.invalid/exact")
+    monkeypatch.setattr(service, "deliver", lambda *args: (500, ""))
+    probe_core.execute("local", _relay_action(card))
+    comments = local_api.get(f"/issues/{card['id']}").json()["comments"]
+    relay = next(c["body"] for c in comments if c["author"] == "probe"
+                 and "[rework-relay #" in c["body"])
+    assert "사람 세션 전달 요망" in relay, relay
+
+
+def test_exact_hook_failure_retries_an_available_family(local_api, monkeypatch):
+    """R4 — 정확명 hook 실패 후 실행 가능한 같은 가족 수신처를 재시도한다."""
+    card = _make_card(local_api)
+    _register(local_api, "opencode-exact", "http://localhost.invalid/exact")
+    _register(local_api, "opencode-other", "http://localhost.invalid/family")
+    delivered = []
+    def deliver(url, secret, payload):
+        delivered.append(payload["agent"])
+        return (500, "") if url.endswith("exact") else (200, "")
+    monkeypatch.setattr(service, "deliver", deliver)
+    probe_core.execute("local", _relay_action(card))
+    assert delivered == ["opencode-exact", "opencode-other"], delivered
+
+
+def test_real_api_fallback_cannot_clear_a_lease_acquired_after_decide(local_api):
+    """R3 — decide 이후 수령된 임대를 fallback이 지우지 않는다(실제 API)."""
+    card = _make_card(local_api)
+    act = {"agent": "probe", "issue": card["id"], "action": "rework-fallback",
+           "att": 1, "marker": "[rework-fallback a1]"}
+    local_api.patch(f"/issues/{card['id']}", json={"state": "todo"})
+    local_api.post(f"/issues/{card['id']}/claim", json={"agent": "claude"})
+    before = local_api.get(f"/issues/{card['id']}").json()
+    assert before["lease_by"] == "claude" and before["execution_attempt"] == 2
+    probe_core.execute("local", act)
+    after = local_api.get(f"/issues/{card['id']}").json()
+    assert after["state"] == "in_progress" and after["lease_by"] == "claude", after
+
+
+def test_human_unblock_resets_rework_relay_suppression():
+    """R6 — 사람 [unblocked] 후 카운터는 해제 시점 이후만 재집계한다(§6 공용 계약)."""
+    scope = f"#9/{SHA8}"
+    comments = [{"author": "probe", "id": n, "ts": "2026-10-04T08:00:00+0900",
+                 "body": f"[rework-fallback a{n}] old failure"} for n in (7, 8, 9)]
+    comments += [{"author": "dispatchd", "id": 10, "ts": "2026-10-04T08:00:00+0900",
+                  "body": f"[escalated (rework_relay, {scope})] human intervention"},
+                 {"author": "human", "id": 11, "ts": "2026-10-04T08:30:00+0900",
+                  "body": f"[unblocked (rework_relay, {scope})] retry allowed"}]
+    card = _relayed_card(att=4, execution_attempt=4, extra=comments)
+    assert [a for a in _actions(card) if a["action"] == "rework-fallback"]
