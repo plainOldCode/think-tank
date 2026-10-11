@@ -465,6 +465,65 @@ def test_review_request_실행은_점유_후보를_제외한다(gate_on, monkeyp
     assert not any(m == "POST" and p.endswith("/dispatch") for m, p in calls)
 
 
+def test_review_request_실행은_부분_점유시_다음_후보에_수령한다(gate_on, monkeypatch):
+    # 라우팅 리뷰어만 점유 중이면 REVIEW_FALLBACK 다음 후보로 claim이 나간다 —
+    # 전원 점유가 아닌 한 스폰 금지가 아니다(리뷰 비블로커 테스트 공백).
+    calls = []
+
+    def fake_api(url, path, method="GET", body=None):
+        calls.append((method, path, body))
+        if path.endswith("/dispatches") and method == "GET":
+            return [{"agent": "claude", "run_state": "running"}]
+        if path.endswith("/claim-review"):
+            return {"ok": True}
+        if path == "/issues/M428RMBY-XC0K":
+            return _issue()
+        return {}
+
+    monkeypatch.setattr(probe.core, "api", fake_api)
+    probe.core.execute("http://x", {"agent": "probe", "issue": "M428RMBY-XC0K",
+                                    "action": "review-request", "pr": 9,
+                                    "repo": "plainOldCode/think-tank", "branch": "tt/x",
+                                    "head_sha": SHA8, "marker": f"[review-req #9/{SHA8}]",
+                                    "reviewer": "claude"})
+    claims = [b for m, p, b in calls if p.endswith("/claim-review") and m == "POST"]
+    assert claims and claims[0]["agent"] == "kanban-adapter"
+    assert not any(b.get("agent") == "claude" for b in claims)
+    disp = [b for m, p, b in calls if p.endswith("/dispatch") and m == "POST"]
+    assert len(disp) == 1 and disp[0]["agent"] == "kanban-adapter"
+
+
+def test_review_retry_실행은_정체_dispatch에_막히지_않는다(gate_on, monkeypatch):
+    # 12MZ 재발령은 fresh 새 세션이므로 리뷰어의 정체(stalled) dispatch 점유와 무관하게
+    # 나가야 한다. 가드에 걸리면 회차 마커가 남지 않아 REVIEW_RETRY_MAX와
+    # [needs-human-review] 에스컬레이션까지 소리 없이 멈춘다(리뷰 블로커 재현 시나리오:
+    # TT_REVIEW_AGENT 단일 후보 + /dispatches run_state=stalled).
+    calls = []
+
+    def fake_api(url, path, method="GET", body=None):
+        calls.append((method, path, body))
+        if path.endswith("/dispatches") and method == "GET":
+            return [{"agent": REV, "run_state": "stalled"}]
+        if path.endswith("/claim-review"):
+            return {"ok": True}
+        if path == "/issues/M428RMBY-XC0K":
+            return _issue()
+        return {}
+
+    monkeypatch.setattr(probe.core, "api", fake_api)
+    marker = f"[review-retry a1 #9/{SHA8}]"
+    probe.core.execute("http://x", {"action": "review-retry", "agent": "probe",
+                                    "issue": "M428RMBY-XC0K", "pr": 9,
+                                    "repo": "plainOldCode/think-tank", "branch": "tt/x",
+                                    "head_sha": SHA8, "marker": marker, "round": 1})
+    disp = [b for m, p, b in calls if p.endswith("/dispatch") and m == "POST"]
+    assert len(disp) == 1 and disp[0]["agent"] == REV
+    assert disp[0]["fresh"] is True and marker in disp[0]["message"]
+    # 회차 마커 영속화 — 카운터가 올라가 상한·에스컬레이션 경로가 살아있음
+    comments = [b for m, p, b in calls if p.endswith("/comments") and m == "POST"]
+    assert any(marker in (b.get("body") or "") for b in comments)
+
+
 def test_review_fix_실행은_점유_대상에게_스폰하지_않는다(gate_on, monkeypatch):
     calls = []
 

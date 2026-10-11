@@ -1408,16 +1408,23 @@ def execute(url, act):
                  if c != author and not (author_fam and agent_family(c) == author_fam)]
         # JWW0 — 진행 중 dispatch가 후보 에이전트를 점유하면 제외(동시 리뷰 방지).
         # decide 이후 시간이 지났을 수 있어 실행 직전 재확인한다.
-        try:
-            _d = api(url, f"/issues/{act['issue']}/dispatches") or []
-        except Exception:
-            _d = []
-        _busy = {x.get("agent") for x in _d if isinstance(x, dict)
-                 and x.get("run_state") in _ACTIVE_RUN_STATES and x.get("agent")}
-        _had_cands = bool(cands)
-        cands = [c for c in cands if c not in _busy]
-        if _had_cands and not cands:
-            return  # 진행 중 스폰 금지 — 마커 없이 다음 사이클 재판정
+        # review-retry(12MZ 정체 재발령)에는 적용하지 않는다 — 정체 세션은 판정 없이
+        # 끝난 좀비이고 재발령은 fresh: True 새 세션이라 동시 실행이 아니다. 여기서
+        # 막으면 회차 마커가 남지 않아 REVIEW_RETRY_MAX·[needs-human-review]
+        # 에스컬레이션까지 소리 없이 멈춘다(정체 dispatch도 _ACTIVE_RUN_STATES에
+        # 걸리는 함정 — 리뷰 블로커). 진짜 점유 충돌은 claim-review 409 폴백이 흡수.
+        if kind == "review-request":
+            try:
+                _d = api(url, f"/issues/{act['issue']}/dispatches") or []
+            except Exception:
+                # 조회 실패는 [] fail-open — decide 가드가 1차 방어(의도된 동작)
+                _d = []
+            _busy = {x.get("agent") for x in _d if isinstance(x, dict)
+                     and x.get("run_state") in _ACTIVE_RUN_STATES and x.get("agent")}
+            _had_cands = bool(cands)
+            cands = [c for c in cands if c not in _busy]
+            if _had_cands and not cands:
+                return  # 진행 중 스폰 금지 — 마커 없이 다음 사이클 재판정
         # 동기 수령 — claim-review 거부(409)면 다음 후보로 폴백(R3). 성공 전에는
         # review-req 마커를 남기지 않아 전원 거부 시 다음 사이클이 재판정한다.
         agent = None
@@ -1492,6 +1499,7 @@ def execute(url, act):
                 try:
                     _dfix = api(url, f"/issues/{act['issue']}/dispatches") or []
                 except Exception:
+                    # 조회 실패는 [] fail-open — decide 가드가 1차 방어(의도된 동작)
                     _dfix = []
                 if any(isinstance(x, dict) and x.get("agent") == target
                        and x.get("run_state") in _ACTIVE_RUN_STATES for x in _dfix):
