@@ -194,19 +194,114 @@ def test_독려는_등록되지_않은_assignee에게_보드_릴레이를_남긴
     assert rec.messages and "완료 보고 제출 요망" in rec.messages[0]["body"]
 
 
-# --- 병합 후 무보고: evidence-rejected 반복 → needs-human ---
+# --- 병합 후 무보고: 독려 1회 → 타이머 경과 → needs-human (JXYS R1) ---
 
-def test_evidence_rejected_3회면_needs_human로_승격한다():
-    card = issue("M3EV-0001", state="review", comments=[
-        {"author": "tt-server", "id": 1, "ts": TS_OLD, "body": "done 증거 없음 또는 실패"},
-        {"author": "probe", "id": 2, "ts": TS_OLD,
-         "body": "[evidence-rejected a1] done 거부 — assignee 재제출 요청"},
-        {"author": "probe", "id": 3, "ts": TS_OLD,
-         "body": "[evidence-rejected a2] done 거부 — assignee 재제출 요청"},
-        {"author": "probe", "id": 4, "ts": TS_OLD,
-         "body": "[evidence-rejected a3] done 거부 — assignee 재제출 요청"}])
-    acts = dispatchd.decide(snap([card]))
-    nh = [a for a in acts if a["action"] == "needs-human"]
-    assert nh and "evidence_rejected" in nh[0]["note"]
-    assert not [a for a in acts if a["action"] == "review-note"
+def _merged_card(comments, iid="M3EV-0001", att=1):
+    return issue(iid, state="review", att=att, comments=comments)
+
+
+MERGE_NB = {"author": "probe", "id": 10, "ts": TS_OLD,
+            "body": "probe: PR#9 merged — 완료 보고 없음. review 유지"}
+
+
+def test_무보고_병합은_독려_1회다():
+    acts = dispatchd.decide(snap([_merged_card([MERGE_NB])]))
+    r = [a for a in acts if a["action"] == "review-note" and "재제출" in a.get("reason", "")]
+    assert len(r) == 1
+    # 독려 마커 존재 → 중복 독려 없음(타이머 평가로 넘어감)
+    card2 = _merged_card([MERGE_NB, {"author": "probe", "id": 11, "ts": TS_OLD,
+                                     "body": "[evidence-rejected a1] 무보고 병합 — 재제출 요청"}])
+    acts2 = dispatchd.decide(snap([card2]))
+    assert not [a for a in acts2 if a["action"] == "review-note"
                 and "재제출" in a.get("reason", "")]
+
+
+def test_무보고_병합_독려_후_타이머_경과시_needs_human이다():
+    card = _merged_card([MERGE_NB, {"author": "probe", "id": 11, "ts": TS_OLD,
+                                    "body": "[evidence-rejected a1] 무보고 병합 — 재제출 요청"}])
+    nh = [a for a in dispatchd.decide(snap([card]))
+          if a["action"] == "needs-human"]
+    assert nh and "evidence_rejected" in nh[0]["note"]
+
+
+def test_독려_후_활동_중이면_승격하지_않는다():
+    card = _merged_card([MERGE_NB, {"author": "probe", "id": 11, "ts": TS_OLD,
+                                    "body": "[evidence-rejected a1] 무보고 병합 — 재제출 요청"},
+                         {"author": "codex", "id": 12, "ts": "2026-10-11T12:00:00+0900",
+                          "body": "보고 작성 중입니다."}])
+    assert not [a for a in dispatchd.decide(snap([card]))
+                if a["action"] == "needs-human"]
+
+
+def test_병합_후_보고_접수되면_독려하지_않는다():
+    card = _merged_card([MERGE_NB, {"author": "tt-server", "id": 12,
+                                    "ts": "2026-10-11T12:00:00+0900",
+                                    "body": "보고 접수 — 완료"}])
+    acts = dispatchd.decide(snap([card]))
+    assert not [a for a in acts if a["action"] in ("review-note", "needs-human")
+                and "재제출" in (a.get("reason") or "") + (a.get("note") or "")]
+
+
+def test_done_거부도_독려_1회_타이머_승격이다():
+    card = _merged_card([{"author": "tt-server", "id": 1, "ts": TS_OLD,
+                          "body": "done 증거 없음 또는 실패/미확정 보고"}])
+    acts = dispatchd.decide(snap([card]))
+    assert [a for a in acts if a["action"] == "review-note"
+            and "재제출" in a.get("reason", "")]
+
+
+# --- R2: ci-fix execute가 결정된 ip 마커를 저장 — 다음 decide 재판정 없음 ---
+
+def test_ci_fix_execute는_결정된_ip_마커를_저장한다(monkeypatch):
+    rec = _rec(_mk())
+    monkeypatch.setattr(probe_core, "api", rec)
+    monkeypatch.setenv("TT_CI_FIX_AGENT", "kanban-adapter")
+    probe_core.execute("u", {"agent": "dispatchd", "issue": CARD, "action": "ci-fix",
+                             "marker": f"[ci-fix-ip a1 #3/{SHA8}]", "att": 1, "pr": 3,
+                             "repo": "plainOldCode/think-tank", "branch": "tt/x",
+                             "head_sha": SHA8, "checks_failed": ["tests"]})
+    assert any(f"[ci-fix-ip a1 #3/{SHA8}]" in (c.get("body") or "")
+               for c in rec.commented if c.get("author") == "probe")
+    assert rec.dispatches  # 위임은 발생
+
+
+def test_ci_fix_ip_왕복은_다음_판정을_막는다():
+    """decide(ci-fix-ip) → execute(저장) → decide — 실제 왕복(R2 재현)."""
+    card1 = _mk()
+    acts = dispatchd.decide(snap([card1], [FAIL]))
+    assert [a for a in acts if a.get("action") == "ci-fix"]
+    stored = _mk(comments=[{"author": "probe", "id": 1, "ts": TS_NOW,
+                            "body": f"[ci-fix-ip a1 #3/{SHA8}] PR#3 CI 실패 — 위임"}])
+    assert not [a for a in dispatchd.decide(snap([stored], [FAIL]))
+                if a.get("action") == "ci-fix"]
+
+
+# --- R3: in_progress 카드의 동적 repo가 실제 수집 풀에 들어가는가 ---
+
+def test_in_progress_카드의_repo가_수집_풀에_있다():
+    card = issue("M3REPO-01", body="repo: example-org/new-project")
+    repos = probe_core.collect_repos([card])
+    assert "example-org/new-project" in repos
+
+
+# --- R4: 게이트 unset 상태의 실제 run_once에서도 코멘트가 로드되어 승격된다 ---
+
+def test_게이트_끈_run_once도_독려를_하이드레이트해_승격한다(monkeypatch):
+    card = _mk()
+    del card["comments"]  # snapshot은 비-review 카드 코멘트를 아예 안 담는다
+    prs = [GREEN]
+    monkeypatch.delenv("TT_REVIEW_AGENT", raising=False)
+    monkeypatch.setattr(probe_core, "snapshot",
+                        lambda url: {"auto": True, "now": TS_NOW, "agents": [],
+                                     "issues": [card], "probe_skips": {}})
+    monkeypatch.setattr(probe_core, "collect_prs", lambda repos: prs)
+    monkeypatch.setattr(probe_core, "execute",
+                        lambda url, a: exec_acts.append(a))
+    exec_acts = []
+    monkeypatch.setattr(probe_core, "api",
+                        lambda url, path, method="GET", body=None: (
+                            dict(_mk(comments=[{"author": "probe", "id": 1, "ts": TS_OLD,
+                                                "body": f"[submit-remind a1 #3/{SHA8}] 독려"}]))
+                            if method == "GET" else {"ok": True}))
+    probe_core.run_once("u", dry=False)
+    assert [a for a in exec_acts if a["action"] == "submission-adopt"]

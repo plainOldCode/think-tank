@@ -80,7 +80,8 @@ def collect_repos(issues):
         if extra.strip():
             out.append(extra.strip())
     for i in issues or []:
-        if i["state"] in ("auto", "todo", "blocked", "review") or (i.get("labels") and "auto" in i["labels"]):
+        # in_progress 포함(JXYS R3) — 자동화 진입부 자체가 PR 수집을 전제로 한다.
+        if i["state"] in ("auto", "todo", "blocked", "review", "in_progress") or (i.get("labels") and "auto" in i["labels"]):
             r = card_repo(i)
             if r:
                 out.append(r)
@@ -1283,25 +1284,49 @@ def decide(snap):
             continue
         att = i.get("execution_attempt") or 0
         emarker = f"[evidence-rejected a{att}]"
+        cs = i.get("comments") or []
         has_reject = any("done 증거 없음" in (c.get("body") or "")
-                         for c in (i.get("comments") or [])
-                         if c.get("author") == "tt-server")
-        ev_open = has_reject and _evidence_unresolved(i)
-        # 반복 사건 억제(§6): 재제출 요청이 N회차면 사람 통보 후 스킵 —
-        # 병합 후 무보고 독려→needs-human 경로(JXYS 항목 4). 집계는 현재
-        # 회차 마커 dedup보다 먼저 — 마커가 곧 dedup이 되어 카운터가 멈춘다.
-        sup_ev, since_ev = _suppressed(i, "evidence_rejected", i["id"])
-        if ev_open and not sup_ev:
-            n_ev = failure_rules.suppress_n()
-            if n_ev and _repeat_count(i, r"\[evidence-rejected a\d+\]", since_ev) >= n_ev:
-                _escalate(actions, i, "evidence_rejected", i["id"], n_ev)
-                continue
-        if _probe_marker(i, emarker) or not ev_open or sup_ev:
+                         for c in cs if c.get("author") == "tt-server")
+        # 무보고 병합(JXYS R1) — probe의 'merged — 완료 보고 없음' 기록도 독려 트리거.
+        # 해소 = 병합 기록 이후 tt-server 보고 접수(done 거부는 접수로 보지 않음).
+        mc = max((c for c in cs if c.get("author") == "probe"
+                  and "merged — 완료 보고 없음" in (c.get("body") or "")),
+                 key=lambda c: (_comment_ts(c), c.get("id") or 0), default=None)
+        resolved_b = False
+        if mc:
+            mt, mid = _comment_ts(mc), mc.get("id") or 0
+            resolved_b = any(c.get("author") == "tt-server"
+                             and "보고 접수" in (c.get("body") or "")
+                             and (_comment_ts(c), c.get("id") or 0) > (mt, mid)
+                             for c in cs)
+        ev_open = (has_reject and _evidence_unresolved(i)) or (mc and not resolved_b)
+        sup_ev, _ = _suppressed(i, "evidence_rejected", i["id"])
+        if not ev_open or sup_ev:
             continue
-        actions.append({"agent": "probe", "issue": i["id"], "action": "review-note",
-                        "marker": emarker, "attempt": att, "cycle_id": snap.get("cycle_id"),
-                        "reason": f"done 거부(증거 없음/실패) — assignee 재제출 요청 "
-                                  f"(계약 v2 3단계 보고, tt done {i['id']} --report)"})
+        if not _probe_marker(i, emarker):
+            actions.append({"agent": "probe", "issue": i["id"], "action": "review-note",
+                            "marker": emarker, "attempt": att, "cycle_id": snap.get("cycle_id"),
+                            "reason": f"done 거부(증거 없음/실패) 또는 무보고 병합 — "
+                                      f"assignee 재제출 요청(계약 v2 3단계 보고, "
+                                      f"tt done {i['id']} --report)"})
+            continue
+        # 독려 후 무반응 — 수신 방식별 타이머(hook 1h/relay 6h) 경과+활동 없음 →
+        # needs-human 1회(§6 마커 dedup). 카운터가 아니라 시각 기반(JXYS R1):
+        # 같은 회차 반복 거부는 마커 dedup으로 카운터가 멈추므로.
+        ec = max((c for c in cs if c.get("author") == "probe"
+                  and emarker in (c.get("body") or "")),
+                 key=lambda c: (_comment_ts(c), c.get("id") or 0), default=None)
+        edt = _iso(_comment_ts(ec)) if ec else None
+        if not edt:
+            continue
+        if (datetime.fromisoformat(now) - edt).total_seconds() \
+                <= _relay_timer_s(i.get("assignee") or "", agents):
+            continue
+        if any((x.get("author") or "") not in _RELAY_OBSERVERS
+               and not str(x.get("author") or "").startswith("runner")
+               and _comment_after(x, edt, ec.get("id") or 0) for x in cs):
+            continue  # 응답·활동 중
+        _escalate(actions, i, "evidence_rejected", i["id"], 0)
     # ⑥ C1 unknown 그림자(gate-failure-rules.md §5.1/§7) — 규칙표 어느 행에도
     # 매칭되지 않는 tt-server 실패 기록: 판단기 rank 제안(shadow — 동작 불변, 로그만,
     # 카드당 최신 1건). 사람이 로그를 검토해 표에 행을 추가하는 것이 유일한 반영 경로.
@@ -1630,7 +1655,9 @@ def execute(url, act):
         cur = api(url, f"/issues/{act['issue']}")
         att = cur.get("execution_attempt") or 0
         sha8 = (act.get("head_sha") or "")[:8]
-        marker = f"[ci-fix a{att} #{act['pr']}/{sha8}]"
+        # decide가 액션에 동봉한 마커 우선 — ip 변형([ci-fix-ip a{n} …])도
+        # 저장 마커와 판정 키가 일치해야 다음 사이클 재판정이 막힌다(JXYS R2).
+        marker = act.get("marker") or f"[ci-fix a{att} #{act['pr']}/{sha8}]"
         if any(marker in (c.get("body") or "") for c in (cur.get("comments") or [])
                if c.get("author") == "probe"):
             return  # 경합 방어 — decide 판정 후 재확인
@@ -2224,8 +2251,8 @@ def run_once(url, dry=False):
     for r in collect_repos(snap.get("issues") or []):
         repos.append(r)
     snap["prs"] = collect_prs(repos)
-    if os.getenv("TT_REVIEW_AGENT", "").strip():
-        hydrate_reviews(url, snap)
+    # 게이트 unset 여부와 무관 — in_progress 자동화(JXYS)도 코멘트 dedup이 필요.
+    hydrate_reviews(url, snap)
     snap["cycle_id"] = uuid.uuid4().hex  # §8.1 판단 로그 사이클 식별자(리뷰 R4)
     acts = decide(snap)
     for a in acts:
