@@ -1080,15 +1080,27 @@ def execute(url, act):
             return
         assignee = cur.get("assignee") or ""
         if assignee:
+            # R4(6XKC): assignee 발령자 식별코드(skshim@tp-13류)는 등록 러너명과 달라
+            # dispatch 404가 누적됐다(42건) — PR#80 가족 해석(_resolve_agent)으로
+            # 등록명을 찾아 재시도한다. 정확명 우선은 해석기 내부 규칙 그대로.
+            # 해석 실패 시 사람 통보 노트(마커 포함)로 종결 — 같은 head 무음 반복 방지.
+            agents = [a for a in api(url, "/agents") or []
+                      if a.get("enabled") and a.get("base_url")]
+            target = _resolve_agent(assignee, agents)
             msg = (f"[auto review-fix] PR #{act['pr']} 리뷰 request-changes — 리뷰 코멘트(PR/카드)를 "
                    f"읽고 같은 브랜치 {act.get('branch', '')} 위에서 수정 커밋. push하면 probe가 재리뷰 요청.")
-            try:
-                api(url, f"/issues/{act['issue']}/dispatch", "POST",
-                    {"agent": assignee, "message": msg})
-            except Exception as e:
+            if target is None:
                 api(url, f"/issues/{act['issue']}/comments", "POST",
-                    {"author": "probe", "body": f"{act['marker']} 수정 dispatch 실패({str(e)[:80]}) — "
-                                                "사람 판단 대기"})
+                    {"author": "probe", "body": f"{act['marker']} 수정 dispatch 실패"
+                                                f"(에이전트 미등록: {assignee}) — 사람 판단 대기"})
+            else:
+                try:
+                    api(url, f"/issues/{act['issue']}/dispatch", "POST",
+                        {"agent": target, "message": msg})
+                except Exception as e:
+                    api(url, f"/issues/{act['issue']}/comments", "POST",
+                        {"author": "probe", "body": f"{act['marker']} 수정 dispatch 실패({str(e)[:80]}) — "
+                                                    "사람 판단 대기"})
         else:
             api(url, f"/issues/{act['issue']}/comments", "POST",
                 {"author": "probe", "body": f"{act['marker']} 리뷰 request-changes — "
