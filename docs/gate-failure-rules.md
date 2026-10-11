@@ -94,8 +94,8 @@ probe-restructure-design.md §5.2의 단조성 — LLM 출력은 `hold`/`escalat
 | needs_decision | level4-notify human 대기 | 사람에게 올림 | H | 2~3 | RBAC, 멘션 설계 등. go/stop 아님 |
 | lease_conflict_401 | claim 409 lease_held, hook 401 | 중복 작업 중단 | R | 4 | 409 코드 자체는 변경 금지(§9) |
 | draft_merge_loop | draft PR merge skip 반복 | 같은 사유 N회 반복 시 사람 1회 통보 후 중지(§6) | R | 260(1카드) | 이상치. 현행은 draft-flagged 1회 후 무음(core.py:397) — 통보·스킵 추가 |
-| dependency | waiting_for=dependency | 기록 없음 | 확인 안 됨 | 0 | 정식 기록 없음 — §8 |
-| marker_mismatch / stale_base | 마커 불일치, stale head | 기록 없음 — stale은 리뷰 문맥 55회 언급 | 확인 안 됨 | 미집계 | 분리 집계 필요(§8) |
+| dependency | waiting_for=dependency | release_ready 투영(enrich_blocked) + 사람 통보(notify) | H | 0(실측) | 이벤트 창 내 blocked 전이·waiting_for 변경 0건 — §8 실측(10/9~) |
+| marker_mismatch / stale_base | 마커 불일치, stale head | 미확정 — 확인 전 운영 처리 없음(§4.1) | 미확인 | 0(기록 경로 부재) | 정식 기록 경로 자체가 없음 — §8 실측. stale_base 게이트는 tt-push 별개 구현(PR#75) |
 | unknown | 위 어느 조건에도 안 맞음 | 소형 모델이 가장 가까운 코드 제안(advisory) + 사람 확인, 로그 | C | 모호 약 30+ | §5 C1 + §7 그림자 모드 |
 
 ### 4.1 표 운영 규칙
@@ -157,8 +157,9 @@ probe-restructure-design.md §5.2의 단조성 — LLM 출력은 `hold`/`escalat
 ## 8. 데이터 출처와 한계
 
 - **blocked 기록이 비어 있어** 413장 집계는 코멘트 패턴 기반 추정이다. §4 표의 집계 열은 추정치임이 유지된다.
-- dependency(0건·기록 없음), marker_mismatch/stale_base(미집계 — stale은 리뷰 문맥 55회 언급, 분리 실패)는 **확인 안 됨** 그대로다. 정식 blocked 기록 체계로 재측정하는 별도 카드를 권한다(§11).
-- census 원본(`/workspace/tt-block-census.md`)은 box 워크스페이스에 있어 본 문서는 대조하지 않았다 — 코멘트 초안 인용만.
+- **이벤트 기반 재측정(TT M4K88X68-66ZE, 2026-10-11)** — events outbox는 2026-10-09 13:38(TT 개선#2 신설)부터 존재하므로 목표 창(9/21~10/10)의 선행 부분은 정식 기록이 없어 재측정 불가다. 실측 가능한 창(10/09 13:38~10/11)에서: ① state=blocked 전이 이벤트 0건 ② waiting_for 필드 변경 이벤트 0건 ③ 현재 waiting_for 설정 카드 0건 ④ marker_mismatch·stale_base는 기록 경로 자체가 없어 정식 기록 0건(미확인 유지). §4 dependency·marker_mismatch/stale_base 행의 집계를 이 실측으로 갱신했고 커버리지를 명시한다 — 9/21~10/9 구간은 여전히 코멘트 추정이다.
+- **blocked 기록 체계 제안(후속 카드)**: blocked 전이를 독립 이벤트 kind로 기록하고 waiting_for 값 변화를 payload에 포함해야 다음 census가 전 창을 실측한다. 스키마 변경은 이 카드에서 하지 않음(카드 명세 3번).
+- census 원본(`/workspace/tt-block-census.md`)은 box 워크스페이스에 있어 본 문서는 대조하지 않았다 — 코멘트 초안 인용만. 이번 실측도 원본과 무관한 이벤트 기반 값이다.
 - 본 문서 자기 점검(작성 시점 실측): 한글 본문 마크다운 표 6개, `## ` 절 14개(§0~§11+참고자료+검증), 코드펜스 0개. 커밋 시점과 불일치가 생기면 리뷰 지적 대상으로 갱신한다 — PR #78 리뷰 발견사항 1번의 재발을 막기 위한 기록.
 
 ## 9. 계약 보존 명시

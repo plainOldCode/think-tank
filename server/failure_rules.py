@@ -113,23 +113,22 @@ FAILURE_RULES = (
      "agg": "260(1카드)", "note": "이상치. 현행은 draft-flagged 1회 후 무음 — 통보 추가"},
 
     {"code": "dependency",
-     "judgment": "waiting_for=dependency 필드 — 필드와 notify_blocked_dependents 경로는 존재하나 "
-                 "정식 집계 기록은 없음(§8 census 불확실)",
+     "judgment": "waiting_for=dependency 필드 — 필드와 notify_blocked_dependents 경로 존재",
      "default": "release_ready 투영(enrich_blocked) + 사람 통보(notify)",
      "handling": HANDLING_H, "wired": "server/service.py enrich_blocked/notify_blocked_dependents",
-     "agg": "0(미확인)", "note": "§8 — 정식 이벤트 기록으로 재측정 전까지 집계 불확실"},
+     "agg": "0(실측 10/9~10/11 이벤트)", "note": "§8 — blocked 전이·waiting_for 변경 이벤트 0건(커버리지 10/9~)"},
 
     {"code": "marker_mismatch",
-     "judgment": "마커 불일치 — 정식 기록 없음(§8)",
+     "judgment": "마커 불일치 — 정식 기록 경로 부재(§8 실측)",
      "default": "미확정 — 확인 전 운영 처리 없음",
      "handling": HANDLING_PENDING, "wired": "",
-     "agg": "미집계", "note": "stale_base와 분리 집계 필요(§8)"},
+     "agg": "0(기록 경로 부재)", "note": "stale_base와 분리 유지(§8)"},
 
     {"code": "stale_base",
-     "judgment": "stale head(리뷰 문맥) — 정식 기록 없음(§8)",
+     "judgment": "stale head(리뷰 문맥) — 정식 기록 경로 부재(§8 실측)",
      "default": "미확정 — 확인 전 운영 처리 없음",
      "handling": HANDLING_PENDING, "wired": "",
-     "agg": "미집계(리뷰 문맥 55회 언급)", "note": "marker_mismatch와 분리 집계 필요(§8)"},
+     "agg": "0(기록 경로 부재)", "note": "stale-base 게이트는 tt-push 별개 구현(PR#75); marker_mismatch와 분리 유지(§8)"},
 
     {"code": "unknown",
      "judgment": "위 어느 조건에도 안 맞음",
