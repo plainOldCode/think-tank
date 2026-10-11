@@ -543,3 +543,68 @@ def test_review_fix_실행은_점유_대상에게_스폰하지_않는다(gate_on
            "marker": f"[review-fix #9/{SHA8}]"}
     probe.core.execute("http://x", act)
     assert not any(m == "POST" and p.endswith("/dispatch") for m, p, _ in calls)
+
+
+def test_review_fix_대상이_실행불가_에이전트면_스폰하지_않는다(gate_on, monkeypatch):
+    # M4NCNNRW-PXCJ — 어댑터로의 review-fix는 트리아지 카드만 만들고 정체(RTZ1 #343)
+    calls = []
+
+    def fake_api(url, path, method="GET", body=None):
+        calls.append((method, path, body))
+        if path == "/issues/M428RMBY-XC0K":
+            return _issue(assignee="kanban-adapter")
+        if path == "/agents":
+            return [{"name": "kanban-adapter", "enabled": True, "base_url": "http://x"}]
+        return {}
+
+    monkeypatch.setattr(probe.core, "api", fake_api)
+    act = {"agent": "probe", "issue": "M428RMBY-XC0K", "action": "review-fix", "pr": 9,
+           "branch": "tt/x", "head_sha": SHA8, "repo": "plainOldCode/think-tank",
+           "marker": f"[review-fix #9/{SHA8}]"}
+    probe.core.execute("http://x", act)
+    assert not any(m == "POST" and p.endswith("/dispatch") for m, p, _ in calls)
+    assert any(m == "POST" and p.endswith("/comments") and "실행 불가" in (b or {}).get("body", "")
+               for m, p, b in calls)
+    # 리뷰 R1 — 위임 불가인데 마감 코멘트가 "수정 위임"이면 직전 통보와 모순
+    closing = [b for m, p, b in calls
+               if m == "POST" and p.endswith("/comments") and "request-changes —" in (b or {}).get("body", "")]
+    assert closing and "수정 위임 없음" in closing[-1]["body"]
+
+
+def test_review_fix_가족해석은_실행불가를_건너뛴다(gate_on, monkeypatch):
+    # PXCJ 리뷰 블로커 — hermes@m2max의 가족 해석이 등록 순서 첫 에이전트인
+    # kanban-adapter(실행 불가)가 아니라 실행자 hermes-m2max로 나가야 한다.
+    calls = []
+
+    def fake_api(url, path, method="GET", body=None):
+        calls.append((method, path, body))
+        if path == "/issues/M428RMBY-XC0K":
+            return _issue(assignee="hermes@m2max")
+        if path == "/agents":
+            return [{"name": "kanban-adapter", "enabled": True, "base_url": "http://x"},
+                    {"name": "hermes-m2max", "enabled": True, "base_url": "http://x"}]
+        if path == "/issues/M428RMBY-XC0K/dispatches":
+            return []
+        return {}
+
+    monkeypatch.setattr(probe.core, "api", fake_api)
+    act = {"agent": "probe", "issue": "M428RMBY-XC0K", "action": "review-fix", "pr": 9,
+           "branch": "tt/x", "head_sha": SHA8, "repo": "plainOldCode/think-tank",
+           "marker": f"[review-fix #9/{SHA8}]"}
+    probe.core.execute("http://x", act)
+    disp = [b for m, p, b in calls if m == "POST" and p.endswith("/dispatch")]
+    assert len(disp) == 1 and disp[0]["agent"] == "hermes-m2max"
+    assert "request-changes" in disp[0]["message"]
+    # 가족에 실행자가 있으면 사람 통보가 아니라 발령 마감 코멘트
+    closing = [b for m, p, b in calls
+               if m == "POST" and p.endswith("/comments") and "request-changes —" in (b or {}).get("body", "")]
+    assert closing and "수정 위임" in closing[-1]["body"] and "실행 불가" not in closing[-1]["body"]
+
+
+def test_resolve_executor는_정확_실행불가_일치를_그대로_돌린다():
+    # 정확 일치가 NON_EXECUTOR면 통보 분기 판단용으로 그대로 돌린다(가족으로 대체하지 않음)
+    agents = [{"name": "kanban-adapter"}, {"name": "hermes-m2max"}]
+    assert probe.core._resolve_executor("kanban-adapter", agents) == "kanban-adapter"
+    assert probe.core._resolve_executor("hermes@m2max", agents) == "hermes-m2max"
+    # 가족에 실행자가 전혀 없으면 None — 사람 통보(에이전트 미등록)로 종결
+    assert probe.core._resolve_executor("tt-reviewer@x", [{"name": "kanban-adapter"}]) is None
