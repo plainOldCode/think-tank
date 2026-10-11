@@ -187,9 +187,9 @@ def test_decide_merge_repo_match_and_mismatch():
     assert not [a for a in acts2 if a["action"] == "merge"]
 
 
-# --- M4NCNNRW-PXCJ: 실행 불가 에이전터(어댑터·리드온리) 배정 제외 ---
+# --- M4NCNNRW-PXCJ: 실행 불가 에이전트(어댑터·리드온리) 배정 제외 ---
 
-def test_auto_풀은_실행불가_에이전터에_일을_주지_않는다():
+def test_auto_풀은_실행불가_에이전트에_일을_주지_않는다():
     ka = agent("kanban-adapter")
     codex = agent("codex")
     i = issue("A", labels=["auto"])
@@ -202,7 +202,7 @@ def test_실행불가만_유휴면_work_스폰_없다():
     assert decide(snap([issue("A", labels=["auto"])], agents=[ka])) == []
 
 
-def test_release_ready_resume도_실행불가_에이전터_피한다():
+def test_release_ready_resume도_실행불가_에이전트_피한다():
     dep = issue("DEP", "done")
     blocked = issue("B1", "blocked", labels=["auto"], waiting_for="dependency",
                     release_ready=True, blocked_detail="의존: DEP")

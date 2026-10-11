@@ -293,6 +293,27 @@ def _resolve_agent(cand, agents):
     return None
 
 
+def _resolve_executor(cand, agents):
+    """review-fix 발령 대상 해석 — 정확 일치 우선, 가족 매칭은 실행 가능 에이전트 한정.
+
+    PXCJ 리뷰 블로커: _resolve_agent의 가족 매칭은 등록 순서 첫 에이전트를 돌려
+    hermes@m2max·hermes가 kanban-adapter(실행 불가)로 해석될 수 있다 — hermes-m2max가
+    등록돼 있어도 수정 정체(#343 동형). 정확 일치가 NON_EXECUTOR면 그대로 돌려 실행
+    불가 통보 분기로 보내고, 가족 매칭은 NON_EXECUTORS를 제외한 후보만 본다. 리뷰어
+    라우팅(pick_reviewer)은 _resolve_agent를 그대로 쓴다 — 리뷰 대행은 의도된 동작.
+    """
+    for a in agents or []:
+        if a.get("name") == cand:
+            return cand
+    fam = agent_family(cand)
+    for a in agents or []:
+        if a.get("name") in NON_EXECUTORS:
+            continue
+        if fam and agent_family(a.get("name")) == fam:
+            return a.get("name")
+    return None
+
+
 def pick_reviewer(assignee, agents, busy, rmap):
     """라우팅 + 미가용 폴백(순수). 전부 미가용이면 None — 레거시 폴백으로.
 
@@ -1485,14 +1506,17 @@ def execute(url, act):
                if c.get("author") == "probe"):
             return
         assignee = cur.get("assignee") or ""
+        delegated = False
         if assignee:
             # R4(6XKC): assignee 발령자 식별코드(skshim@tp-13류)는 등록 러너명과 달라
             # dispatch 404가 누적됐다(42건) — PR#80 가족 해석(_resolve_agent)으로
             # 등록명을 찾아 재시도한다. 정확명 우선은 해석기 내부 규칙 그대로.
             # 해석 실패 시 사람 통보 노트(마커 포함)로 종결 — 같은 head 무음 반복 방지.
+            # PXCJ: review-fix 발령은 실행자 한정 해석(_resolve_executor) — 가족 매칭이
+            # 어댑터를 돌려 수정 정체를 만들지 않는다.
             agents = [a for a in api(url, "/agents") or []
                       if a.get("enabled") and a.get("base_url")]
-            target = _resolve_agent(assignee, agents)
+            target = _resolve_executor(assignee, agents)
             msg = (f"[auto review-fix] PR #{act['pr']} 리뷰 request-changes — 리뷰 코멘트(PR/카드)를 "
                    f"읽고 같은 브랜치 {act.get('branch', '')} 위에서 수정 커밋. push하면 probe가 재리뷰 요청.")
             if target is None:
@@ -1504,7 +1528,7 @@ def execute(url, act):
                 # 원 워커 돌려주기 등 재라우팅은 M4MGV3B7-BG97 영역.
                 api(url, f"/issues/{act['issue']}/comments", "POST",
                     {"author": "probe", "body": f"{act['marker']} 수정 dispatch 대상이 실행 불가"
-                                                f" 에이전터({target}) — 사람/감독관 판단 대기"})
+                                                f" 에이전트({target}) — 사람/감독관 판단 대기"})
             else:
                 # JWW0 — 대상 에이전트의 진행 중 dispatch가 있으면 스폰 금지(동시 실행 방지)
                 try:
@@ -1518,6 +1542,7 @@ def execute(url, act):
                 try:
                     api(url, f"/issues/{act['issue']}/dispatch", "POST",
                         {"agent": target, "message": msg})
+                    delegated = True
                 except Exception as e:
                     api(url, f"/issues/{act['issue']}/comments", "POST",
                         {"author": "probe", "body": f"{act['marker']} 수정 dispatch 실패({str(e)[:80]}) — "
@@ -1531,9 +1556,11 @@ def execute(url, act):
                 {"version": get_version(url, act["issue"]), "state": "review"})
         except Exception:
             pass
+        # PXCJ 리뷰 R1 — 위임 불가·실패인데 "수정 위임"으로 남기면 직전 통보와 모순
         api(url, f"/issues/{act['issue']}/comments", "POST",
             {"author": "probe", "body": f"{act['marker']} PR#{act['pr']} request-changes — "
-                                        "review 반납+수정 위임"})
+                                        + ("review 반납+수정 위임" if delegated
+                                           else "review 반납 — 수정 위임 없음, 사람 판단 대기")})
         return
     v = get_version(url, act["issue"])
     if kind == "review-note":
