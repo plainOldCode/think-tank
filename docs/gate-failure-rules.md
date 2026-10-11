@@ -187,6 +187,10 @@ probe-restructure-design.md §5.2의 단조성 — LLM 출력은 `hold`/`escalat
 3. **no_pr 문서/코드 구분**: 라벨+repo 마커 규칙만으로 갈지, 모델 rank 개입을 허용할지(허용 시 그림자 기간).
 4. **정식 blocked 기록 재측정**: 코멘트 패턴 추정을 이벤트 기록으로 대체하는 census 카드 필요성 — dependency·marker_mismatch·stale_base 건수가 정리되면 §4 표의 집계 열을 갱신한다.
 
+## 12. 구현 상태 (2026-10-11)
+
+- **reviewer_session_failed — 구현됨** (TT M4M9BTC1-12MZ): 발령 이력 head에 판정 없음+리뷰어 점유 흔적(release되지 않은 reviewer) 또는 runner 실패 코멘트(`dispatch#N failed exit!=0` 즉시 트리거) → 회차 마커 `[review-retry a<n> #pr/sha8]`로 재발령 1회(지시문에 '새 세션에서 시작, 이전 세션 재사용 금지' 명시). N=3 도달 시 `[needs-human-review]` 코멘트+라벨 에스컬레이션 1회. head 변경 시 마커의 sha8이 달라져 카운터 자동 리셋. 관망 창 `TT_REVIEW_STALL_MIN`(기본 60분 — 최신 발령이 창 내면 새 세션 존재 가능성으로 관망). core.py `_reviewer_session_stalled`/`_maybe_review_retry`.
+
 ## 참고자료
 
 - M4JYTVXP-WVBY(본 카드) — 작업 사양·검증기준

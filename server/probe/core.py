@@ -13,6 +13,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime, timedelta
 
 from service import REVIEW_CONTRACT
 import policy
@@ -311,6 +312,99 @@ def _probe_marker(i, marker):
                if c.get("author") == "probe")
 
 
+# 12MZ reviewer_session_failed — 판정 없는 리뷰 정체(W S3C 실측: codex 세션이
+# dispatch 후 스트림 오류로 사망 → review-req 마커 dedup에 걸려 영구 정체).
+REVIEW_RETRY_MAX = 3  # (사유,pr,sha) 카운터 한도 — 도달 시 needs-human 에스컬레이션
+_RUNNER_FAIL_RE = re.compile(r"runner:\S+ dispatch#\d+ failed exit=[1-9]")
+
+
+def _stall_window_min():
+    """정체 판정 관망 창(분) — 최신 발령 마커가 이 창 내면 새 세션이 살아있을 수
+    있어 관망한다. 0이면 창 없음(즉시 판정). runner 실패 코멘트는 창과 무관하게 즉시."""
+    try:
+        return int(os.environ.get("TT_REVIEW_STALL_MIN", "60") or "0")
+    except ValueError:
+        return 60
+
+
+def _review_retry_round(i, pr_no, sha8):
+    """이 head(pr@sha8)의 재발령 회차 — probe 코멘트의 회차 마커에서 산출.
+    head가 바뀌면 마커의 sha8이 달라져 자동 리셋(0)된다."""
+    r = 0
+    for c in (i.get("comments") or []):
+        if c.get("author") != "probe":
+            continue
+        m = re.search(r"\[review-retry a(\d+) #%s/%s\]" % (pr_no, sha8),
+                      c.get("body") or "")
+        if m:
+            r = max(r, int(m.group(1)))
+    return r
+
+
+def _reviewer_session_stalled(i, pr_no, sha8, now):
+    """발령 이력 head의 세션 사망 정체 판정(기계적) — 12MZ.
+
+    즉시 트리거: runner:* 코멘트의 `dispatch#N failed exit!=0`.
+    이외: 리뷰어 점유 흔적(release되지 않은 reviewer) + 최신 발령 마커
+    (review-req/review-retry)가 TT_REVIEW_STALL_MIN 창 경과.
+    """
+    comments = i.get("comments") or []
+    if any(_RUNNER_FAIL_RE.search(c.get("body") or "") for c in comments
+           if str(c.get("author") or "").startswith("runner:")):
+        return True
+    if not i.get("reviewer"):
+        return False
+    latest = ""
+    for c in comments:
+        if c.get("author") != "probe":
+            continue
+        body = c.get("body") or ""
+        if f"#{pr_no}/{sha8}" not in body:
+            continue
+        if ("[review-req #" in body or "[review-retry a" in body) \
+                and (c.get("created_at") or "") > latest:
+            latest = c["created_at"]
+    if not latest or not now:
+        return False
+    win = _stall_window_min()
+    if win <= 0:
+        return True
+    try:
+        age = datetime.fromisoformat(now) - datetime.fromisoformat(latest)
+        return age >= timedelta(minutes=win)
+    except ValueError:
+        return False  # 시각 해석 불가 — 보수적으로 관망
+
+
+def _maybe_review_retry(actions, i, p, pr_repo, now):
+    """12MZ: 세션 사망 정체 감지 → 회차 마커로 재발령 1회, 상한 도달 시 에스컬레이션.
+
+    기존 review-req 마커 dedup은 유지하되, 그 뒤에 무음으로 갇히지 않게 하는 층.
+    재발령은 회차 마커([review-retry a<n>])로 dedup — probe dedup과 충돌 없음.
+    """
+    pr_no, sha8 = p["number"], (p.get("head_sha") or "")[:8]
+    rnd = _review_retry_round(i, pr_no, sha8)
+    if rnd >= REVIEW_RETRY_MAX:
+        nh = f"[needs-human-review #{pr_no}/{sha8}]"
+        if not _probe_marker(i, nh):
+            actions.append({"agent": "probe", "issue": i["id"], "action": "needs-human",
+                            "note": f"{nh} 리뷰 {REVIEW_RETRY_MAX}회차 재발령 후에도 판정 없음 "
+                                    f"(PR#{pr_no} @{sha8}, reviewer_session_failed) — 사람 판단 대기"})
+        return
+    if not _reviewer_session_stalled(i, pr_no, sha8, now):
+        return  # 점유 흔적·실패 기록 없음, 또는 관망 창 내 — 기존 dedup 그대로
+    retry_marker = f"[review-retry a{rnd + 1} #{pr_no}/{sha8}]"
+    if _probe_marker(i, retry_marker):
+        return  # 경합 방어 — 같은 회차 재발령은 1회만
+    actions.append({"agent": "probe", "issue": i["id"], "action": "review-retry",
+                    "pr": pr_no, "repo": pr_repo, "branch": p.get("branch", ""),
+                    "head_sha": p.get("head_sha", ""), "marker": retry_marker,
+                    "round": rnd + 1,
+                    **({"reviewer": i["reviewer"]} if i.get("reviewer") else {}),
+                    "reason": f"PR#{pr_no} 리뷰 세션 사망 정체(reviewer_session_failed) — "
+                              f"{rnd + 1}회차 재발령, 새 세션에서 시작(이전 세션 재사용 금지)"})
+
+
 def _claim_refused_note(url, act, cur, code):
     """리뷰 수령 거부 기록 — review-req 마커를 남기지 않아 다음 사이클 재판정·재시도(R3).
 
@@ -539,7 +633,11 @@ def decide(snap):
                     continue
                 if verdict is None:  # 미리뷰 또는 stale — (재)요청
                     marker = f"[review-req #{p['number']}/{sha8}]"
-                    if not _probe_marker(i, marker):
+                    if _probe_marker(i, marker):
+                        # 12MZ reviewer_session_failed — 발령 이력 head에 판정 없음:
+                        # 세션 사망 정체 감지·재발령(W S3C 영구 정체 사고의 미커버 구간).
+                        _maybe_review_retry(actions, i, p, pr_repo, now)
+                    else:
                         # 카운터파트 라우팅 — 구현 에이전트(assignee) 기준 리뷰어 결정.
                         # 수령 방식(review-claim 선점)은 #3c 그대로, 대상 선정만 양 경로가
                         # 같은 카운터파트/가족 정책을 따른다(R1).
@@ -1022,8 +1120,9 @@ def execute(url, act):
             {"author": "probe", "body": f"{act['marker']} PR#{act['pr']} CI green — "
                                         f"자동 수령 → {act['agent']}"})
         return
-    if kind == "review-request":
+    if kind in ("review-request", "review-retry"):
         # 리뷰 게이트 1단계 — 리뷰어 에이전트에 리뷰 요청 (docs/review-gate.md)
+        # review-retry(12MZ): 세션 사망 정체 재발령 — 회차 마커 dedup + 새 세션 지시문
         cur = api(url, f"/issues/{act['issue']}")
         if any(act["marker"] in (c.get("body") or "") for c in (cur.get("comments") or [])
                if c.get("author") == "probe"):
@@ -1058,6 +1157,9 @@ def execute(url, act):
                 _guard_skipped_note(url, act, cur)
             return
         msg = _review_dispatch_msg(act, agent)
+        if kind == "review-retry":
+            msg += ("\n\n[12MZ] 이전 리뷰 세션이 판정 없이 종료됐다(reviewer_session_failed). "
+                    "**새 세션에서 시작**하고 이전 세션 재사용 금지 — 컨텍스트 누적이 부수 원인이었다.")
         try:
             api(url, f"/issues/{act['issue']}/dispatch", "POST",
                 {"agent": agent, "message": msg, "work_contract": REVIEW_CONTRACT})
@@ -1160,8 +1262,10 @@ def execute(url, act):
     elif kind == "resume":
         api(url, f"/issues/{act['issue']}", "PATCH", {"state": "todo", "version": v})
     elif kind == "needs-human":
+        suffix = "" if act.get("note") else "(30KP 예산 게이트)"
         api(url, f"/issues/{act['issue']}/comments", "POST",
-            {"author": "dispatchd", "body": f"[auto] {act['reason']} — 라벨 needs-human 자동화 중단(30KP 예산 게이트)"})
+            {"author": "dispatchd",
+             "body": f"[auto] {act.get('note') or act['reason']} — 라벨 needs-human 자동화 중단{suffix}"})
         cur = api(url, f"/issues/{act['issue']}")
         labels = sorted((set(cur.get("labels") or []) | {"needs-human"}) - {"auto"})
         api(url, f"/issues/{act['issue']}", "PATCH", {"labels": labels})
