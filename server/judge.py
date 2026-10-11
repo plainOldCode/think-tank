@@ -30,6 +30,12 @@ _JUDGE = [None]
 _LOCK = threading.Lock()
 
 
+def sanitize(text):
+    """advisory 텍스트에서 마커 시퀀스를 무력화 — 요약이 기존 마커를 인용해도
+    제어 정보로 재해석되지 않는다(§5.2 원칙 3, 리뷰 R2: escaping 경계)."""
+    return str(text).replace("[", "［").replace("]", "］")
+
+
 class Proposal:
     """판단기 제안 — output은 §5.2 4값만 허용(단조성)."""
 
@@ -198,5 +204,9 @@ def run_advisory(point, view, rule_output, *, log=None, judge=None, cycle_id=Non
                      gate="allow", cycle_id=cycle_id, card=view.get("card"),
                      pr=view.get("pr"), input_hash_=ih, latency_ms=latency,
                      fallback=False, trace_id=result.trace_id)
-    result.decision_id = rec["decision_id"] if rec else None
+    if rec is None:
+        # 기록 우선(§5.2 원칙 3) — 로그에 남지 않은 출력은 게시하지 않는다(리뷰 R5).
+        # 규칙 기본 동작으로 폴백한다.
+        return None
+    result.decision_id = rec["decision_id"]
     return result

@@ -999,8 +999,8 @@ def decide(snap):
                 body = c.get("body") or ""
                 if body.startswith(("done 증거 없음", "보고 접수")):
                     continue  # 규칙표 행 존재(evidence_rejected) — C1 아님
-                if "verify 422" in body or "422 — " in body:
-                    continue  # verify_422 정식 행 — 기계적 사유(리뷰 R8)
+                if "verify 422" in body:
+                    continue  # verify_422 정식 행의 기계적 표식만 제외(리뷰 R8)
                 if not re.search(r"실패|오류|거부|거절|4\d\d", body):
                     continue
                 k = (c.get("ts") or c.get("created_at") or "", c.get("id") or 0)
@@ -1328,9 +1328,10 @@ def execute(url, act):
                                  "ci-fix dispatch", cycle_id=act.get("cycle_id"))
         _s1_txt = ""
         if _s1 and isinstance(_s1.value, str) and _s1.value.strip():
-            # [judge-note <id>] — 기존 파서가 제어 정보로 읽지 않는 새 주석 kind(§5.2)
+            # [judge-note <id>] — 기존 파서가 제어 정보로 읽지 않는 새 주석 kind(§5.2).
+            # 값은 소독(advisory가 마커 시퀀스를 운반하지 않음) + 한 줄 블록.
             _s1_txt = (f"\n\n[judge-note {_s1.decision_id}] 실패 요약(참고용 — 판정 아님): "
-                       f"{_s1.value.strip()[:500]}")
+                       f"{judge.sanitize(_s1.value.strip()[:500].replace(chr(10), ' '))}")
         msg = (f"[auto probe] PR #{act['pr']} ({act.get('repo','')}) CI 실패"
                f"(failing: {','.join(act.get('checks_failed') or [])}). 임무: PR을 읽고 **수정**할 것"
                f" — 단순 review 금지, 목적은 CI red 해소. 브랜치 {act.get('branch','')} 위에서 커밋 계속, "
@@ -1522,7 +1523,7 @@ def execute(url, act):
                 api(url, f"/issues/{act['issue']}/comments", "POST",
                     {"author": "probe", "body": f"[judge-note {_s2.decision_id}] "
                                                 f"사유 요약(참고용 — 판정 아님): "
-                                                f"{_s2.value.strip()[:300]}"})
+                                                f"{judge.sanitize(_s2.value.strip()[:300].replace(chr(10), ' '))}"})
             return
         att = cur.get("execution_attempt") or 0
         marker = f"[needs-merge a{att}]"

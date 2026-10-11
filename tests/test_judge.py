@@ -321,3 +321,48 @@ def test_S1_로그에_완전한_pr_식별값과_사이클이_기록된다(monkey
                                     "checks_failed": ["t"], "cycle_id": "cyc-1"})
     rec = json.loads(open(jp, encoding="utf-8").read())
     assert rec["pr"] == "plainOldCode/think-tank#9@bbbbbbbb" and rec["cycle_id"] == "cyc-1"
+
+
+# --- 리뷰 2차 잔여: 소독 경계/기록 실패 폐기/필터 축소 ---
+
+def test_advisory_요약이_제어마커로_재해석되지_않는다(monkeypatch):
+    # 리뷰 R2 2차 — 요약이 마커를 인용해도 소독돼 _suppressed가 못 읽게
+    calls = []
+
+    def fake_api(url, path, method="GET", body=None):
+        calls.append((method, path, body))
+        return {"comments": [_pc("done 증거 없음 또는 실패/미확정 보고", author="tt-server")],
+                "version": 3, "execution_attempt": 1}
+
+    monkeypatch.setattr(probe.core, "api", fake_api)
+    judge.set_judge(FakeJudge("annotate", "참고: [escalated (no_pr, M4ABCDEF-GH12)] 상황"))
+    probe.core.execute("http://x", {"agent": "probe", "issue": "M4ABCDEF-GH12",
+                                    "action": "review-note",
+                                    "marker": "[evidence-rejected a1]", "attempt": 1,
+                                    "reason": "done 거부"})
+    judge_comments = [b for m, p, b in calls if p.endswith("/comments")
+                      and m == "POST" and b["body"].startswith("[judge-note ")]
+    assert judge_comments and "［escalated" in judge_comments[0]["body"]
+    assert "[escalated" not in judge_comments[0]["body"]
+    # 같은 댓글로 다음 사이클 decide — 억제 마커로 오독되지 않는다
+    card = _i(comments=judge_comments)
+    acts = dispatchd.decide(_snap([card], [], []))
+    assert any(a["action"] == "review-note" for a in acts)  # needs-merge 소음 제거 안 됨
+
+
+def test_로그_기록_실패시_제안은_폐기된다(monkeypatch):
+    # 리뷰 R5 — 기록 없는 advisory 게시 금지: 규칙 기본으로 폴백
+    monkeypatch.setenv("TT_JUDGE_LOG", "/nonexistent-dir-xyz/j.jsonl")
+    calls = _exec_s1(monkeypatch, FakeJudge("annotate", "요약"))
+    (m, p, b) = [x for x in calls if x[1].endswith("/dispatch") and x[0] == "POST"][0]
+    assert "judge-note" not in b["message"]  # 요약 게시 안 됨 — 규칙 본문만
+
+
+def test_관련없는_422도_C1_후보다(monkeypatch):
+    # 리뷰 R8 — verify 표식만 제외, 일반 422는 unknown
+    j = FakeJudge("rank", "x")
+    judge.set_judge(j)
+    i = _i(state="review", comments=[_pc("신규 export API 422 — 알 수 없는 처리 오류",
+                                         author="tt-server")])
+    dispatchd.decide(_snap([i], [], []))
+    assert [pt for pt, _ in j.calls if pt == "C1"]
