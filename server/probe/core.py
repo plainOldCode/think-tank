@@ -1619,7 +1619,14 @@ def execute(url, act):
 
 
 def snapshot(url):
-    issues = api(url, "/issues?limit=500")
+    issues = []
+    while True:
+        page = api(url, f"/issues?limit=1000&offset={len(issues)}")
+        if not page:
+            break
+        issues.extend(page)
+        # 실제 반환 수로 전진하고 빈 페이지에서 종료: 서버의 페이지 상한이
+        # 요청한 1000보다 낮아도 다음 페이지의 오래된 카드를 놓치지 않는다.
     agents = api(url, "/agents")
     for i in issues:
         # 판정에 추가로 필요한 값만 해당 카드의 detail에서 (전수 GET 최소화)
