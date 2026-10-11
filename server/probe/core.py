@@ -15,6 +15,8 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta
 
+import failure_rules
+
 from service import REVIEW_CONTRACT
 import policy
 
@@ -397,6 +399,20 @@ def _reviewer_session_stalled(i, pr_no, sha8, now):
         return False  # 시각 해석 불가 — 보수적으로 관망
 
 
+def _draft_stalled(i, pr_no, now):
+    """draft 병합 반복 사람 통보 판정(규칙표 §4 draft_merge_loop) — draft-flagged
+    마커가 TT_DRAFT_STALL_H 시간 경과했으면 True. 0이면 통보 없음."""
+    h = failure_rules.draft_stall_hours()
+    if h <= 0:
+        return False
+    marker = f"[draft-flagged #{pr_no}]"
+    for c in (i.get("comments") or []):
+        if c.get("author") == "probe" and marker in (c.get("body") or ""):
+            age = _age_min(now, c.get("ts") or c.get("created_at") or "")
+            return age is not None and age >= h * 60
+    return False
+
+
 def _maybe_review_retry(actions, i, p, pr_repo, now):
     """12MZ: 세션 사망 정체 감지 → 회차 마커로 재발령 1회, 상한 도달 시 에스컬레이션.
 
@@ -623,7 +639,13 @@ def decide(snap):
             want = pr_repo
         if want != pr_repo:
             continue
-        if ci_passed(p):
+        # pr_no_checks(규칙표 §4): checks 0건 PR도 판정 대상 — 유효 리뷰 판정이
+        # 있으면 그 판정을 따르고(approve→병합 후보, request-changes→review-fix),
+        # 무판정이면 리뷰 요청. 기존은 무응답(needs-merge 오표기)이었다.
+        # 게이트 off(TT_REVIEW_AGENT 미설정·비저위험) 레거시 모드에서는 무판정 병합
+        # 방지를 위해 진입 자체를 하지 않는다(기존 무응답 유지).
+        no_checks = not (p.get("checks") or [])
+        if ci_passed(p) or (no_checks and (reviewer or low_risk)):
             if reviewer or low_risk:
                 if i["state"] != "review":
                     # 게이트 on: 제출 전 카드는 리뷰·병합 대상 아님 — 움직이는 대상 리뷰 낭비 방지.
@@ -702,10 +724,13 @@ def decide(snap):
                     continue
                 # approve — 아래 merge로 통과
                 gated.discard(iid)
+            merge_reason = (f"리뷰 판정 대체(checks 0건) + 카드 계약/수령 검증 — gh pr merge ({pr_repo})"
+                            if no_checks else
+                            f"CI green + 카드 계약/수령 검증 — gh pr merge ({pr_repo})")
             actions.append({"agent": "probe", "issue": iid, "action": "merge", "pr": p["number"],
                             "head_sha": p.get("head_sha", ""),
                             "repo": pr_repo, "low_risk": bool(low_risk),
-                            "reason": f"CI green + 카드 계약/수령 검증 — gh pr merge ({pr_repo})"})
+                            "reason": merge_reason})
 
     # ⓪b review 카드 중 병합 불가 후보 — 사람 판단 요청 코멘트 (M3R7M0ZR-YF99).
     # merge 후보(⓪)에 없는 review 카드만. 회차 마커 '[needs-merge a<n>'로 회차당 1회.
@@ -742,6 +767,7 @@ def decide(snap):
         drafts = [p for p in prs_for if p.get("isDraft")]
         if drafts and len(drafts) == len(prs_for):
             # 전부 draft — 병합·ci-fix 판정 불가. ready 요청 1회(마커 dedup) 후 무음.
+            # draft_merge_loop(규칙표 §4): ready 요청 후에도 경과하면 사람 1회 통보(dedup) 후 중지.
             marker = f"[draft-flagged #{drafts[0]['number']}]"
             if not any(marker in (c.get("body") or "") for c in (i.get("comments") or [])
                        if c.get("author") == "probe"):
@@ -749,6 +775,13 @@ def decide(snap):
                                 "marker": marker,
                                 "reason": f"draft PR#{drafts[0]['number']} — ready for review "
                                           "요청(준비되면 draft 해제)"})
+                continue
+            if _draft_stalled(i, drafts[0]["number"], snap.get("now") or ""):
+                dh = f"[needs-human-draft #{drafts[0]['number']}]"
+                if not any(dh in (c.get("body") or "") for c in (i.get("comments") or [])):
+                    actions.append({"agent": "probe", "issue": i["id"], "action": "needs-human",
+                                    "note": f"{dh} draft PR#{drafts[0]['number']} ready 전환 없이 "
+                                            f"병합 판정 반복(TT_DRAFT_STALL_H 경과) — 사람 판단 대기"})
             continue
         if prs_for:
             states = [c.get("state") for p in prs_for for c in p.get("checks") or []]
