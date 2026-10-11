@@ -46,7 +46,7 @@ def _pc(body, ts=OLD, author="probe"):
     return {"author": author, "body": body, "ts": ts}
 
 
-REQ = f"[review-req #9/{SHA8}] PR#9 CI green — 리뷰 요청 → fallback@t"
+REQ = (f"[review-req #9/{SHA8}] PR#9 CI green — 리뷰 요청 → fallback@t (dispatch#294)")
 RUNNER_FAIL = {"author": "runner@m2max", "ts": NOW,  # 실측 author 형식(리뷰 R2)
                "body": "runner:m2max dispatch#294 failed exit=1 session=tt-codex-294\nReconnecting 5/5"}
 RUNNER_OK = {"author": "runner@m2max", "ts": NOW,
@@ -231,3 +231,45 @@ def test_fresh_dispatch는_context를_상속하지_않는다(client):
         con.close()
         assert rows[1][0] == "runner:m2max:tmux:tt-old-1"
         assert rows[2][0] == ""
+
+
+def test_실패_dispatch_id가_발령과_다르면_즉시_트리거가_아니다(monkeypatch):
+    # 리뷰 3차 R3 잔여 — 구 회차·작업 dispatch의 늦은/동초 실패는 새 세션을 깨지 않는다
+    monkeypatch.setattr("probe.core._stall_window_min", lambda: 30)
+    # 발령(dispatch#300) 후 구 회차 실패(dispatch#294)가 늦게 접수 → 관망
+    i = _i(reviewer="fallback@t",
+           comments=[_pc(REQ.replace("dispatch#294", "dispatch#300"), ts=NOW),
+                     dict(RUNNER_FAIL, ts=NOW)])  # 동초 접수라도 id 불일치
+    acts = dispatchd.decide(_snap([i], _pr(), [_agent("a2@t")]))
+    assert not [a for a in acts if a["action"] == "review-retry"]
+
+
+def test_발령_마커에_dispatch_id가_없으면_실패는_즉시_트리거가_아니다(monkeypatch):
+    # 구형 마커(dispatch id 미기록) — 창 경과로만 판정(보수적)
+    monkeypatch.setattr("probe.core._stall_window_min", lambda: 30)
+    i = _i(reviewer="fallback@t",
+           comments=[_pc(REQ.split(" (dispatch")[0], ts=NOW), dict(RUNNER_FAIL)])
+    acts = dispatchd.decide(_snap([i], _pr(), [_agent("a2@t")]))
+    assert not [a for a in acts if a["action"] == "review-retry"]
+
+
+def test_execute_review_request는_마커에_dispatch_id를_남긴다(monkeypatch):
+    import probe.core
+
+    calls = []
+
+    def fake_api(url, path, method="GET", body=None):
+        calls.append((method, path, body))
+        if path.endswith("/claim-review"):
+            return {"id": "M4ABCDEF-GH12"}
+        if path.endswith("/dispatch") and method == "POST":
+            return {"id": 777}
+        return {"comments": [], "version": 3, "assignee": "a1@t"}
+
+    monkeypatch.setattr(probe.core, "api", fake_api)
+    probe.core.execute("http://x", {"action": "review-request", "agent": "probe",
+                                    "issue": "M4ABCDEF-GH12", "pr": 9, "repo": "o/r",
+                                    "branch": "tt/x", "head_sha": "b" * 40,
+                                    "marker": f"[review-req #9/{SHA8}]"})
+    comments = [b for m, p, b in calls if p.endswith("/comments") and m == "POST"]
+    assert any("(dispatch#777)" in (b.get("body") or "") for b in comments)

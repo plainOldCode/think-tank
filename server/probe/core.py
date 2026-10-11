@@ -315,7 +315,8 @@ def _probe_marker(i, marker):
 # 12MZ reviewer_session_failed — 판정 없는 리뷰 정체(W S3C 실측: codex 세션이
 # dispatch 후 스트림 오류로 사망 → review-req 마커 dedup에 걸려 영구 정체).
 REVIEW_RETRY_MAX = 3  # (사유,pr,sha) 카운터 한도 — 도달 시 needs-human 에스컬레이션
-_RUNNER_FAIL_RE = re.compile(r"runner:\S+ dispatch#\d+ failed exit=[1-9]")
+_RUNNER_FAIL_RE = re.compile(r"runner:\S+ dispatch#(\d+) failed exit=[1-9]")
+_DISPATCH_ID_RE = re.compile(r"\(dispatch#(\d+)\)")
 
 
 def _stall_window_min():
@@ -350,13 +351,14 @@ def _reviewer_session_stalled(i, pr_no, sha8, now):
     """발령 이력 head의 세션 사망 정체 판정(기계적) — 12MZ.
 
     즉시 트리거: runner 신원(author runner* — 실측 runner@machine 형식, 본문은
-    runner:machine 접두) 코멘트의 `dispatch#N failed exit!=0` — 단 최신 발령
-    마커 이후 것만(구 실패가 새 세션·새 head의 관망 창을 무시하지 않게).
+    runner:machine 접두) 코멘트의 `dispatch#N failed exit!=0` — 단 ①최신 발령
+    마커 이후 접수 ②마커가 기록한 dispatch id와 일치(구 회차·작업 dispatch의
+    늦은 실패·동초 접수가 새 세션 관망을 깨지 않게 — 리뷰 R3 잔여).
     이외: 리뷰어 점유 흔적(release되지 않은 reviewer) + 최신 발령 마커
     (review-req/review-retry)가 TT_REVIEW_STALL_MIN 창 경과.
     """
     comments = i.get("comments") or []
-    latest = ""
+    latest, latest_did = "", ""
     for c in comments:
         if c.get("author") != "probe":
             continue
@@ -366,12 +368,17 @@ def _reviewer_session_stalled(i, pr_no, sha8, now):
         if ("[review-req #" in body or "[review-retry a" in body) \
                 and _comment_ts(c) > latest:
             latest = _comment_ts(c)
+            m = _DISPATCH_ID_RE.search(body)
+            latest_did = m.group(1) if m else ""
     if not latest or not now:
         return False
     for c in comments:
         if not str(c.get("author") or "").startswith("runner"):
             continue
-        if not _RUNNER_FAIL_RE.search(c.get("body") or ""):
+        m = _RUNNER_FAIL_RE.search(c.get("body") or "")
+        # 발령 마커의 dispatch id와 일치할 때만 즉시 트리거 — id 미기록(구형)·불일치
+        # (구 회차·작업 dispatch) 실패는 창 경과로만 판정(보수적, 리뷰 R3 잔여)
+        if not m or not latest_did or m.group(1) != latest_did:
             continue
         if _comment_ts(c) >= latest:
             return True
@@ -1176,12 +1183,13 @@ def execute(url, act):
             msg += ("\n\n[12MZ] 이전 리뷰 세션이 판정 없이 종료됐다(reviewer_session_failed). "
                     "**새 세션에서 시작**하고 이전 세션 재사용 금지 — 컨텍스트 누적이 부수 원인이었다.\n"
                     + act["marker"])
+        dresp = None
         try:
-            api(url, f"/issues/{act['issue']}/dispatch", "POST",
-                {"agent": agent, "message": msg,
-                 # 12MZ 리뷰 R5: 재발령은 이전 세션 context 상속을 끊는다 — 새 세션 강제
-                 "work_contract": REVIEW_CONTRACT, "fresh": True} if kind == "review-retry" else
-                {"agent": agent, "message": msg, "work_contract": REVIEW_CONTRACT})
+            dresp = api(url, f"/issues/{act['issue']}/dispatch", "POST",
+                        {"agent": agent, "message": msg,
+                         # 12MZ 리뷰 R5: 재발령은 이전 세션 context 상속을 끊는다 — 새 세션 강제
+                         "work_contract": REVIEW_CONTRACT, "fresh": True} if kind == "review-retry" else
+                        {"agent": agent, "message": msg, "work_contract": REVIEW_CONTRACT})
         except Exception as e:
             # F4 — claim 점유만 남기고 죽으면 만료까지 타 리뷰어가 409다: 반납 후 기록
             _reviewer_lease_release(url, act["issue"], agent)
@@ -1189,9 +1197,14 @@ def execute(url, act):
                 {"author": "probe", "body": f"{act['marker']} 리뷰 dispatch 실패({str(e)[:80]}) — "
                                             "리뷰어 lease 반납, 사람 판단 대기"})
             return
+        # 12MZ 리뷰 R3 잔여: 발령 마커에 dispatch id를 남겨 runner 실패 코멘트의
+        # dispatch#N과 대조 — 구 회차·작업 dispatch의 늦은 실패가 새 세션 관망을 깨지 않게.
+        did = ""
+        if isinstance(dresp, dict):
+            did = str(dresp.get("id") or "")
         api(url, f"/issues/{act['issue']}/comments", "POST",
             {"author": "probe", "body": f"{act['marker']} PR#{act['pr']} CI green — "
-                                        f"리뷰 요청 → {agent}"})
+                                        f"리뷰 요청 → {agent}" + (f" (dispatch#{did})" if did else "")})
         return
     if kind == "review-fix":
         # 리뷰 게이트 2단계 — request-changes: 카드 review 반납 + 배정 에이전트에 수정 위임
