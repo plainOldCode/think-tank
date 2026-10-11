@@ -346,7 +346,9 @@ def _probe_marker(i, marker):
 
 # 12MZ reviewer_session_failed — 판정 없는 리뷰 정체(W S3C 실측: codex 세션이
 # dispatch 후 스트림 오류로 사망 → review-req 마커 dedup에 걸려 영구 정체).
-REVIEW_RETRY_MAX = 3  # (사유,pr,sha) 카운터 한도 — 도달 시 needs-human 에스컬레이션
+REVIEW_RETRY_MAX = 3
+# BG97 relay 관측자 — 이 author들의 코멘트는 '활동'으로 세지 않는다(관측·시스템 기록).
+_RELAY_OBSERVERS = {"probe", "tt-embedding-daemon", "tt-server", "board"}  # (사유,pr,sha) 카운터 한도 — 도달 시 needs-human 에스컬레이션
 _RUNNER_FAIL_RE = re.compile(r"runner:\S+ dispatch#(\d+) failed exit=[1-9]")
 _DISPATCH_ID_RE = re.compile(r"\(dispatch#(\d+)\)")
 
@@ -503,6 +505,33 @@ def _repeat_count(i, regex, since_id=0):
     return sum(1 for c in (i.get("comments") or [])
                if c.get("author") == "probe" and (c.get("id") or 0) > since_id
                and re.search(regex, c.get("body") or ""))
+
+
+def _fix_stall_fields(body):
+    """데몬 [fix-stall] 첫 행의 key=value 필드 — BG97 소비 입력."""
+    m = re.match(r"^\[fix-stall\]\s+(.*)$", (body or "").split("\n", 1)[0])
+    if not m:
+        return None
+    out = {}
+    for tok in m.group(1).split():
+        if "=" in tok:
+            k, v = tok.split("=", 1)
+            out[k] = v
+    return out or None
+
+
+def _relay_timer_s(assignee, agents):
+    """무반응 양도 타이머(초) — receive_mode: hook 1h / relay(기본) 6h.
+
+    watcher 모드는 선언 주기×3인데 주기 필드가 아직 없어(RQRT) relay 기본값을
+    쓴다. 미선언 에이전트는 relay 기본값(카드 정책) — receive_mode 컬럼이
+    생기면 자동 반영."""
+    mode = ""
+    for a in agents or []:
+        if a.get("name") == assignee:
+            mode = (a.get("receive_mode") or "").strip()
+            break
+    return int({"hook": 1.0, "relay": 6.0}.get(mode, 6.0) * 3600)
 
 
 def _escalate(actions, i, code, scope, count):
@@ -989,6 +1018,90 @@ def decide(snap):
                 f"review-note:{reason}", cycle_id=snap.get("cycle_id"))
         actions.append({"agent": "probe", "issue": i["id"], "action": "review-note",
                         "reason": f"{reason} — 사람 판단 대기"})
+
+    # ②b BG97(M4MGV3B7) — 재작업 전달 보장. 데몬 [fix-stall] 소비(원 워커 재발령
+    # 1회 재시도)와 relay 마커 무반응 양도(todo 회귀). dedup은 (사유,pr,sha,attempt) —
+    # docs/embedding-daemon-design.md §2 소비 계약.
+    for p in snap.get("prs") or []:
+        iid = pr_card_id(p)
+        i = by_id.get(iid) if iid else None
+        if not iid or i is None or i["state"] in ("done", "cancelled"):
+            continue
+        pr_no, sha8 = p["number"], (p.get("head_sha") or "")[:8]
+        pr_repo = p.get("repo") or REPO_CARDS.get("think-tank", "")
+        comments = i.get("comments") or []
+        att = i.get("execution_attempt") or 0
+        rmarker = f"[rework-relay #{pr_no}/{sha8} a{att}]"
+        # 1) [fix-stall] 소비 — 위임 후 미실행 정체. 같은 (pr,sha,att) 재시도 1회.
+        if i["state"] == "review" and not i.get("busy_agents") and \
+                not _probe_marker(i, rmarker):
+            stalls = [c for c in comments if c.get("author") == "tt-embedding-daemon"
+                      and (c.get("body") or "").startswith("[fix-stall]")]
+            for c in reversed(stalls):
+                fs = _fix_stall_fields(c.get("body") or "")
+                if not fs or fs.get("src_kind") != "review-fix":
+                    continue
+                if fs.get("src_pr") != str(pr_no) or fs.get("src_head") != sha8:
+                    continue  # 과거 head의 정체 — 현재 head는 재판정됐으므로 무시
+                actions.append({"agent": "probe", "issue": iid, "action": "review-fix-relay",
+                                "pr": pr_no, "repo": pr_repo,
+                                "branch": p.get("branch", ""),
+                                "head_sha": p.get("head_sha", ""), "att": att,
+                                "reason": f"PR#{pr_no} fix 위임 미실행 정체 — 원 워커 재발령"})
+                break
+            if any(a["issue"] == iid and a["action"] == "review-fix-relay" for a in actions):
+                continue  # 이번 회차 재발령 중 — 양도 판정은 다음 사이클
+        # 2) 무반응 양도 — 최신 relay 마커 기준(receive_mode별 타이머)
+        relays = [c for c in comments if c.get("author") == "probe"
+                  and "[rework-relay #" in (c.get("body") or "")]
+        if not relays or i.get("busy_agents"):
+            continue
+        rc = relays[-1]
+        m = re.search(r"\[rework-relay #(\d+)/([0-9a-f]{8}) a(\d+)\]",
+                      rc.get("body") or "")
+        if not m:
+            continue
+        rpr, rsha, ratt = int(m.group(1)), m.group(2), int(m.group(3))
+        if _probe_marker(i, f"[rework-fallback a{ratt}]"):
+            continue
+        n = failure_rules.suppress_n()
+        if n and _repeat_count(i, r"\[rework-fallback a\d+\]") >= 3:
+            _escalate(actions, i, "rework_relay", f"#{rpr}/{rsha}", 3)
+            continue
+        rts = _comment_ts(rc)
+        lex = i.get("lease_expires") or ""
+        try:
+            held = bool(lex) and (datetime.fromisoformat(now or _comment_ts(rc))
+                                  < datetime.fromisoformat(lex))
+        except ValueError:
+            held = False
+        if held:
+            continue  # 유효 임대 = 활동 중(Q05B claude 케이스) — 무반응이 아님
+        try:
+            rdt = datetime.fromisoformat(rts)
+        except ValueError:
+            continue
+        if (datetime.fromisoformat(now) - rdt).total_seconds() <= \
+                _relay_timer_s(i.get("assignee") or "", agents):
+            continue
+        # head 불변 — relay 이후 같은 PR의 다른 head 위임·요청 마커가 있으면 회귀 금지
+        if any(x.get("author") == "probe" and _comment_ts(x) and rts
+               and datetime.fromisoformat(_comment_ts(x)) > rdt
+               and f"#{rpr}/" in (x.get("body") or "")
+               and rsha not in (x.get("body") or "")
+               and ("[review-fix #" in (x.get("body") or "")
+                    or "[review-req #" in (x.get("body") or "")
+                    or "[ci-fix a" in (x.get("body") or ""))
+               for x in comments):
+            continue
+        # 무활동 — relay 이후 관측자(probe·데몬·서버·보드) 외 코멘트가 있으면 활동 중
+        if any(_comment_ts(x) and datetime.fromisoformat(_comment_ts(x)) > rdt
+               and (x.get("author") or "") not in _RELAY_OBSERVERS
+               for x in comments):
+            continue
+        actions.append({"agent": "probe", "issue": iid, "action": "rework-fallback",
+                        "att": ratt, "marker": f"[rework-fallback a{ratt}]",
+                        "reason": f"PR#{rpr} relay 무반응 — assignee 해제+todo 회귀"})
 
     # ③ 예산 소진 카드 — dispatch 대신 needs-human (auto 풀 전수)
     for i in _auto_todo(issues, claimed):
@@ -1499,6 +1612,68 @@ def execute(url, act):
             {"author": "probe", "body": f"{act['marker']} PR#{act['pr']} CI green — "
                                         f"리뷰 요청 → {agent}" + (f" (dispatch#{did})" if did else "")})
         return
+    if kind == "review-fix-relay":
+        # BG97 — [fix-stall] 소비: 위임 후 미실행 정체의 원 워커 재발령 1회.
+        # dedup 마커 [rework-relay #pr/sha a{att}]는 성공·실패 모두 남겨
+        # 같은 (사유,pr,sha,attempt) 재시도를 막는다(실패면 사람 릴레이로 종결).
+        cur = api(url, f"/issues/{act['issue']}")
+        att = act.get("att") or cur.get("execution_attempt") or 0
+        rmarker = f"[rework-relay #{act['pr']}/{(act.get('head_sha') or '')[:8]} a{att}]"
+        if any(rmarker in (c.get("body") or "") for c in (cur.get("comments") or [])
+               if c.get("author") == "probe"):
+            return
+        assignee = cur.get("assignee") or ""
+        ok = False
+        if assignee:
+            agents = [a for a in api(url, "/agents") or []
+                      if a.get("enabled") and a.get("base_url")]
+            target = _resolve_executor(assignee, agents)
+            if target and target not in NON_EXECUTORS:
+                try:
+                    _dfix = api(url, f"/issues/{act['issue']}/dispatches") or []
+                except Exception:
+                    _dfix = []
+                if any(isinstance(x, dict) and x.get("agent") == target
+                       and x.get("run_state") in _ACTIVE_RUN_STATES for x in _dfix):
+                    return  # 진행 중 — 다음 사이클(JWW0)
+                try:
+                    api(url, f"/issues/{act['issue']}/dispatch", "POST",
+                        {"agent": target,
+                         "message": (f"[auto review-fix] PR #{act['pr']} 리뷰 request-changes(재발령) — "
+                                     f"리뷰 코멘트(PR/카드)를 읽고 같은 브랜치 "
+                                     f"{act.get('branch', '')} 위에서 수정 커밋. "
+                                     "push하면 probe가 재리뷰 요청.")})
+                    ok = True
+                    api(url, f"/issues/{act['issue']}/comments", "POST",
+                        {"author": "probe",
+                         "body": f"{rmarker} 원 워커 재발령 — {target} 세션 실행 중"})
+                except Exception as e:
+                    pass
+        if not ok:
+            api(url, f"/issues/{act['issue']}/comments", "POST",
+                {"author": "probe",
+                 "body": f"{rmarker} 원 워커 재발령 불가(assignee: {assignee or '없음'}) — "
+                         "사람 세션 전달 요망"})
+            api(url, "/messages", "POST",
+                {"author": "probe",
+                 "body": (f"@{assignee} " if assignee else "")
+                         + f"[rework-relay] 카드 {act['issue']} PR#{act['pr']} — 재작업 전달 필요"
+                         "(dispatch 미실행 정체[fix-stall], 사람이 세션에 전달)"})
+        return
+    if kind == "rework-fallback":
+        # BG97 2순위 — relay 무반응 양도: assignee 해제+todo 회귀(판정 전문은 코멘트 보존).
+        cur = api(url, f"/issues/{act['issue']}")
+        marker = act.get("marker") or ""
+        if any(marker in (c.get("body") or "") for c in (cur.get("comments") or [])
+               if c.get("author") == "probe"):
+            return
+        api(url, f"/issues/{act['issue']}", "PATCH",
+            {"version": get_version(url, act["issue"]), "assignee": "", "state": "todo"})
+        api(url, f"/issues/{act['issue']}/comments", "POST",
+            {"author": "probe",
+             "body": f"{marker} relay 무반응(타이머 경과, head 불변) — assignee 해제+todo 회귀. "
+                     "판정 전문은 코멘트 보존 — 누구나 재수령 가능"})
+        return
     if kind == "review-fix":
         # 리뷰 게이트 2단계 — request-changes: 카드 review 반납 + 배정 에이전트에 수정 위임
         cur = api(url, f"/issues/{act['issue']}")
@@ -1520,9 +1695,18 @@ def execute(url, act):
             msg = (f"[auto review-fix] PR #{act['pr']} 리뷰 request-changes — 리뷰 코멘트(PR/카드)를 "
                    f"읽고 같은 브랜치 {act.get('branch', '')} 위에서 수정 커밋. push하면 probe가 재리뷰 요청.")
             if target is None:
+                _ratt = cur.get("execution_attempt") or 0
+                _rm = f"[rework-relay #{act['pr']}/{(act.get('head_sha') or '')[:8]} a{_ratt}]"
                 api(url, f"/issues/{act['issue']}/comments", "POST",
                     {"author": "probe", "body": f"{act['marker']} 수정 dispatch 실패"
-                                                f"(에이전트 미등록: {assignee}) — 사람 판단 대기"})
+                                                f"(에이전트 미등록: {assignee}) — 사람 판단 대기"
+                                                f"\n{_rm} assignee={assignee} receive_mode=relay"
+                                                " — 세션 전달 요망"})
+                api(url, "/messages", "POST",
+                    {"author": "probe",
+                     "body": (f"@{assignee} " if assignee else "")
+                             + f"[rework-relay] 카드 {act['issue']} PR#{act['pr']} — "
+                               "재작업 전달 필요(등록 에이전트 없음, 사람이 세션에 전달)"})
             elif target in NON_EXECUTORS:
                 # PXCJ — 어댑터·리드온리는 코드 작업 불가: dispatch 낭비 대신 사람 통보.
                 # 원 워커 돌려주기 등 재라우팅은 M4MGV3B7-BG97 영역.
