@@ -835,6 +835,74 @@ def decide(snap):
             want = pr_repo
         if want != pr_repo:
             continue
+        # ⓪c JXYS(M4MGV3BY) — in_progress 자동화: 리뷰 전용 자동화의 사각지대.
+        # in_progress+PR에서도 CI 실패는 위임, green 무보고는 독려→무반응 승격.
+        # 전이는 probe가, 완료(done)는 보고서 의존 유지 — probe가 보고를 위조하지 않는다.
+        if i["state"] == "in_progress" and not i.get("busy_agents"):
+            att_ip = i.get("execution_attempt") or 0
+            sha8_ip = (p.get("head_sha") or "")[:8]
+            checks_ip = p.get("checks") or []
+            states_ip = [c.get("state") for c in checks_ip]
+            fails_ip = [x for x in states_ip if x == "FAILURE"]
+            # 1) CI 실패 → 기존 ci-fix 흐름(위임 대상 동일) — 실패 PR은 미완성이어서 안전
+            if fails_ip and os.environ.get("TT_CI_FIX_AGENT", "kanban-adapter"):
+                marker_ip = f"[ci-fix-ip a{att_ip} #{p['number']}/{sha8_ip}]"
+                sup_ip, since_ip = _suppressed(i, "ci_failed_ip",
+                                               f"#{p['number']}/{sha8_ip}")
+                if not sup_ip and not _probe_marker(i, marker_ip):
+                    n_ip = failure_rules.suppress_n()
+                    scope_ip = f"#{p['number']}/{sha8_ip}"
+                    if not (n_ip and _repeat_count(
+                            i, rf"\[ci-fix-ip a\d+ {re.escape(scope_ip)}\]",
+                            since_ip) >= n_ip):
+                        actions.append({"agent": "dispatchd", "issue": iid,
+                                        "action": "ci-fix", "marker": marker_ip,
+                                        "att": att_ip, "pr": p["number"], "repo": pr_repo,
+                                        "branch": p.get("branch", ""),
+                                        "head_sha": p.get("head_sha", ""),
+                                        "cycle_id": snap.get("cycle_id"),
+                                        "checks_failed": [c.get("name") or "?" for c in checks_ip
+                                                          if c.get("state") == "FAILURE"]})
+                continue
+            # 2) green + 무보고 → 독려 1회 → 무반응 승격. head가 바뀌면 새 sha의
+            #    독려 마커가 새로 필요 — 타이머가 자연 리셋(점진 push 납치 방지).
+            if ci_passed(p):
+                smarker = f"[submit-remind a{att_ip} #{p['number']}/{sha8_ip}]"
+                amarker = f"[submission-adopt a{att_ip} #{p['number']}/{sha8_ip}]"
+                if _probe_marker(i, amarker):
+                    continue  # 이미 승격됨 — 승격 후에도 보고 제출은 가능
+                if not _probe_marker(i, smarker):
+                    actions.append({"agent": "probe", "issue": iid,
+                                    "action": "submit-remind", "marker": smarker,
+                                    "att": att_ip, "pr": p["number"], "repo": pr_repo,
+                                    "head_sha": p.get("head_sha", ""),
+                                    "reason": f"PR#{p['number']} CI green — 완료 보고 제출"
+                                              "(tt done)이 review 진입"})
+                    continue
+                sc = next((c for c in (i.get("comments") or [])
+                           if c.get("author") == "probe"
+                           and smarker in (c.get("body") or "")), None)
+                sdt = _iso(_comment_ts(sc)) if sc else None
+                if not sdt or _lease_held(i, now):
+                    continue  # 유효 임대 = 활동 중 — 무반응이 아님
+                if (datetime.fromisoformat(now) - sdt).total_seconds() <= \
+                        _relay_timer_s(i.get("assignee") or "", agents):
+                    continue  # 독려 타이머 미경과(hook 1h / relay 6h)
+                if any((x.get("author") or "") not in _RELAY_OBSERVERS
+                       and not str(x.get("author") or "").startswith("runner")
+                       and _comment_after(x, sdt, sc.get("id") or 0)
+                       for x in (i.get("comments") or [])):
+                    continue  # 응답·활동 중 — 승격 금지
+                actions.append({"agent": "probe", "issue": iid,
+                                "action": "submission-adopt", "marker": amarker,
+                                "att": att_ip, "pr": p["number"], "repo": pr_repo,
+                                "head_sha": p.get("head_sha", ""),
+                                "remind_ts": _comment_ts(sc),
+                                "remind_id": sc.get("id") or 0,
+                                "expected_version": i["version"],
+                                "reason": f"PR#{p['number']} green 무보고 — 기계적 승격"
+                                          "(review). 완료 보고는 승격 후에도 유효"})
+                continue
         # pr_no_checks(규칙표 §4): 확인된 checks 0건([]) PR만 판정 대상 — 유효 리뷰
         # 판정이 있으면 그 판정을 따르고(approve→병합 후보, request-changes→review-fix),
         # 무판정이면 리뷰 요청. 기존은 무응답(needs-merge 오표기)이었다.
@@ -1215,16 +1283,25 @@ def decide(snap):
             continue
         att = i.get("execution_attempt") or 0
         emarker = f"[evidence-rejected a{att}]"
-        if _probe_marker(i, emarker):
-            continue
         has_reject = any("done 증거 없음" in (c.get("body") or "")
                          for c in (i.get("comments") or [])
                          if c.get("author") == "tt-server")
-        if has_reject and _evidence_unresolved(i):
-            actions.append({"agent": "probe", "issue": i["id"], "action": "review-note",
-                            "marker": emarker, "attempt": att, "cycle_id": snap.get("cycle_id"),
-                            "reason": f"done 거부(증거 없음/실패) — assignee 재제출 요청 "
-                                      f"(계약 v2 3단계 보고, tt done {i['id']} --report)"})
+        ev_open = has_reject and _evidence_unresolved(i)
+        # 반복 사건 억제(§6): 재제출 요청이 N회차면 사람 통보 후 스킵 —
+        # 병합 후 무보고 독려→needs-human 경로(JXYS 항목 4). 집계는 현재
+        # 회차 마커 dedup보다 먼저 — 마커가 곧 dedup이 되어 카운터가 멈춘다.
+        sup_ev, since_ev = _suppressed(i, "evidence_rejected", i["id"])
+        if ev_open and not sup_ev:
+            n_ev = failure_rules.suppress_n()
+            if n_ev and _repeat_count(i, r"\[evidence-rejected a\d+\]", since_ev) >= n_ev:
+                _escalate(actions, i, "evidence_rejected", i["id"], n_ev)
+                continue
+        if _probe_marker(i, emarker) or not ev_open or sup_ev:
+            continue
+        actions.append({"agent": "probe", "issue": i["id"], "action": "review-note",
+                        "marker": emarker, "attempt": att, "cycle_id": snap.get("cycle_id"),
+                        "reason": f"done 거부(증거 없음/실패) — assignee 재제출 요청 "
+                                  f"(계약 v2 3단계 보고, tt done {i['id']} --report)"})
     # ⑥ C1 unknown 그림자(gate-failure-rules.md §5.1/§7) — 규칙표 어느 행에도
     # 매칭되지 않는 tt-server 실패 기록: 판단기 rank 제안(shadow — 동작 불변, 로그만,
     # 카드당 최신 1건). 사람이 로그를 검토해 표에 행을 추가하는 것이 유일한 반영 경로.
@@ -1702,6 +1779,70 @@ def execute(url, act):
         api(url, f"/issues/{act['issue']}/comments", "POST",
             {"author": "probe", "body": f"{act['marker']} PR#{act['pr']} CI green — "
                                         f"리뷰 요청 → {agent}" + (f" (dispatch#{did})" if did else "")})
+        return
+    if kind == "submit-remind":
+        # JXYS 2 — green 무보고 독려 1회. receive_mode=relay(기본)면 멘션이 닿지
+        # 않으므로 워치독 다이제스트(보드)에 릴레이 플래그.
+        cur = api(url, f"/issues/{act['issue']}")
+        marker = act.get("marker") or ""
+        if any(marker in (c.get("body") or "") for c in (cur.get("comments") or [])
+               if c.get("author") == "probe"):
+            return
+        who = cur.get("assignee") or ""
+        api(url, f"/issues/{act['issue']}/comments", "POST",
+            {"author": "probe",
+             "body": f"{marker} @{who} PR#{act['pr']} CI green — 완료 보고 제출"
+                     "(tt done --report)이 review 진입. 무반응 시 타이머 경과 후 "
+                     "자동 승격됩니다(점진 push는 head 변경으로 타이머 리셋)."})
+        agents = [a for a in api(url, "/agents") or []]
+        if _relay_timer_s(who, agents) >= 6 * 3600:
+            api(url, "/messages", "POST",
+                {"author": "probe",
+                 "body": (f"@{who} " if who else "")
+                         + f"[submit-remind] 카드 {act['issue']} PR#{act['pr']} — "
+                           "CI green 완료 보고 제출 요망(독려: 자동 승격 예정)"})
+        return
+    if kind == "submission-adopt":
+        # JXYS 3 — 무반응 승격: in_progress → review. 완료(done)는 보고 의존 유지.
+        cur = api(url, f"/issues/{act['issue']}")
+        marker = act.get("marker") or ""
+        if any(marker in (c.get("body") or "") for c in (cur.get("comments") or [])
+               if c.get("author") == "probe"):
+            return
+        # 실행 직전 재확인 — decide 이후 상태가 바뀌었으면 폐기
+        if cur.get("state") != "in_progress" \
+                or (cur.get("execution_attempt") or 0) != (act.get("att") or 0) \
+                or _lease_held(cur) or cur.get("waiting_for") == "human":
+            return
+        try:
+            _dfx = api(url, f"/issues/{act['issue']}/dispatches") or []
+        except Exception:
+            _dfx = []
+        if any(isinstance(x, dict) and x.get("run_state") in _ACTIVE_RUN_STATES
+               for x in _dfx):
+            return
+        _rmdt = _iso(act.get("remind_ts") or "")
+        if _rmdt and any((x.get("author") or "") not in _RELAY_OBSERVERS
+                         and not str(x.get("author") or "").startswith("runner")
+                         and _comment_after(x, _rmdt, act.get("remind_id") or 0)
+                         for x in (cur.get("comments") or [])):
+            return  # decide 이후 응답·활동 — 승격 취소
+        if act.get("repo") and act.get("pr") and \
+                _gh_pr_head(act.get("repo"), act.get("pr")) != \
+                (act.get("head_sha") or "")[:8]:
+            return  # 실제 head 변경 — 타이머 리셋이므로 승격 폐기
+        try:
+            api(url, f"/issues/{act['issue']}", "PATCH",
+                {"state": "review",
+                 "expected_version": act.get("expected_version")
+                 or cur.get("version")})
+        except Exception:
+            return  # CAS 경합 — 다음 사이클 재판정
+        api(url, f"/issues/{act['issue']}/comments", "POST",
+            {"author": "probe",
+             "body": f"{marker} 기계적 승격 — green 무보고 독려 후 무반응"
+                     "(타이머 경과, head 불변). in_progress → review. "
+                     "완료 보고는 승격 후에도 유효 — 병합 verify는 유효 보고 필요"})
         return
     if kind == "review-fix-relay":
         # BG97 — [fix-stall] 소비: 위임 후 미실행 정체의 원 워커 재발령 1회.
