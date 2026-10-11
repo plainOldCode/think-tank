@@ -346,7 +346,12 @@ def _probe_marker(i, marker):
 
 # 12MZ reviewer_session_failed — 판정 없는 리뷰 정체(W S3C 실측: codex 세션이
 # dispatch 후 스트림 오류로 사망 → review-req 마커 dedup에 걸려 영구 정체).
-REVIEW_RETRY_MAX = 3  # (사유,pr,sha) 카운터 한도 — 도달 시 needs-human 에스컬레이션
+REVIEW_RETRY_MAX = 3
+# BG97 relay 관측자 — 이 author들의 코멘트는 '활동'으로 세지 않는다(관측·시스템 기록).
+# runner 계열(runner@host)도 활동에서 제외한다 — 세션 수명 관측(queued/done/failed/
+# STALL-killed)일 뿐 워커 진행 증거가 아니므로, 실패 기록 하나가 무반응 양도를
+# 영구 차단해선 안 된다(리뷰 R5).
+_RELAY_OBSERVERS = {"probe", "tt-embedding-daemon", "tt-server", "board"}  # (사유,pr,sha) 카운터 한도 — 도달 시 needs-human 에스컬레이션
 _RUNNER_FAIL_RE = re.compile(r"runner:\S+ dispatch#(\d+) failed exit=[1-9]")
 _DISPATCH_ID_RE = re.compile(r"\(dispatch#(\d+)\)")
 
@@ -503,6 +508,91 @@ def _repeat_count(i, regex, since_id=0):
     return sum(1 for c in (i.get("comments") or [])
                if c.get("author") == "probe" and (c.get("id") or 0) > since_id
                and re.search(regex, c.get("body") or ""))
+
+
+def _gh_pr_head(repo, pr_no):
+    """실행 직전 실제 PR head(sha8) — 카드 CAS는 GitHub push를 못 본다(리뷰 R3).
+
+    조회 실패는 None — 호출부는 폐기한다(오작동보다 침묵)."""
+    try:
+        # -q 필터는 원문 sha를 출력하므로 json.loads가 깨진다 — JSON 객체로 읽는다.
+        h = gh_json("pr", "view", str(pr_no), "--repo",
+                    repo or REPO_CARDS.get("think-tank", ""), "--json", "headRefOid")
+        return (str((h or {}).get("headRefOid") or "").strip()[:8]) or None
+    except Exception:
+        return None
+
+
+def _comment_after(x, dt, mid=0):
+    """(ts,id) 순서 판별 — DB 시각이 초 단위라 동초 접수도 id로 구분한다(리뷰 R2)."""
+    t = _iso(_comment_ts(x)) if dt else None
+    if t is None:
+        return False
+    if t > dt:
+        return True
+    if t == dt:
+        return (x.get("id") or 0) > (mid or 0)
+    return False
+
+
+def _iso(ts):
+    try:
+        return datetime.fromisoformat(ts)
+    except (ValueError, TypeError):
+        return None
+
+
+def _fix_stall_fields(body):
+    """데몬 [fix-stall] 첫 행의 key=value 필드 — BG97 소비 입력."""
+    m = re.match(r"^\[fix-stall\]\s+(.*)$", (body or "").split("\n", 1)[0])
+    if not m:
+        return None
+    out = {}
+    for tok in m.group(1).split():
+        if "=" in tok:
+            k, v = tok.split("=", 1)
+            out[k] = v
+    return out or None
+
+
+def _relay_timer_s(assignee, agents):
+    """무반응 양도 타이머(초) — receive_mode: hook 1h / relay(기본) 6h.
+
+    watcher 모드는 선언 주기×3인데 주기 필드가 아직 없어(RQRT) relay 기본값을
+    쓴다. 미선언 에이전트는 relay 기본값(카드 정책) — receive_mode 컬럼이
+    생기면 자동 반영."""
+    mode = ""
+    for a in agents or []:
+        if a.get("name") == assignee:
+            mode = (a.get("receive_mode") or "").strip()
+            break
+    return int({"hook": 1.0, "relay": 6.0}.get(mode, 6.0) * 3600)
+
+
+def _lease_held(i, now=None):
+    """유효 임대 보유 여부 — lease_expires가 now(기본 실시간) 이후면 활동 중.
+
+    dispatch는 임대를 만들지 않고(라우터 summary: Never changes issue state)
+    claim만 만들므로, 이 가드는 '수령해 일하는 중' 카드만 막는다(Q05B claude 등
+    busy_agents 미집계 로컬 워커 포함, 리뷰 R2)."""
+    lex = i.get("lease_expires") or ""
+    if not lex:
+        return False
+    try:
+        lt = datetime.fromisoformat(lex)
+    except ValueError:
+        return False
+    if now:
+        try:
+            nt = datetime.fromisoformat(now)
+        except ValueError:
+            return False
+    else:
+        nt = datetime.now(lt.tzinfo) if lt.tzinfo else datetime.now()
+    try:
+        return nt < lt
+    except TypeError:  # aware/naive 혼합(이형 입력) — 보수적으로 활동 중으로 본다
+        return True
 
 
 def _escalate(actions, i, code, scope, count):
@@ -989,6 +1079,120 @@ def decide(snap):
                 f"review-note:{reason}", cycle_id=snap.get("cycle_id"))
         actions.append({"agent": "probe", "issue": i["id"], "action": "review-note",
                         "reason": f"{reason} — 사람 판단 대기"})
+
+    # ②b BG97(M4MGV3B7) — 재작업 전달 보장. 데몬 [fix-stall] 소비(원 워커 재발령
+    # 1회 재시도)와 relay 마커 무반응 양도(todo 회귀). dedup은 (사유,pr,sha,attempt) —
+    # docs/embedding-daemon-design.md §2 소비 계약. 소비자 재확인 의무(§2): 마커의
+    # PR·head·attempt가 현재값과 일치할 때만 유효 — 과거 이벤트를 현재 회차로
+    # 재태깅하지 않는다(리뷰 R1).
+    for p in snap.get("prs") or []:
+        iid = pr_card_id(p)
+        i = by_id.get(iid) if iid else None
+        if not iid or i is None or i["state"] in ("done", "cancelled"):
+            continue
+        pr_no, sha8 = p["number"], (p.get("head_sha") or "")[:8]
+        pr_repo = p.get("repo") or REPO_CARDS.get("think-tank", "")
+        comments = i.get("comments") or []
+        att = i.get("execution_attempt") or 0
+        rmarker = f"[rework-relay #{pr_no}/{sha8} a{att}]"
+        # 1) [fix-stall] 소비 — 위임 후 미실행 정체. 같은 (pr,sha,attempt) 재시도 1회.
+        #    유효 임대는 활동 중 — 재발령 금지(리뷰 R2: 임대 검사는 양쪽 액션 공통 자격).
+        if i["state"] == "review" and not i.get("busy_agents") and \
+                not _lease_held(i, now) and not _probe_marker(i, rmarker):
+            stalls = [c for c in comments if c.get("author") == "tt-embedding-daemon"
+                      and (c.get("body") or "").startswith("[fix-stall]")]
+            for c in reversed(stalls):
+                fs = _fix_stall_fields(c.get("body") or "")
+                if not fs or fs.get("src_kind") != "review-fix":
+                    continue
+                if fs.get("src_pr") != str(pr_no) or fs.get("src_head") != sha8:
+                    continue  # 과거 head의 정체 — 현재 head는 재판정됐으므로 무시
+                if str(fs.get("attempt") or "") != str(att):
+                    continue  # 과거 회차의 정체 — 현재 회차로 재태깅 금지(리뷰 R1)
+                _sdt = _comment_ts(c)
+                _sdtv = _iso(_sdt)
+                _sid = c.get("id") or 0
+                if _sdtv and any(
+                        (x.get("author") or "") not in _RELAY_OBSERVERS
+                        and not str(x.get("author") or "").startswith("runner")
+                        and _comment_after(x, _sdtv, _sid)
+                        for x in comments):
+                    break  # stall 뒤 워커 응답·진행 — 이미 해소된 정체(리뷰 R2)
+                # stall 이후 최신 판정이 approve면 재작업은 이미 통과 — 재발령 금지(리뷰 R2)
+                _revs = ({reviewer, i.get("reviewer")}
+                         | _requested_reviewers(i, pr_no, sha8)) - {None, ""}
+                if review_verdict(comments, _revs, pr_no, sha8) == "approve":
+                    break
+                actions.append({"agent": "probe", "issue": iid, "action": "review-fix-relay",
+                                "pr": pr_no, "repo": pr_repo,
+                                "branch": p.get("branch", ""),
+                                "head_sha": p.get("head_sha", ""), "att": att,
+                                "stall_ts": _sdt, "stall_id": _sid,
+                                "reason": f"PR#{pr_no} fix 위임 미실행 정체 — 원 워커 재발령"})
+                break
+            if any(a["issue"] == iid and a["action"] == "review-fix-relay" for a in actions):
+                continue  # 이번 회차 재발령 중 — 양도 판정은 다음 사이클
+        # 2) 무반응 양도 — 현재 (pr,head,attempt)의 relay 마커만 소비한다(리뷰 R1).
+        #    과거 회차·head의 relay는 새 워커를 해치므로 회귀 입력에서 제외.
+        relays = [c for c in comments if c.get("author") == "probe"
+                  and "[rework-relay #" in (c.get("body") or "")]
+        if not relays or i.get("busy_agents"):
+            continue
+        rc = None
+        for c in reversed(relays):
+            m = re.search(r"\[rework-relay #(\d+)/([0-9a-f]{8}) a(\d+)\]",
+                          c.get("body") or "")
+            if m and (int(m.group(1)), m.group(2).lower(), int(m.group(3))) == \
+                    (pr_no, sha8, att):
+                rc = c
+                break
+        if rc is None:
+            continue  # 현재 작업의 relay 없음 — 과거 이벤트로 회귀 금지(리뷰 R1)
+        # 재작업 가능한 state만 — blocked(사람 판단 대기)는 todo로 되돌리지 않는다(리뷰 R2)
+        if i["state"] != "review" or i.get("waiting_for") == "human":
+            continue
+        rpr, rsha, ratt = pr_no, sha8, att
+        if _probe_marker(i, f"[rework-fallback a{ratt}]"):
+            continue
+        # §6 공용 억제 계약 — 해제 마커 이후만 재집계, 사람 [unblocked]로 재개 가능(리뷰 R6)
+        sup, since_id = _suppressed(i, "rework_relay", f"#{rpr}/{rsha}")
+        if sup:
+            continue
+        n = failure_rules.suppress_n()
+        if n and _repeat_count(i, r"\[rework-fallback a\d+\]", since_id) >= n:
+            _escalate(actions, i, "rework_relay", f"#{rpr}/{rsha}", n)
+            continue
+        rts = _comment_ts(rc)
+        if _lease_held(i, now):
+            continue  # 유효 임대 = 활동 중(Q05B claude 케이스) — 무반응이 아님
+        try:
+            rdt = datetime.fromisoformat(rts)
+        except ValueError:
+            continue
+        if (datetime.fromisoformat(now) - rdt).total_seconds() <= \
+                _relay_timer_s(i.get("assignee") or "", agents):
+            continue
+        # head 불변 — relay 이후 같은 PR의 다른 head 위임·요청 마커가 있으면 회귀 금지
+        if any(x.get("author") == "probe" and _comment_after(x, rdt, rc.get("id") or 0)
+               and f"#{rpr}/" in (x.get("body") or "")
+               and rsha not in (x.get("body") or "")
+               and ("[review-fix #" in (x.get("body") or "")
+                    or "[review-req #" in (x.get("body") or "")
+                    or "[ci-fix a" in (x.get("body") or ""))
+               for x in comments):
+            continue
+        # 무활동 — relay 이후 관측자(probe·데몬·서버·보드·runner 계열) 외 코멘트만
+        # 활동으로 센다. runner 기록은 세션 수명 관측일 뿐 워커 진행 증거가 아니다(리뷰 R5).
+        if any((x.get("author") or "") not in _RELAY_OBSERVERS
+               and not str(x.get("author") or "").startswith("runner")
+               and _comment_after(x, rdt, rc.get("id") or 0)
+               for x in comments):
+            continue
+        actions.append({"agent": "probe", "issue": iid, "action": "rework-fallback",
+                        "pr": rpr, "repo": pr_repo, "head_sha": p.get("head_sha", ""),
+                        "relay_ts": rts, "relay_id": rc.get("id") or 0,
+                        "att": ratt, "marker": f"[rework-fallback a{ratt}]",
+                        "reason": f"PR#{rpr} relay 무반응 — assignee 해제+todo 회귀"})
 
     # ③ 예산 소진 카드 — dispatch 대신 needs-human (auto 풀 전수)
     for i in _auto_todo(issues, claimed):
@@ -1499,6 +1703,160 @@ def execute(url, act):
             {"author": "probe", "body": f"{act['marker']} PR#{act['pr']} CI green — "
                                         f"리뷰 요청 → {agent}" + (f" (dispatch#{did})" if did else "")})
         return
+    if kind == "review-fix-relay":
+        # BG97 — [fix-stall] 소비: 위임 후 미실행 정체의 원 워커 재발령 1회.
+        # dedup 마커 [rework-relay #pr/sha a{att}]는 성공·실패 모두 남겨
+        # 같은 (사유,pr,sha,attempt) 재시도를 막는다(실패면 사람 릴레이로 종결).
+        cur = api(url, f"/issues/{act['issue']}")
+        att = act.get("att") or cur.get("execution_attempt") or 0
+        rmarker = f"[rework-relay #{act['pr']}/{(act.get('head_sha') or '')[:8]} a{att}]"
+        if any(rmarker in (c.get("body") or "") for c in (cur.get("comments") or [])
+               if c.get("author") == "probe"):
+            return
+        # R3 — decide 이후 현재 상태 재확인: 회차 변화·종결·임대·blocked·승인·
+        # 워커 응답이 하나라도 있으면 폐기(실행 직전 자격 재검증).
+        if cur.get("state") in ("done", "cancelled") \
+                or (cur.get("execution_attempt") or 0) != (act.get("att") or 0) \
+                or cur.get("state") != "review" or cur.get("waiting_for") == "human" \
+                or _lease_held(cur):
+            return
+        _revs = ({os.environ.get("TT_REVIEW_AGENT", "").strip(), cur.get("reviewer")}
+                 | _requested_reviewers(cur, act["pr"], (act.get("head_sha") or "")[:8])
+                 ) - {None, ""}
+        if review_verdict(cur.get("comments") or [], _revs, act["pr"],
+                          (act.get("head_sha") or "")[:8]) == "approve":
+            return  # stall 뒤 승인 — 재작업 대상 아님
+        _sdtv = _iso(act.get("stall_ts") or "")
+        if _sdtv and any(
+                (x.get("author") or "") not in _RELAY_OBSERVERS
+                and not str(x.get("author") or "").startswith("runner")
+                and _comment_after(x, _sdtv, act.get("stall_id") or 0)
+                for x in (cur.get("comments") or [])):
+            return  # decide 이후 워커 응답·진행 — 폐기(R2/R3)
+        if _gh_pr_head(act.get("repo"), act["pr"]) != (act.get("head_sha") or "")[:8]:
+            return  # 실제 PR head 변경·조회 불가 — 구 head 대상 스폰 금지(R3)
+        _dfix_all = api(url, f"/issues/{act['issue']}/dispatches") or [] if True else []
+        assignee = cur.get("assignee") or ""
+        agents = [a for a in api(url, "/agents") or []
+                  if a.get("enabled") and a.get("base_url")]
+        # 전달 사다리(리뷰 R4) — 정확명 우선, hook 전달 실패 시 실행 가능한
+        # 같은 가족 수신처 재시도, 전부 실패면 사람 릴레이로 종결.
+        target = _resolve_executor(assignee, agents)
+        ladder = []
+        if target and target not in NON_EXECUTORS:
+            ladder.append(target)
+            fam = agent_family(target)
+            if fam:
+                ladder += [a.get("name") for a in agents
+                           if a.get("name") != target
+                           and a.get("name") not in NON_EXECUTORS
+                           and agent_family(a.get("name")) == fam]
+        ok = False
+        _dfix = []
+        if ladder:
+            try:
+                _dfix = api(url, f"/issues/{act['issue']}/dispatches") or []
+            except Exception:
+                _dfix = []  # 조회 실패 fail-open — decide 가드가 1차 방어(JWW0)
+        # 후보별이 아니라 카드 전체 가드 — 다른 실행자의 수동 dispatch도 동시 스폰 금지(R3)
+        if _dfix and ladder and any(isinstance(x, dict)
+                                    and x.get("run_state") in _ACTIVE_RUN_STATES
+                                    for x in _dfix):
+            return
+        for cand in ladder:
+            if any(isinstance(x, dict) and x.get("agent") == cand
+                   and x.get("run_state") in _ACTIVE_RUN_STATES for x in _dfix):
+                if cand == target:
+                    return  # 진행 중 — 다음 사이클(JWW0)
+                continue  # 가족 후보 진행 중 — 다음 후보
+            try:
+                _resp = api(url, f"/issues/{act['issue']}/dispatch", "POST",
+                            {"agent": cand,
+                             "message": (f"[auto review-fix] PR #{act['pr']} 리뷰 request-changes(재발령) — "
+                                         f"리뷰 코멘트(PR/카드)를 읽고 같은 브랜치 "
+                                         f"{act.get('branch', '')} 위에서 수정 커밋. "
+                                         f"head {(act.get('head_sha') or '')[:8]}. "
+                                         "push하면 probe가 재리뷰 요청.")})
+            except Exception:
+                continue  # 전달 실패 — 가족 후보로, 없으면 사람 릴레이(R4)
+            if isinstance(_resp, dict) and _resp.get("status") == "error":
+                continue  # hook 전달 실패(HTTP 5xx·연결 오류) — 성공으로 기록하지 않는다(R4)
+            ok = True
+            api(url, f"/issues/{act['issue']}/comments", "POST",
+                {"author": "probe",
+                 "body": f"{rmarker} 원 워커 재발령 — {cand} 세션 실행 중"
+                         + ("" if cand == target else "(가족 대행)")})
+            break
+        if not ok:
+            api(url, f"/issues/{act['issue']}/comments", "POST",
+                {"author": "probe",
+                 "body": f"{rmarker} 원 워커 재발령 불가(assignee: {assignee or '없음'}) — "
+                         "사람 세션 전달 요망"})
+            api(url, "/messages", "POST",
+                {"author": "probe",
+                 "body": (f"@{assignee} " if assignee else "")
+                         + f"[rework-relay] 카드 {act['issue']} PR#{act['pr']} — 재작업 전달 필요"
+                         "(dispatch 미실행 정체[fix-stall], 사람이 세션에 전달)"})
+        return
+    if kind == "rework-fallback":
+        # BG97 2순위 — relay 무반응 양도: assignee 해제+todo 회귀(판정 전문은 코멘트 보존).
+        cur = api(url, f"/issues/{act['issue']}")
+        marker = act.get("marker") or ""
+        if any(marker in (c.get("body") or "") for c in (cur.get("comments") or [])
+               if c.get("author") == "probe"):
+            return
+        # R3 — decide 이후 현재 상태 재확인: 새 워커가 수령했다면(회차 승격·state·
+        # 임대·진행 dispatch) 양도하지 않는다. 판정 대상과 현재 값의 일치 필수.
+        if cur.get("state") != "review" \
+                or (cur.get("execution_attempt") or 0) != (act.get("att") or 0) \
+                or cur.get("waiting_for") == "human" or _lease_held(cur):
+            return
+        # busy_agents는 스냅샷 파생값(GET에 없음) — 실제 dispatch 상태로 재확인(R3)
+        try:
+            _dfb = api(url, f"/issues/{act['issue']}/dispatches") or []
+        except Exception:
+            _dfb = []
+        if any(isinstance(x, dict) and x.get("run_state") in _ACTIVE_RUN_STATES
+               for x in _dfb):
+            return
+        _rdtv = _iso(act.get("relay_ts") or "")
+        _rid = act.get("relay_id") or 0
+        _rcmts = cur.get("comments") or []
+        if _rdtv and any(
+                (x.get("author") or "") not in _RELAY_OBSERVERS
+                and not str(x.get("author") or "").startswith("runner")
+                and _comment_after(x, _rdtv, _rid)
+                for x in _rcmts):
+            return  # decide 이후 워커 응답·활동 — 양도 취소(R3)
+        # 실제 head 마커 변화 — relay 시 head와 다른 probe 마커가 그 사이 생겼으면 회귀 금지
+        _rsha = (act.get("head_sha") or "")[:8]
+        if _rsha and any(x.get("author") == "probe" and _comment_ts(x)
+                         and _iso(_comment_ts(x)) is not None and _rdtv
+                         and _iso(_comment_ts(x)) > _rdtv
+                         and f"#{act.get('pr')}/" in (x.get("body") or "")
+                         and _rsha not in (x.get("body") or "")
+                         and ("[review-fix #" in (x.get("body") or "")
+                              or "[review-req #" in (x.get("body") or "")
+                              or "[ci-fix a" in (x.get("body") or ""))
+                         for x in _rcmts):
+            return
+        if act.get("repo") and act.get("pr") and \
+                _gh_pr_head(act.get("repo"), act.get("pr")) != \
+                (act.get("head_sha") or "")[:8]:
+            return  # 실제 PR head 변경·조회 불가 — 회귀 폐기(R3)
+        try:
+            # CAS — fetch·PATCH 사이 경합은 서버 409로 거절, 다음 사이클 재판정
+            labels = sorted(set(cur.get("labels") or []) | {"auto"})  # 자동 풀 재수령 경로(R7)
+            api(url, f"/issues/{act['issue']}", "PATCH",
+                {"assignee": "", "state": "todo", "labels": labels,
+                 "expected_version": cur.get("version")})
+        except Exception:
+            return
+        api(url, f"/issues/{act['issue']}/comments", "POST",
+            {"author": "probe",
+             "body": f"{marker} relay 무반응(타이머 경과, head 불변) — assignee 해제+todo 회귀. "
+                     "판정 전문은 코멘트 보존 — 누구나 재수령 가능"})
+        return
     if kind == "review-fix":
         # 리뷰 게이트 2단계 — request-changes: 카드 review 반납 + 배정 에이전트에 수정 위임
         cur = api(url, f"/issues/{act['issue']}")
@@ -1518,11 +1876,21 @@ def execute(url, act):
                       if a.get("enabled") and a.get("base_url")]
             target = _resolve_executor(assignee, agents)
             msg = (f"[auto review-fix] PR #{act['pr']} 리뷰 request-changes — 리뷰 코멘트(PR/카드)를 "
-                   f"읽고 같은 브랜치 {act.get('branch', '')} 위에서 수정 커밋. push하면 probe가 재리뷰 요청.")
+                   f"읽고 같은 브랜치 {act.get('branch', '')} 위에서 수정 커밋. "
+                   f"head {(act.get('head_sha') or '')[:8]}. push하면 probe가 재리뷰 요청.")
             if target is None:
+                _ratt = cur.get("execution_attempt") or 0
+                _rm = f"[rework-relay #{act['pr']}/{(act.get('head_sha') or '')[:8]} a{_ratt}]"
                 api(url, f"/issues/{act['issue']}/comments", "POST",
                     {"author": "probe", "body": f"{act['marker']} 수정 dispatch 실패"
-                                                f"(에이전트 미등록: {assignee}) — 사람 판단 대기"})
+                                                f"(에이전트 미등록: {assignee}) — 사람 판단 대기"
+                                                f"\n{_rm} assignee={assignee} receive_mode=relay"
+                                                " — 세션 전달 요망"})
+                api(url, "/messages", "POST",
+                    {"author": "probe",
+                     "body": (f"@{assignee} " if assignee else "")
+                             + f"[rework-relay] 카드 {act['issue']} PR#{act['pr']} — "
+                               "재작업 전달 필요(등록 에이전트 없음, 사람이 세션에 전달)"})
             elif target in NON_EXECUTORS:
                 # PXCJ — 어댑터·리드온리는 코드 작업 불가: dispatch 낭비 대신 사람 통보.
                 # 원 워커 돌려주기 등 재라우팅은 M4MGV3B7-BG97 영역.
@@ -1540,9 +1908,16 @@ def execute(url, act):
                        and x.get("run_state") in _ACTIVE_RUN_STATES for x in _dfix):
                     return
                 try:
-                    api(url, f"/issues/{act['issue']}/dispatch", "POST",
-                        {"agent": target, "message": msg})
-                    delegated = True
+                    _resp = api(url, f"/issues/{act['issue']}/dispatch", "POST",
+                                {"agent": target, "message": msg})
+                    # R4 — hook 전달 실패 레코드(status=error)를 위임 성공으로 기록하지 않는다
+                    if isinstance(_resp, dict) and _resp.get("status") == "error":
+                        api(url, f"/issues/{act['issue']}/comments", "POST",
+                            {"author": "probe",
+                             "body": f"{act['marker']} 수정 dispatch 실패(hook: "
+                                     f"{str(_resp.get('detail') or '전달 오류')[:80]}) — 사람 판단 대기"})
+                    else:
+                        delegated = True
                 except Exception as e:
                     api(url, f"/issues/{act['issue']}/comments", "POST",
                         {"author": "probe", "body": f"{act['marker']} 수정 dispatch 실패({str(e)[:80]}) — "
