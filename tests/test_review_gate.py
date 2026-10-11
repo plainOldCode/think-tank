@@ -135,8 +135,9 @@ def test_review_verdict는_최신_판정_우선():
 class Rec:
     """api 더블 — GET 카드 반환, dispatch/코멘트 기록, PATCH 기록."""
 
-    def __init__(self, card, dispatch_fail=False):
+    def __init__(self, card, dispatch_fail=False, agents=()):
         self.card = card
+        self.agents = list(agents)
         self.dispatches = []
         self.commented = []
         self.patched = []
@@ -144,6 +145,8 @@ class Rec:
         self.fail = dispatch_fail
 
     def __call__(self, url, path, method="GET", body=None):
+        if method == "GET" and path.endswith("/agents"):
+            return [dict(a) for a in self.agents]
         if method == "GET":
             return dict(self.card)
         if method == "PATCH":
@@ -198,7 +201,7 @@ def _review_fix_act():
 def test_execute_review_fix는_review반납_수정_dispatch(gate_on, monkeypatch):
     card = {"id": "M428RMBY-XC0K", "state": "in_progress", "version": 5,
             "assignee": "a@t", "comments": []}
-    rec = Rec(card)
+    rec = Rec(card, agents=[{"name": "a@t", "enabled": True, "base_url": "http://x"}])
     monkeypatch.setattr(probe.core, "api", rec)
     probe.core.execute("u", _review_fix_act())
     assert {"version": 5, "state": "review"} in rec.patched
@@ -206,6 +209,54 @@ def test_execute_review_fix는_review반납_수정_dispatch(gate_on, monkeypatch
     assert "request-changes" in rec.dispatches[0]["message"]
     assert any(f"[review-fix #9/{SHA8}]" in c["body"]
                for c in rec.commented if c.get("author") == "probe")
+
+
+# --- R4(6XKC): review-fix dispatch 수신자 가족 해석 — fix_dispatch_404 제거 ---
+
+def test_execute_review_fix는_식별코드_assignee를_등록명으로_dispatch한다(gate_on, monkeypatch):
+    """acceptance ① — assignee=skshim@tp-13 → 등록 에이전트 opencode-tp13."""
+    card = {"id": "M428RMBY-XC0K", "state": "in_progress", "version": 5,
+            "assignee": "skshim@tp-13", "comments": []}
+    rec = Rec(card, agents=[{"name": "opencode-tp13", "enabled": True,
+                             "base_url": "http://x"}])
+    monkeypatch.setattr(probe.core, "api", rec)
+    probe.core.execute("u", _review_fix_act())
+    assert rec.dispatches[0]["agent"] == "opencode-tp13"
+    assert {"version": 5, "state": "review"} in rec.patched
+
+
+def test_execute_review_fix는_정확명을_가족해석보다_우선한다(gate_on, monkeypatch):
+    card = {"id": "M428RMBY-XC0K", "state": "in_progress", "version": 5,
+            "assignee": "codex", "comments": []}
+    rec = Rec(card, agents=[{"name": "codex", "enabled": True, "base_url": "http://x"},
+                            {"name": "claude", "enabled": True, "base_url": "http://x"}])
+    monkeypatch.setattr(probe.core, "api", rec)
+    probe.core.execute("u", _review_fix_act())
+    assert rec.dispatches[0]["agent"] == "codex"
+
+
+def test_execute_review_fix는_해석실패시_사람통보로_종결한다(gate_on, monkeypatch):
+    """레지스트리에 가족이 없으면 dispatch 시도 없이 사람 통보(마커 유지 — 무음 반복 방지)."""
+    card = {"id": "M428RMBY-XC0K", "state": "in_progress", "version": 5,
+            "assignee": "skshim@tp-13", "comments": []}
+    rec = Rec(card, agents=[{"name": "claude", "enabled": True, "base_url": "http://x"}])
+    monkeypatch.setattr(probe.core, "api", rec)
+    probe.core.execute("u", _review_fix_act())
+    assert not rec.dispatches
+    assert any("에이전트 미등록: skshim@tp-13" in c["body"] and "사람 판단 대기" in c["body"]
+               for c in rec.commented)
+    assert {"version": 5, "state": "review"} in rec.patched
+
+
+def test_execute_review_fix는_비활성_에이전트로_해석하지_않는다(gate_on, monkeypatch):
+    card = {"id": "M428RMBY-XC0K", "state": "in_progress", "version": 5,
+            "assignee": "skshim@tp-13", "comments": []}
+    rec = Rec(card, agents=[{"name": "opencode-tp13", "enabled": False,
+                             "base_url": "http://x"}])
+    monkeypatch.setattr(probe.core, "api", rec)
+    probe.core.execute("u", _review_fix_act())
+    assert not rec.dispatches
+    assert any("에이전트 미등록" in c["body"] for c in rec.commented)
 
 
 def test_execute_review_fix_배정자없으면_사람판단_코멘트(gate_on, monkeypatch):
