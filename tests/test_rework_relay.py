@@ -108,6 +108,7 @@ def test_fix_stall을_소비해_원_워커를_재발령한다(monkeypatch):
     rec = Rec(card, agents=[{"name": "opencode-tp13", "enabled": True,
                              "base_url": "http://x"}])
     monkeypatch.setattr(probe_core, "api", rec)
+    monkeypatch.setattr(probe_core, "_gh_pr_head", lambda repo, n: SHA8)
     probe_core.execute("u", dict(r[0]))
     assert rec.dispatches[0]["agent"] == "opencode-tp13"
     assert any("[rework-relay #9/%s a1]" % SHA8 in (c.get("body") or "")
@@ -154,6 +155,7 @@ def test_relay_무반응_타이머_경과시_todo_회귀한다(monkeypatch):
     assert len(fb) == 1 and fb[0]["att"] == 1
     rec = Rec(card)
     monkeypatch.setattr(probe_core, "api", rec)
+    monkeypatch.setattr(probe_core, "_gh_pr_head", lambda repo, n: SHA8)
     probe_core.execute("u", dict(fb[0]))
     assert any(p.get("state") == "todo" and p.get("assignee") == ""
                for p in rec.patched)
@@ -233,9 +235,9 @@ def test_actual_head_change_without_a_probe_marker_blocks_fallback():
 def test_runner_failure_is_not_permanent_worker_activity():
     """R5 — runner 실패 기록은 워커 활동이 아니다 — 양도가 영구 차단되지 않는다."""
     card = _relayed_card(extra=[{
-        "author": "runner@m2max", "id": 9,
+        "author": "runner@host-a", "id": 9,
         "ts": "2026-10-04T10:00:00+0900",
-        "body": "runner:m2max dispatch#77 failed exit=1 session=dead",
+        "body": "runner:host-a dispatch#77 failed exit=1 session=dead",
     }])
     assert [a for a in _actions(card) if a["action"] == "rework-fallback"]
 
@@ -314,6 +316,7 @@ def test_real_api_hook_error_is_human_relay_not_executing(local_api, monkeypatch
     card = _make_card(local_api)
     _register(local_api, "opencode-exact", "http://localhost.invalid/exact")
     monkeypatch.setattr(service, "deliver", lambda *args: (500, ""))
+    monkeypatch.setattr(probe_core, "_gh_pr_head", lambda repo, n: None or SHA8)
     probe_core.execute("local", _relay_action(card))
     comments = local_api.get(f"/issues/{card['id']}").json()["comments"]
     relay = next(c["body"] for c in comments if c["author"] == "probe"
@@ -331,6 +334,7 @@ def test_exact_hook_failure_retries_an_available_family(local_api, monkeypatch):
         delivered.append(payload["agent"])
         return (500, "") if url.endswith("exact") else (200, "")
     monkeypatch.setattr(service, "deliver", deliver)
+    monkeypatch.setattr(probe_core, "_gh_pr_head", lambda repo, n: SHA8)
     probe_core.execute("local", _relay_action(card))
     assert delivered == ["opencode-exact", "opencode-other"], delivered
 
@@ -360,3 +364,39 @@ def test_human_unblock_resets_rework_relay_suppression():
                   "body": f"[unblocked (rework_relay, {scope})] retry allowed"}]
     card = _relayed_card(att=4, execution_attempt=4, extra=comments)
     assert [a for a in _actions(card) if a["action"] == "rework-fallback"]
+
+
+def test_gh_head_조회_성공시_relay가_실제_진행된다(monkeypatch):
+    """codex 재리뷰 — gh_json 파싱 경로 유지 + 성공 조회 시 dispatch 발생."""
+    card = _issue(comments=[
+        {"author": "probe", "id": 1, "ts": "2026-10-04T08:00:00+0900",
+         "body": f"{_fx_marker()} 위임"},
+        {"author": "tt-embedding-daemon", "id": 2, "ts": "2026-10-04T10:00:00+0900",
+         "body": f"[fix-stall] src_kind=review-fix src_att=- src_pr=9 src_head={SHA8} "
+                 "attempt=1 minutes=47 kind=no-progress — x"}],
+        assignee="opencode-tp13")
+    acts = dispatchd.decide(_snap([card], _pr()))
+    r = [a for a in acts if a["action"] == "review-fix-relay"]
+    assert len(r) == 1
+    rec = Rec(card, agents=[{"name": "opencode-tp13", "enabled": True,
+                             "base_url": "http://x"}])
+    monkeypatch.setattr(probe_core, "api", rec)
+    monkeypatch.setattr(probe_core, "gh_json",
+                        lambda *a: {"headRefOid": "b" * 40})  # CLI transport 모의
+    probe_core.execute("u", dict(r[0]))
+    assert rec.dispatches and rec.dispatches[0]["agent"] == "opencode-tp13"
+
+
+def test_gh_head_조회_실패시_폐기한다(monkeypatch):
+    card = _issue(comments=[
+        {"author": "probe", "id": 1, "ts": TS_RELAY,
+         "body": f"[rework-relay #9/{SHA8} a1] 원 워커 재발령 불가 — 사람 세션 전달 요망"}])
+    acts = dispatchd.decide(_snap([card], _pr()))
+    fb = [a for a in acts if a["action"] == "rework-fallback"]
+    assert len(fb) == 1
+    rec = Rec(card)
+    monkeypatch.setattr(probe_core, "api", rec)
+    monkeypatch.setattr(probe_core, "gh_json",
+                        lambda *a: (_ for _ in ()).throw(RuntimeError("gh 실패")))
+    probe_core.execute("u", dict(fb[0]))
+    assert not rec.patched  # 조회 불가 — 회귀 폐기
