@@ -55,17 +55,21 @@ async def lifespan(app: FastAPI):
     probe off·notify off 조합에서는 아무 것도 하지 않는다. 종료 순서는 기존
     on_shutdown LIFO 실행 순서와 동일: notify refs 감소 → probe stop.
     """
-    yield
-    entry = getattr(app.state, "notify_entry", None)
-    if entry is not None:
-        # 등록 삭제는 워커 본인이 한다(전송 중 종료 경계) — 여기선 참조만 감
-        with _notify_reg_lock:
-            entry["refs"] -= 1
-            if entry["refs"] <= 0:
-                entry["stop"].set()
-    stop = getattr(app.state, "probe_stop", None)
-    if stop is not None:
-        stop.set()
+    try:
+        yield
+    finally:
+        # 예외·취소 종료에서도 정리가 실행돼야 한다(리뷰 R2 PR#91) — 기존
+        # on_event("shutdown")은 _DefaultLifespan.__aexit__에서 보장했다.
+        entry = getattr(app.state, "notify_entry", None)
+        if entry is not None:
+            # 등록 삭제는 워커 본인이 한다(전송 중 종료 경계) — 여기선 참조만 감
+            with _notify_reg_lock:
+                entry["refs"] -= 1
+                if entry["refs"] <= 0:
+                    entry["stop"].set()
+        stop = getattr(app.state, "probe_stop", None)
+        if stop is not None:
+            stop.set()
 
 
 def create_app(db_path: str) -> FastAPI:
