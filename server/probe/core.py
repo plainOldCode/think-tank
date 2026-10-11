@@ -13,9 +13,11 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from datetime import datetime, timedelta
 
 import failure_rules
+import judge
 
 from service import REVIEW_CONTRACT
 import policy
@@ -597,6 +599,9 @@ def _age_min(now, updated):
         return None
 
 
+_C1_SEEN = {}  # C1 카드별 최신 판정 입력 해시(프로세스 내 dedup)
+
+
 def decide(snap):
     if not snap.get("auto"):
         return []
@@ -911,6 +916,7 @@ def decide(snap):
                     continue  # same head 재위임 금지 — 새 커밋(head 변경) 시에만 재판정
                 actions.append({"agent": "dispatchd", "issue": i["id"], "action": "ci-fix",
                                 "pr": p0["number"], "repo": p0.get("repo", ""),
+                                "cycle_id": snap.get("cycle_id"),
                                 "branch": p0.get("branch", ""), "head_sha": p0.get("head_sha", ""),
                                 "checks_failed": [c.get("name") or "?" for p3 in prs_for
                                                   for c in p3.get("checks") or []
@@ -932,6 +938,18 @@ def decide(snap):
             if sa:
                 actions.append(sa)
             reason = "PR 없음"
+        # C2(gate-failure-rules.md §5.2) — 라벨·repo 마커로 분류 불가(둘 다 없음/
+        # 충돌)일 때만 판단기 rank 제안(shadow — 동작 불변, 로그만). 규칙 우선.
+        _c2_labeled = bool({x.strip().lower() for x in (i.get("labels") or [])
+                            if isinstance(x, str)} & set(policy.LOW_RISK_LABELS))
+        _c2_repo = bool(card_repo(i))
+        # 규칙으로 분류 가능한 것은 '정확히 하나'일 때 — 둘 다 없음/충돌(둘 다 존재)만
+        # 판단기 rank 대상(§5.2, 리뷰 R6)
+        if _c2_labeled == _c2_repo:
+            judge.run_advisory("C2", {"card": i["id"], "input": {
+                "labels": i.get("labels"), "repo_marker": bool(card_repo(i)),
+                "title": i.get("title", "")}},
+                f"review-note:{reason}", cycle_id=snap.get("cycle_id"))
         actions.append({"agent": "probe", "issue": i["id"], "action": "review-note",
                         "reason": f"{reason} — 사람 판단 대기"})
 
@@ -963,9 +981,42 @@ def decide(snap):
                          if c.get("author") == "tt-server")
         if has_reject and _evidence_unresolved(i):
             actions.append({"agent": "probe", "issue": i["id"], "action": "review-note",
-                            "marker": emarker, "attempt": att,
+                            "marker": emarker, "attempt": att, "cycle_id": snap.get("cycle_id"),
                             "reason": f"done 거부(증거 없음/실패) — assignee 재제출 요청 "
                                       f"(계약 v2 3단계 보고, tt done {i['id']} --report)"})
+    # ⑥ C1 unknown 그림자(gate-failure-rules.md §5.1/§7) — 규칙표 어느 행에도
+    # 매칭되지 않는 tt-server 실패 기록: 판단기 rank 제안(shadow — 동작 불변, 로그만,
+    # 카드당 최신 1건). 사람이 로그를 검토해 표에 행을 추가하는 것이 유일한 반영 경로.
+    # 판단기 미구성이면 아무 일도 일어나지 않는다(규칙만 — 로그 접근도 없음, 리뷰 R1).
+    if judge.get_judge() is not None:
+        for i in issues:
+            if i.get("archived"):
+                continue
+            latest = None  # (ts, id, body) — 카드당 최신 미매칭 사건(리뷰 R7)
+            for c in (i.get("comments") or []):
+                if c.get("author") != "tt-server":
+                    continue
+                body = c.get("body") or ""
+                if body.startswith(("done 증거 없음", "보고 접수")):
+                    continue  # 규칙표 행 존재(evidence_rejected) — C1 아님
+                if "verify 422" in body:
+                    continue  # verify_422 정식 행의 기계적 표식만 제외(리뷰 R8)
+                if not re.search(r"실패|오류|거부|거절|4\d\d", body):
+                    continue
+                k = (c.get("ts") or c.get("created_at") or "", c.get("id") or 0)
+                if latest is None or k > latest[:2]:
+                    latest = (k[0], k[1], body)
+            if latest is None:
+                continue
+            view = {"card": i["id"], "input": {"comment": latest[2][:800],
+                                               "state": i["state"]}}
+            ih = judge.input_hash("C1", view)
+            if _C1_SEEN.get(i["id"]) == ih:
+                continue  # 같은 입력 재판정 방지(프로세스 내 dedup)
+            _C1_SEEN[i["id"]] = ih
+            if judge.JudgeLog().seen(i["id"], "C1", ih):
+                continue  # 로그에 이미 판정된 입력(재시작 후에도 dedup)
+            judge.run_advisory("C1", view, "unknown", cycle_id=snap.get("cycle_id"))
     return actions
 
 
@@ -1267,11 +1318,25 @@ def execute(url, act):
             return  # 경합 방어 — decide 판정 후 재확인
         agent = os.environ.get("TT_CI_FIX_AGENT", "kanban-adapter")
         target = os.environ.get("TT_CI_FIX_TARGET", "agy")
+        # S1(§5.3) — 실패 요약 annotate(advisory): 판단기 있으면 dispatch 본문에 첨부,
+        # 없으면 본문 불변. 판정·위임 여부는 규칙이 이미 정했다.
+        _s1 = judge.run_advisory("S1", {"card": act["issue"],
+                                        "pr": f"{act.get('repo','')}#{act['pr']}"
+                                              f"@{(act.get('head_sha') or '')[:8]}",
+                                        "input": {"checks_failed": act.get("checks_failed") or [],
+                                                  "branch": act.get("branch", "")}},
+                                 "ci-fix dispatch", cycle_id=act.get("cycle_id"))
+        _s1_txt = ""
+        if _s1 and isinstance(_s1.value, str) and _s1.value.strip():
+            # [judge-note <id>] — 기존 파서가 제어 정보로 읽지 않는 새 주석 kind(§5.2).
+            # 값은 소독(advisory가 마커 시퀀스를 운반하지 않음) + 한 줄 블록.
+            _s1_txt = (f"\n\n[judge-note {_s1.decision_id}] 실패 요약(참고용 — 판정 아님): "
+                       f"{judge.sanitize(_s1.value.strip()[:500].replace(chr(10), ' '))}")
         msg = (f"[auto probe] PR #{act['pr']} ({act.get('repo','')}) CI 실패"
                f"(failing: {','.join(act.get('checks_failed') or [])}). 임무: PR을 읽고 **수정**할 것"
                f" — 단순 review 금지, 목적은 CI red 해소. 브랜치 {act.get('branch','')} 위에서 커밋 계속, "
                f"범위는 CI 실패 수정만(리팩·스킵·assertion 약화 금지). 카드 {act['issue']} review 대기 — "
-               f"CI green이면 probe가 자동 병합·done. 인수: {target} 담당.")
+               f"CI green이면 probe가 자동 병합·done. 인수: {target} 담당.{_s1_txt}")
         try:
             api(url, f"/issues/{act['issue']}/dispatch", "POST", {"agent": agent, "message": msg})
         except Exception as e:
@@ -1448,6 +1513,17 @@ def execute(url, act):
                 return
             api(url, f"/issues/{act['issue']}/comments", "POST",
                 {"author": "probe", "body": f"{marker} {act['reason']}"})
+            # S2(§5.3) — 거부 사유 요약 annotate(advisory): 마커 노트와 분리한 별도
+            # [judge-note] 코멘트로(리뷰 R2 — 요약이 기존 마커로 재해석되는 것 방지).
+            # 대응(재제출 요청)은 규칙이 이미 정했다.
+            _s2 = judge.run_advisory("S2", {"card": act["issue"],
+                                            "input": {"reason": act.get("reason", "")}},
+                                     "evidence-rejected note", cycle_id=act.get("cycle_id"))
+            if _s2 and isinstance(_s2.value, str) and _s2.value.strip():
+                api(url, f"/issues/{act['issue']}/comments", "POST",
+                    {"author": "probe", "body": f"[judge-note {_s2.decision_id}] "
+                                                f"사유 요약(참고용 — 판정 아님): "
+                                                f"{judge.sanitize(_s2.value.strip()[:300].replace(chr(10), ' '))}"})
             return
         att = cur.get("execution_attempt") or 0
         marker = f"[needs-merge a{att}]"
@@ -1545,6 +1621,7 @@ def run_once(url, dry=False):
     snap["prs"] = collect_prs(repos)
     if os.getenv("TT_REVIEW_AGENT", "").strip():
         hydrate_reviews(url, snap)
+    snap["cycle_id"] = uuid.uuid4().hex  # §8.1 판단 로그 사이클 식별자(리뷰 R4)
     acts = decide(snap)
     for a in acts:
         print(time.strftime("%F %T"), a, flush=True)
