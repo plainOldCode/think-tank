@@ -416,12 +416,15 @@ def _draft_stalled(i, pr_no, now):
 def _evidence_unresolved(i):
     """현재 회차의 done 거부가 아직 해소되지 않았는지(리뷰 R5).
 
-    거부(DONE_GATE_MSG)와 접수('보고 접수') 시스템 코멘트 중 최신(ts, id 순)이
-    거부면 미해결. 접수된 성공 보고 뒤에 남은 과거 거부는 재요청하지 않는다.
-    접수 코멘트 이전 카드 호환으로 verification_status=reported도 해소로 본다."""
+    증거 경계(evidence_after_comment_id — 회차 리셋 시 갱신) 이후의 시스템
+    코멘트만 대상으로 한다. 경계 이전 거부는 이전 회차의 것 — 새 회차에서
+    재사용하지 않는다. 거부(DONE_GATE_MSG)와 접수('보고 접수') 중 최신
+    (ts, id 순)이 거부면 미해결. 접수된 성공 보고 뒤에 남은 과거 거부는
+    재요청하지 않는다. 접수 코멘트 이전 카드 호환으로 reported도 해소로 본다."""
+    b = i.get("evidence_after_comment_id") or 0
     cands = []
     for c in (i.get("comments") or []):
-        if c.get("author") != "tt-server":
+        if c.get("author") != "tt-server" or (c.get("id") or 0) <= b:
             continue
         body = c.get("body") or ""
         if body.startswith("done 증거 없음"):
@@ -877,7 +880,7 @@ def decide(snap):
                          if c.get("author") == "tt-server")
         if has_reject and _evidence_unresolved(i):
             actions.append({"agent": "probe", "issue": i["id"], "action": "review-note",
-                            "marker": emarker,
+                            "marker": emarker, "attempt": att,
                             "reason": f"done 거부(증거 없음/실패) — assignee 재제출 요청 "
                                       f"(계약 v2 3단계 보고, tt done {i['id']} --report)"})
     return actions
@@ -1350,8 +1353,13 @@ def execute(url, act):
             # 전용 마커 노트(evidence-rejected 등) — needs-merge 마커와 독립 dedup.
             # decide가 넘긴 마커를 그대로 영속화한다(리뷰 R3: 전용 마커 유지).
             marker = act["marker"]
-            if "evidence-rejected" in marker and not _evidence_unresolved(cur):
-                return  # 재조회 시점에 이미 해소(성공 보고 접수) — 리뷰 R5
+            if "evidence-rejected" in marker:
+                # 액션의 대상 회차가 현재와 다르면 폐기(리뷰 R5: 재수령 뒤 옛
+                # 회차 액션 집행 금지 — 회차별 dedup 유지).
+                if (act.get("attempt") or 0) != (cur.get("execution_attempt") or 0):
+                    return
+                if not _evidence_unresolved(cur):
+                    return  # 재조회 시점에 이미 해소(성공 보고 접수) — 리뷰 R5
             if any(marker in (c.get("body") or "") for c in (cur.get("comments") or [])
                    if c.get("author") == "probe"):
                 return

@@ -42,7 +42,7 @@ def _agent(name):
 
 
 def _pc(body, ts=OLD, author="probe"):
-    return {"author": author, "body": body, "ts": ts}
+    return {"id": 1, "author": author, "body": body, "ts": ts}
 
 
 @pytest.fixture(autouse=True)
@@ -204,7 +204,8 @@ def test_execute는_evidence_전용_마커를_보존하고_dedup한다(monkeypat
 
     monkeypatch.setattr(probe.core, "api", fake_api)
     act = {"agent": "probe", "issue": "M4ABCDEF-GH12", "action": "review-note",
-           "marker": "[evidence-rejected a1]", "reason": "done 거부(증거 없음/실패)"}
+           "marker": "[evidence-rejected a1]", "attempt": 1,
+           "reason": "done 거부(증거 없음/실패)"}
     probe.core.execute("http://x", act)
     posts = [b for m, p, b in calls if p.endswith("/comments") and m == "POST"]
     assert len(posts) == 1 and posts[0]["body"].startswith("[evidence-rejected a1]")
@@ -319,6 +320,55 @@ def test_execute도_접수된_보고가_있으면_evidence_요청을_생략한�
 
     monkeypatch.setattr(probe.core, "api", raced)
     act = {"agent": "probe", "issue": "M4ABCDEF-GH12", "action": "review-note",
-           "marker": "[evidence-rejected a1]", "reason": "done 거부(증거 없음/실패)"}
+           "marker": "[evidence-rejected a1]", "attempt": 1,
+           "reason": "done 거부(증거 없음/실패)"}
     probe.core.execute("http://x", act)
     assert not [b for m, p, b in calls if p.endswith("/comments") and m == "POST"]
+
+
+# --- 리뷰 5차 R5 잔여: 증거 경계 이전 거부 재사용 금지 + 옛 회차 액션 폐기 ---
+
+def test_증거_경계_이전_거부는_새_회차에서_재사용하지_않는다():
+    # a1 거부(id=1) → todo→claim(a2): evidence_after_comment_id=1로 리셋.
+    # a2에서 done 제출·거부 없음 — 과거 거부로 [evidence-rejected a2] 만들면 안 됨.
+    i = _i(state="review", execution_attempt=2, evidence_after_comment_id=1,
+           comments=[{"id": 1, "author": "tt-server", "ts": OLD,
+                      "body": "done 증거 없음 또는 실패/미확정 보고"}])
+    acts = dispatchd.decide(_snap([i], [], []))
+    assert not [a for a in acts if (a.get("marker") or "").startswith("[evidence-rejected")]
+
+
+def test_경계_이후_현재_거부는_여전히_요청한다():
+    i = _i(state="review", execution_attempt=2, evidence_after_comment_id=1,
+           comments=[{"id": 1, "author": "tt-server", "ts": OLD,
+                      "body": "done 증거 없음 또는 실패/미확정 보고"},
+                     {"id": 5, "author": "tt-server", "ts": OLD,
+                      "body": "done 증거 없음 또는 실패/미확정 보고"}])
+    acts = dispatchd.decide(_snap([i], [], []))
+    assert [a for a in acts if a.get("marker") == "[evidence-rejected a2]"]
+
+
+def test_execute는_옛_회차_evidence_액션을_폐기한다(monkeypatch):
+    import probe.core
+
+    calls = []
+
+    def raced(url, path, method="GET", body=None):
+        calls.append((method, path, body))
+        # 카드는 이미 a2로 재수령 — a1 액션은 폐기 대상
+        return {"comments": [{"id": 9, "author": "tt-server", "ts": OLD,
+                              "body": "done 증거 없음 또는 실패/미확정 보고"}],
+                "version": 5, "execution_attempt": 2, "evidence_after_comment_id": 4}
+
+    monkeypatch.setattr(probe.core, "api", raced)
+    act = {"agent": "probe", "issue": "M4ABCDEF-GH12", "action": "review-note",
+           "marker": "[evidence-rejected a1]", "attempt": 1,
+           "reason": "done 거부(증거 없음/실패)"}
+    probe.core.execute("http://x", act)
+    assert not [b for m, p, b in calls if p.endswith("/comments") and m == "POST"]
+    # 현재 회차 액션은 정상 집행
+    calls.clear()
+    act2 = dict(act, marker="[evidence-rejected a2]", attempt=2)
+    probe.core.execute("http://x", act2)
+    posts = [b for m, p, b in calls if p.endswith("/comments") and m == "POST"]
+    assert len(posts) == 1 and posts[0]["body"].startswith("[evidence-rejected a2]")
