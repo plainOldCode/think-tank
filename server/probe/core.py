@@ -180,6 +180,10 @@ REVIEW_FALLBACK = ("claude", "kanban-adapter", "codex")
 # 진행 중 run 상태(runner run_state.ACTIVE 동기) — 이 상태의 dispatch가 있으면
 # 같은 카드에 리뷰/수정 dispatch를 추가로 스폰하지 않는다(M4N469TR-JWW0).
 _ACTIVE_RUN_STATES = frozenset({"queued", "running", "stalled", "finalizing", "held"})
+# 실행 불가 에이전트 — dispatch를 보드 트리아지 변환·판정 전용으로 소비한다(코드 작업 불가).
+# work/resume/review-fix 배정 대상에서 제외(M4NCNNRW-PXCJ) — 2026-10-11 RTZ1: auto 풀이
+# kanban-adapter에 review-fix를 배정해 트리아지 카드만 만들고 정체(#343).
+NON_EXECUTORS = ("kanban-adapter", "codex-read-only", "tt-reviewer")
 # CI 봇은 구현 에이전트가 아니다 — 미표기 취급(기본 라우팅)
 CI_BOTS = ("doc-check", "e2e")
 
@@ -648,17 +652,18 @@ def decide(snap):
     # ① release-ready 재개(수동 재개 규약의 기계 대행 — 서버 release_ready 판정 근거)
     resumable = [i for i in issues if i["state"] == "blocked"
                  and i.get("waiting_for") == "dependency" and i.get("release_ready")]
-    actor = next((a["name"] for a in agents if idle(a["name"])), None)
+    actor = next((a["name"] for a in agents
+                  if a.get("name") not in NON_EXECUTORS and idle(a["name"])), None)
     if resumable and actor:
         t = resumable[0]
         actions.append({"agent": actor, "issue": t["id"], "action": "resume",
                         "reason": "release-ready"})
         return actions
 
-    # ② agent별 작업 대상: continuation(자식→형제) → auto 풀
+    # ② agent별 작업 대상: continuation(자식→형제) → auto 풀 — 실행 불가 에이전트 제외(PXCJ)
     for a in agents:
         name = a["name"]
-        if not idle(name):
+        if name in NON_EXECUTORS or not idle(name):
             continue
         dones = [i for i in issues if i["state"] == "done" and i.get("assignee") == name]
         target = reason = None
@@ -1494,6 +1499,12 @@ def execute(url, act):
                 api(url, f"/issues/{act['issue']}/comments", "POST",
                     {"author": "probe", "body": f"{act['marker']} 수정 dispatch 실패"
                                                 f"(에이전트 미등록: {assignee}) — 사람 판단 대기"})
+            elif target in NON_EXECUTORS:
+                # PXCJ — 어댑터·리드온리는 코드 작업 불가: dispatch 낭비 대신 사람 통보.
+                # 원 워커 돌려주기 등 재라우팅은 M4MGV3B7-BG97 영역.
+                api(url, f"/issues/{act['issue']}/comments", "POST",
+                    {"author": "probe", "body": f"{act['marker']} 수정 dispatch 대상이 실행 불가"
+                                                f" 에이전터({target}) — 사람/감독관 판단 대기"})
             else:
                 # JWW0 — 대상 에이전트의 진행 중 dispatch가 있으면 스폰 금지(동시 실행 방지)
                 try:

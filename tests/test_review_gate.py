@@ -543,3 +543,25 @@ def test_review_fix_실행은_점유_대상에게_스폰하지_않는다(gate_on
            "marker": f"[review-fix #9/{SHA8}]"}
     probe.core.execute("http://x", act)
     assert not any(m == "POST" and p.endswith("/dispatch") for m, p, _ in calls)
+
+
+def test_review_fix_대상이_실행불가_에이전터면_스폰하지_않는다(gate_on, monkeypatch):
+    # M4NCNNRW-PXCJ — 어댑터로의 review-fix는 트리아지 카드만 만들고 정체(RTZ1 #343)
+    calls = []
+
+    def fake_api(url, path, method="GET", body=None):
+        calls.append((method, path, body))
+        if path == "/issues/M428RMBY-XC0K" or path == "/issues/M428RMBY-XC0K":
+            return _issue(assignee="kanban-adapter")
+        if path == "/agents":
+            return [{"name": "kanban-adapter", "enabled": True, "base_url": "http://x"}]
+        return {}
+
+    monkeypatch.setattr(probe.core, "api", fake_api)
+    act = {"agent": "probe", "issue": "M428RMBY-XC0K", "action": "review-fix", "pr": 9,
+           "branch": "tt/x", "head_sha": SHA8, "repo": "plainOldCode/think-tank",
+           "marker": f"[review-fix #9/{SHA8}]"}
+    probe.core.execute("http://x", act)
+    assert not any(m == "POST" and p.endswith("/dispatch") for m, p, _ in calls)
+    assert any(m == "POST" and p.endswith("/comments") and "실행 불가" in (b or {}).get("body", "")
+               for m, p, b in calls)
