@@ -4,7 +4,7 @@
 (스냅샷 필드·이벤트 패턴) — 서술형 조건은 금지되고 기계적 조건으로 못 쓰는
 행은 unknown으로 간다. 각 행의 기본 대응은 LLM 없이 완결(graceful degrade, §3.2).
 LLM 개입은 R+S/R+C의 advisory뿐이고 allow·merge는 어떤 처리 구분에서도 LLM 출력이
-아니다(§3.2). 집계 열은 코멘트 패턴 추정치 — 출처와 함께 보존(§8).
+아니다(§3.2). 집계 열은 혼합 출처(AGG_SOURCE) — §8과 함께 보존.
 
 wired: 기본 대응이 연결된 위치(file:symbol) — ""는 미연결(데이터만, 연결은 별도
 카드/선행 기록 필요). handling "미확인"은 행 자체가 미확정(§8)임을 뜻하는 표기이지
@@ -21,7 +21,7 @@ HANDLING_BUG = "BUG"      # probe 수정으로 제거
 HANDLING_C = "C"          # 분류(advisory) + 사람 확인
 HANDLING_PENDING = "미확인"  # 행 자체가 미확정(§8) — 운영 처리 구분 아님, 확인 전 표기
 
-AGG_SOURCE = "413장 코멘트 패턴 추정(gate-failure-rules.md §8) + WVBY 코멘트 2026-10-11"
+AGG_SOURCE = ("혼합 출처(gate-failure-rules.md §8): 기존 행=413장 코멘트 패턴 추정, dependency=제한된 이벤트 창(seq<=1363, 2026-10-09T13:38~10-11T17:35+0900)의 blocked 전이 관측 0건, marker_mismatch/stale_base=기록 경로 부재로 미확인. WVBY 코멘트 2026-10-11")
 
 FAILURE_RULES = (
     {"code": "no_pr",
@@ -114,21 +114,21 @@ FAILURE_RULES = (
 
     {"code": "dependency",
      "judgment": "waiting_for=dependency 필드 — 필드와 notify_blocked_dependents 경로 존재",
-     "default": "release_ready 투영(enrich_blocked) + 사람 통보(notify)",
+     "default": "release_ready 투영(enrich_blocked) + 사람 통보(notify). 참고: probe는 auto+idle+release_ready면 resume→todo 자동 재개 경로 보유(core.py)",
      "handling": HANDLING_H, "wired": "server/service.py enrich_blocked/notify_blocked_dependents",
-     "agg": "0(실측 10/9~10/11 이벤트)", "note": "§8 — blocked 전이·waiting_for 변경 이벤트 0건(커버리지 10/9~)"},
+     "agg": "blocked 전이 0건(실측)", "note": "§8 — waiting_for 필드명 갱신 이벤트 159건(63카드, 상태 이탈 초기화 포함)이나 값 변화는 old/new 부재로 복원 불가. 커버리지 10/9~"},
 
     {"code": "marker_mismatch",
      "judgment": "마커 불일치 — 정식 기록 경로 부재(§8 실측)",
      "default": "미확정 — 확인 전 운영 처리 없음",
      "handling": HANDLING_PENDING, "wired": "",
-     "agg": "0(기록 경로 부재)", "note": "stale_base와 분리 유지(§8)"},
+     "agg": "미확인(기록 경로 부재)", "note": "기록 부재는 0건의 증거가 아님. stale_base와 분리 유지(§8)"},
 
     {"code": "stale_base",
      "judgment": "stale head(리뷰 문맥) — 정식 기록 경로 부재(§8 실측)",
      "default": "미확정 — 확인 전 운영 처리 없음",
      "handling": HANDLING_PENDING, "wired": "",
-     "agg": "0(기록 경로 부재)", "note": "stale-base 게이트는 tt-push 별개 구현(PR#75); marker_mismatch와 분리 유지(§8)"},
+     "agg": "미확인(기록 경로 부재)", "note": "기록 부재는 0건의 증거가 아님. stale-base 게이트는 tt-push 별개 구현(PR#75); marker_mismatch와 분리 유지(§8)"},
 
     {"code": "unknown",
      "judgment": "위 어느 조건에도 안 맞음",

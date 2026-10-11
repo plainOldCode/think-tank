@@ -94,7 +94,7 @@ probe-restructure-design.md §5.2의 단조성 — LLM 출력은 `hold`/`escalat
 | needs_decision | level4-notify human 대기 | 사람에게 올림 | H | 2~3 | RBAC, 멘션 설계 등. go/stop 아님 |
 | lease_conflict_401 | claim 409 lease_held, hook 401 | 중복 작업 중단 | R | 4 | 409 코드 자체는 변경 금지(§9) |
 | draft_merge_loop | draft PR merge skip 반복 | 같은 사유 N회 반복 시 사람 1회 통보 후 중지(§6) | R | 260(1카드) | 이상치. 현행은 draft-flagged 1회 후 무음(core.py:397) — 통보·스킵 추가 |
-| dependency | waiting_for=dependency | release_ready 투영(enrich_blocked) + 사람 통보(notify) | H | 0(실측) | 이벤트 창 내 blocked 전이·waiting_for 변경 0건 — §8 실측(10/9~) |
+| dependency | waiting_for=dependency | release_ready 투영(enrich_blocked) + 사람 통보(notify). 참고: probe는 auto 활성+idle+release_ready면 resume 후 todo로 PATCH하는 자동 재개 경로도 보유(core.py) | H | blocked 전이 0건(실측) | waiting_for 필드 갱신 이벤트는 159건(63카드, 상태 이탈 시 자동 초기화 포함)이나 값 변화는 old/new 부재로 복원 불가 — §8 실측(10/9~) |
 | marker_mismatch / stale_base | 마커 불일치, stale head | 미확정 — 확인 전 운영 처리 없음(§4.1) | 미확인 | 0(기록 경로 부재) | 정식 기록 경로 자체가 없음 — §8 실측. stale_base 게이트는 tt-push 별개 구현(PR#75) |
 | unknown | 위 어느 조건에도 안 맞음 | 소형 모델이 가장 가까운 코드 제안(advisory) + 사람 확인, 로그 | C | 모호 약 30+ | §5 C1 + §7 그림자 모드 |
 
@@ -157,8 +157,8 @@ probe-restructure-design.md §5.2의 단조성 — LLM 출력은 `hold`/`escalat
 ## 8. 데이터 출처와 한계
 
 - **blocked 기록이 비어 있어** 413장 집계는 코멘트 패턴 기반 추정이다. §4 표의 집계 열은 추정치임이 유지된다.
-- **이벤트 기반 재측정(TT M4K88X68-66ZE, 2026-10-11)** — events outbox는 2026-10-09 13:38(TT 개선#2 신설)부터 존재하므로 목표 창(9/21~10/10)의 선행 부분은 정식 기록이 없어 재측정 불가다. 실측 가능한 창(10/09 13:38~10/11)에서: ① state=blocked 전이 이벤트 0건 ② waiting_for 필드 변경 이벤트 0건 ③ 현재 waiting_for 설정 카드 0건 ④ marker_mismatch·stale_base는 기록 경로 자체가 없어 정식 기록 0건(미확인 유지). §4 dependency·marker_mismatch/stale_base 행의 집계를 이 실측으로 갱신했고 커버리지를 명시한다 — 9/21~10/9 구간은 여전히 코멘트 추정이다.
-- **blocked 기록 체계 제안(후속 카드)**: blocked 전이를 독립 이벤트 kind로 기록하고 waiting_for 값 변화를 payload에 포함해야 다음 census가 전 창을 실측한다. 스키마 변경은 이 카드에서 하지 않음(카드 명세 3번).
+- **이벤트 기반 재측정(TT M4K88X68-66ZE, 2026-10-11)** — events outbox는 2026-10-09 13:38(TT 개선#2 신설)부터 존재하므로 목표 창(9/21~10/10)의 선행 부분은 정식 기록이 없어 재측정 불가다. 실측 창(10/09 13:38~10/11 17:35, seq<=1363, 독립 리뷰가 동일 cap으로 재현): ① state=blocked 전이 이벤트 0건 ② waiting_for 필드명 갱신 이벤트 **159건(63카드)** — service.bump는 변경 필드명만 기록하고 값을 기록하지 않아(service.py bump) old/new 값 변화는 복원 불가 ③ 현재 waiting_for 설정 카드 0건 ④ marker_mismatch·stale_base는 기록 경로 자체가 없어 발생 건수 미확인(기록 부재가 0건의 증거는 아님). §4 표는 **혼합 출처**다 — 기존 행은 413장 코멘트 추정, dependency는 제한된 이벤트 창의 blocked 전이 관측 0건, marker_mismatch/stale_base는 기록 경로 부재. 9/21~10/9 구간과 값 변화는 여전히 확인 안 됨이며, 이 실측을 목표 창 전체의 0건으로 읽으면 안 된다.
+- **blocked 기록 체계 제안(후속 카드)**: blocked 전이를 독립 이벤트 kind로 기록하고 waiting_for의 old/new 값을 payload에 포함해야 다음 census가 전 창을 실측한다. 스키마 변경은 이 카드에서 하지 않음(카드 명세 3번).
 - census 원본(`/workspace/tt-block-census.md`)은 box 워크스페이스에 있어 본 문서는 대조하지 않았다 — 코멘트 초안 인용만. 이번 실측도 원본과 무관한 이벤트 기반 값이다.
 - 본 문서 자기 점검(작성 시점 실측): 한글 본문 마크다운 표 6개, `## ` 절 14개(§0~§11+참고자료+검증), 코드펜스 0개. 커밋 시점과 불일치가 생기면 리뷰 지적 대상으로 갱신한다 — PR #78 리뷰 발견사항 1번의 재발을 막기 위한 기록.
 
