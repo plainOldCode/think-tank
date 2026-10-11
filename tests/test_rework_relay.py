@@ -233,9 +233,9 @@ def test_actual_head_change_without_a_probe_marker_blocks_fallback():
 def test_runner_failure_is_not_permanent_worker_activity():
     """R5 — runner 실패 기록은 워커 활동이 아니다 — 양도가 영구 차단되지 않는다."""
     card = _relayed_card(extra=[{
-        "author": "runner@m2max", "id": 9,
+        "author": "runner@host-a", "id": 9,
         "ts": "2026-10-04T10:00:00+0900",
-        "body": "runner:m2max dispatch#77 failed exit=1 session=dead",
+        "body": "runner:host-a dispatch#77 failed exit=1 session=dead",
     }])
     assert [a for a in _actions(card) if a["action"] == "rework-fallback"]
 
