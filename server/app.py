@@ -6,6 +6,8 @@
 import os
 import threading
 
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -45,8 +47,33 @@ def _versioned_html(html: str, static_dir: str | None = None) -> str:
 from service import _notify_workers, _notify_reg_lock  # noqa: F401 (테스트가 app 경유 참조)
 
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """앱 수명주기 — 기존 on_event("shutdown") 정리를 종료 구간으로 이동 (TT M40MP7EX-RTZ1).
+
+    자원 등록은 create_app 본문이 하고(app.state), 종료 구간에서는 등록된 것만 정리한다 —
+    probe off·notify off 조합에서는 아무 것도 하지 않는다. 종료 순서는 기존
+    on_shutdown LIFO 실행 순서와 동일: notify refs 감소 → probe stop.
+    """
+    try:
+        yield
+    finally:
+        # 예외·취소 종료에서도 정리가 실행돼야 한다(리뷰 R2 PR#91) — 기존
+        # on_event("shutdown")은 _DefaultLifespan.__aexit__에서 보장했다.
+        entry = getattr(app.state, "notify_entry", None)
+        if entry is not None:
+            # 등록 삭제는 워커 본인이 한다(전송 중 종료 경계) — 여기선 참조만 감
+            with _notify_reg_lock:
+                entry["refs"] -= 1
+                if entry["refs"] <= 0:
+                    entry["stop"].set()
+        stop = getattr(app.state, "probe_stop", None)
+        if stop is not None:
+            stop.set()
+
+
 def create_app(db_path: str) -> FastAPI:
-    app = FastAPI(title="think-tank")
+    app = FastAPI(title="think-tank", lifespan=lifespan)
     app.state.db_path = db_path  # 하위호환: 테스트/운영 스크립트가 직접 읽음
     app.state.ctx = Ctx(db_path, current_contract())
     app.include_router(meta.router)
@@ -59,11 +86,7 @@ def create_app(db_path: str) -> FastAPI:
     interval = config.probe_interval()
     if interval > 0:
         stop = threading.Event()
-        app.state.probe_stop = stop
-
-        @app.on_event("shutdown")
-        def _stop_probe():
-            stop.set()
+        app.state.probe_stop = stop  # 종료 정리는 lifespan 종료 구간에서 stop.set() (TT M40MP7EX-RTZ1)
 
         threading.Thread(target=probe.loop, daemon=True, name="tt-probe",
                          args=(os.environ.get("TT_URL", "http://127.0.0.1:7800"), interval, stop)).start()
@@ -88,15 +111,7 @@ def create_app(db_path: str) -> FastAPI:
                                      name="tt-notify", args=(db_path, entry))
                 entry["thread"] = t
                 t.start()
-        app.state.notify_entry = entry
-
-        @app.on_event("shutdown")
-        def _stop_notify():
-            # 등록 삭제는 워커 본인이 한다(전송 중 종료 경계) — 여기선 참조만 감
-            with _notify_reg_lock:
-                app.state.notify_entry["refs"] -= 1
-                if app.state.notify_entry["refs"] <= 0:
-                    app.state.notify_entry["stop"].set()
+        app.state.notify_entry = entry  # 종료 정리(refs 감소)는 lifespan 종료 구간에서 (TT M40MP7EX-RTZ1)
 
     static_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 
