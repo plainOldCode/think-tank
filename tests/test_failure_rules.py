@@ -63,7 +63,7 @@ def test_규칙표는_필수_키를_가진다():
             "budget_exhausted", "needs_decision", "lease_conflict_401", "draft_merge_loop",
             "dependency", "marker_mismatch", "stale_base", "unknown"} <= codes
     for r in rows:
-        assert r["handling"] in {"R", "R+S", "R+C", "H", "BUG", "C"}
+        assert r["handling"] in {"R", "R+S", "R+C", "H", "BUG", "C", "미확인"}
         assert r["judgment"] and isinstance(r["wired"], str)
 
 
@@ -77,8 +77,35 @@ def test_미등록_코드는_unknown_처리를_따른다():
 def test_checks_0건_무판정이면_리뷰_요청한다():
     acts = dispatchd.decide(_snap([_i()], _pr(checks=[]), [_agent("a2@t")]))
     reqs = [a for a in acts if a["action"] == "review-request"]
-    assert len(reqs) == 1 and "checks" not in reqs[0]["reason"] or True
+    assert len(reqs) == 1 and reqs[0]["pr"] == 9
+    assert "리뷰 요청" in reqs[0]["reason"]
     assert not [a for a in acts if a["action"] == "merge"]
+
+
+def test_checks_관측_불가_None은_판정_대상이_아니다(monkeypatch):
+    # 리뷰 R1 — CI 조회 실패(checks=None)는 0건과 다르다: 병합 우회 금지
+    monkeypatch.setenv("TT_REVIEW_AGENT", "fallback@t")
+    i = _i(reviewer="fallback@t",
+           comments=[_pc("review: approve PR#9@bbbbbbbb — ok", author="fallback@t")])
+    acts = dispatchd.decide(_snap([i], [{"number": 9, "repo": "plainOldCode/think-tank",
+                                         "checks": None, "isDraft": False,
+                                         "branch": "tt/M4ABCDEF-GH12-x", "title": "",
+                                         "head_sha": "b" * 40}], [_agent("a2@t")]))
+    assert not [a for a in acts if a["action"] == "merge"]
+    assert not [a for a in acts if a["action"] == "review-request"]
+
+
+def test_행별_처리_구분_골든():
+    # 각 행의 code→handling 매핑이 데이터와 일치(행 추가 시 여기도 갱신)
+    golden = {"no_pr": "R+C", "pr_no_checks": "R", "ci_failed": "R+S",
+              "merged_no_report": "R", "fix_dispatch_404": "BUG",
+              "reviewer_session_failed": "R", "evidence_rejected": "R+S",
+              "verify_422": "R", "runner_stall": "R", "budget_exhausted": "R",
+              "needs_decision": "H", "lease_conflict_401": "R",
+              "draft_merge_loop": "R", "dependency": "H",
+              "marker_mismatch": "미확인", "stale_base": "미확인", "unknown": "C"}
+    for code, h in golden.items():
+        assert failure_rules.handling_of(code) == h, code
 
 
 def test_checks_0건_승인_판정이면_병합_후보다():
@@ -115,3 +142,36 @@ def test_draft_경과시_사람_1회_통보한다(monkeypatch):
                       _pc("[needs-human-draft #9] 사람 판단 대기", author="dispatchd")])
     acts = dispatchd.decide(_snap([i2], _pr(draft=True), []))
     assert not [a for a in acts if a["action"] == "needs-human"]
+
+
+# --- evidence_rejected 배선 (리뷰 R3: 서버가 DONE_GATE_MSG 시스템 코멘트로 기록함) ---
+
+def test_done_거부_기록_카드는_재제출_요청_노트를_낸다():
+    i = _i(state="in_progress",
+           comments=[_pc("done 증거 없음 또는 실패/미확정 보고 — 현재 회차의 성공 결과가 필요합니다.",
+                         author="tt-server")])
+    acts = dispatchd.decide(_snap([i], [], []))
+    notes = [a for a in acts if a["action"] == "review-note"]
+    assert len(notes) == 1 and notes[0]["marker"] == "[evidence-rejected a1]"
+    assert "재제출" in notes[0]["reason"]
+
+
+def test_done_거부_기록이_없거나_완료된_카드는_무음이다():
+    acts = dispatchd.decide(_snap([_i(state="in_progress")], [], []))
+    assert not [a for a in acts if a["action"] == "review-note"]
+    i = _i(state="done", comments=[_pc("done 증거 없음", author="tt-server")])
+    acts = dispatchd.decide(_snap([i], [], []))
+    assert not [a for a in acts if a["action"] == "review-note"]
+
+
+# --- draft × needs-merge 상호작용 (리뷰 R2) ---
+
+def test_draft_통보는_구_needs_merge_마커에_가려지지_않는다():
+    # [needs-merge a1]이 있어도 draft-flagged 경과 시 사람 통보가 나와야 한다
+    i = _i(comments=[_pc("[needs-merge a1] PR 없음 — 사람 판단 대기"),
+                     _pc("[draft-flagged #9] draft PR#9 — ready for review 요청",
+                         ts="2026-10-06T09:00:00+0900")])  # 3일 전 — 48h 임계 경과
+    acts = dispatchd.decide(_snap([i], _pr(draft=True), []))
+    nh = [a for a in acts if a["action"] == "needs-human"]
+    assert len(nh) == 1 and "needs-human-draft #9" in nh[0]["note"]
+    assert not [a for a in acts if a["action"] == "review-note"]
