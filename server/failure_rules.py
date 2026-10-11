@@ -7,17 +7,19 @@ LLM 개입은 R+S/R+C의 advisory뿐이고 allow·merge는 어떤 처리 구분�
 아니다(§3.2). 집계 열은 코멘트 패턴 추정치 — 출처와 함께 보존(§8).
 
 wired: 기본 대응이 연결된 위치(file:symbol) — ""는 미연결(데이터만, 연결은 별도
-카드/선행 기록 필요). 행의 code는 policy 안정 코드와 문자열로만 대응한다(§9).
+카드/선행 기록 필요). handling "미확인"은 행 자체가 미확정(§8)임을 뜻하는 표기이지
+운영 처리 구분이 아니다. 행의 code는 policy 안정 코드와 문자열로만 대응한다(§9).
 """
 import os
 
 # 처리 구분 (§3.1) — LLM 개입 정의
-R = "R"          # 규칙만
-R_S = "R+S"      # 규칙 + LLM 요약(advisory)
-R_C = "R+C"      # 규칙 우선, 표에 없을 때 소형 모델 분류(advisory)
-H = "H"          # 사람 (통보만 자동)
-BUG = "BUG"      # probe 수정으로 제거
-C = "C"          # 분류(advisory) + 사람 확인
+HANDLING_R = "R"          # 규칙만
+HANDLING_R_S = "R+S"      # 규칙 + LLM 요약(advisory)
+HANDLING_R_C = "R+C"      # 규칙 우선, 표에 없을 때 소형 모델 분류(advisory)
+HANDLING_H = "H"          # 사람 (통보만 자동)
+HANDLING_BUG = "BUG"      # probe 수정으로 제거
+HANDLING_C = "C"          # 분류(advisory) + 사람 확인
+HANDLING_PENDING = "미확인"  # 행 자체가 미확정(§8) — 운영 처리 구분 아님, 확인 전 표기
 
 AGG_SOURCE = "413장 코멘트 패턴 추정(gate-failure-rules.md §8) + WVBY 코멘트 2026-10-11"
 
@@ -26,33 +28,33 @@ FAILURE_RULES = (
      "judgment": "state=review/완료 후보 + 연결 PR 없음(연령 유예 TT_REVIEW_GRACE_MIN)",
      "default": "needs-merge 노트(회차당 1회 dedup) — 저위험 라벨이면 verify 후보 표시, "
                 "코드 카드면 PR 요청",
-     "handling": R_C, "wired": "server/probe/core.py decide ⓪b (_stale_act/pr-adopt)",
+     "handling": HANDLING_R_C, "wired": "server/probe/core.py decide ⓪b (_stale_act/pr-adopt)",
      "agg": "20", "note": "1카드=1PR 계약(repo 마커)과 연동. verify→done 10건"},
 
     {"code": "pr_no_checks",
      "judgment": "카드에 연결된 open PR의 check-runs가 0건(isDraft 제외)",
      "default": "유효 리뷰 판정이 있으면 그 판정을 따른다(approve→병합 후보, "
                 "request-changes→review-fix). 무판정이면 리뷰 요청(review-req)",
-     "handling": R, "wired": "server/probe/core.py decide ⓪ (pr_no_checks 분기)",
+     "handling": HANDLING_R, "wired": "server/probe/core.py decide ⓪ (pr_no_checks 분기)",
      "agg": "14", "note": "ci_passed는 checks 1+ 전부 SUCCESS — 0건은 기존 무응답 구간"},
 
     {"code": "ci_failed",
      "judgment": "PR checks에 FAILURE 포함(비green)",
      "default": "ci-fix dispatch 유지 — 실패 로그 분류는 advisory(R+S 요약 §5 S1)",
-     "handling": R_S, "wired": "server/probe/core.py decide ⓪b + execute ci-fix",
+     "handling": HANDLING_R_S, "wired": "server/probe/core.py decide ⓪b + execute ci-fix",
      "agg": "3", "note": "모두 9/30, 다수 자가 해소"},
 
     {"code": "merged_no_report",
      "judgment": "PR merged + 카드 완료 보고/completion_report 없음",
      "default": "verify 요청 또는 담당 agent 보고 요청 코멘트 — 상태는 변경하지 않음",
-     "handling": R, "wired": "server/probe/core.py execute merge (merged_no_report 분기)",
+     "handling": HANDLING_R, "wired": "server/probe/core.py execute merge (merged_no_report 분기)",
      "agg": "22", "note": "verify 17건 — 가장 단순한 go"},
 
     {"code": "fix_dispatch_404",
      "judgment": "review-fix dispatch가 HTTP 404",
      "default": "제거됨 — 수신자를 등록 에이전트로 해석 후 dispatch(PR#80 _resolve_agent), "
                 "해석 실패는 사람 통보 노트",
-     "handling": BUG, "wired": "server/probe/core.py execute review-fix (TT M4K86YXM-6XKC)",
+     "handling": HANDLING_BUG, "wired": "server/probe/core.py execute review-fix (TT M4K86YXM-6XKC)",
      "agg": "42(19카드)", "note": "판정 아님. probe 수정으로 제거(§10 R4)"},
 
     {"code": "reviewer_session_failed",
@@ -60,76 +62,79 @@ FAILURE_RULES = (
                  "(TT_REVIEW_STALL_MIN) 또는 최신 발령과 같은 dispatch id의 runner 실패 코멘트",
      "default": "회차 마커 [review-retry a<n>]로 재발령 1회(새 세션 강제, fresh) — "
                 "N=3 도달 시 needs-human 1회",
-     "handling": R, "wired": "server/probe/core.py _reviewer_session_stalled/_maybe_review_retry "
+     "handling": HANDLING_R, "wired": "server/probe/core.py _reviewer_session_stalled/_maybe_review_retry "
                              "(TT M4M9BTC1-12MZ)",
      "agg": "1(WS3C 실측)", "note": "§12 신규 행 — 2026-10-11 구현"},
 
     {"code": "evidence_rejected",
-     "judgment": "서버 done 거부 응답(증거 없음/실패) — 현재 카드에 기록이 남지 않아 "
-                 "스냅샷에서 기계적 판정 불가. 서버 기록(시스템 코멘트/이벤트) 선행 필요",
-     "default": "사유 요약해서 담당 agent에 재작성 요청(advisory 요약 §5 S2)",
-     "handling": R_S, "wired": "",
-     "agg": "45(27카드)", "note": "verify 13건은 재제출 성공 — 기록 계기화가 선행 과제"},
+     "judgment": "tt-server 시스템 코멘트 'done 증거 없음 또는 실패/미확정 보고' "
+                 "(routers/issues DONE_GATE_MSG — done 거부 시 기록됨, comment.added 이벤트 포함)",
+     "default": "담당 assignee 재제출 요청 노트(회차당 1회 dedup) — 사유 요약은 advisory(R+S §5 S2)",
+     "handling": HANDLING_R_S, "wired": "server/probe/core.py decide ⑤ evidence 스캔 + "
+                                        "execute review-note 전용 마커",
+     "agg": "45(27카드)", "note": "verify 13건은 재제출 성공. 시스템 코멘트가 기계적 입력"},
 
     {"code": "verify_422",
      "judgment": "verify 422 — 현재 호출자(cli)만 보고 카드에 기록이 없어 기계적 판정 불가. "
                  "서버 기록 선행 필요",
      "default": "증거 형식 오류 안내(v2.1 3단계 스키마) 후 재시도",
-     "handling": R, "wired": "",
+     "handling": HANDLING_R, "wired": "",
      "agg": "1", "note": "기록 계기화가 선행 과제"},
 
     {"code": "runner_stall",
      "judgment": "runner STALL / STALL-killed 코멘트(러너 장부 기준)",
      "default": "재dispatch, 반복 시 사람 통보(§6 억제 규칙 적용)",
-     "handling": R, "wired": "runner/tt-runner.py STALL 감시(러너 소관 — probe 재dispatch 연결은 별도)",
-     "agg": "약 31", "note": "사람 조치 여부 확인 안 됨"},
+     "handling": HANDLING_R, "wired": "",
+     "agg": "약 31", "note": "감시(STALL 통지·kill·상태 기록)만 러너 연결"
+                             "(tt-runner.py stall_check) — 재dispatch·반복 에스컬레이션은 미연결"},
 
     {"code": "budget_exhausted",
      "judgment": "dispatch-tries>=2 (policy 안정 코드 budget_reason)",
      "default": "needs-human 유지 — 완화 금지",
-     "handling": R, "wired": "server/probe/core.py decide ③ + execute needs-human",
+     "handling": HANDLING_R, "wired": "server/probe/core.py decide ③ + execute needs-human",
      "agg": "2", "note": "현행 안전장치 그대로"},
 
     {"code": "needs_decision",
      "judgment": "level4-notify human 대기(waiting_for=human)",
      "default": "사람에게 올림(notify_hook 에이전트에 notify 명령)",
-     "handling": H, "wired": "server/service.py reconcile/notify 경로",
+     "handling": HANDLING_H, "wired": "server/service.py reconcile/notify 경로",
      "agg": "2~3", "note": "RBAC, 멘션 설계 등. go/stop 아님"},
 
     {"code": "lease_conflict_401",
      "judgment": "claim 409 lease_held 또는 hook 401",
      "default": "중복 작업 중단 — 사이클 재판정(마커 없음)",
-     "handling": R, "wired": "server/policy.py review_eligible review_occupied + execute 폴백 체인",
+     "handling": HANDLING_R, "wired": "server/policy.py review_eligible review_occupied + execute 폴백 체인",
      "agg": "4", "note": "409/401 코드 자체는 변경 금지(§9)"},
 
     {"code": "draft_merge_loop",
      "judgment": "전부 draft인 PR로 병합 판정 반복 — draft-flagged 마커 존재+경과(TT_DRAFT_STALL_H)",
      "default": "ready 요청 1회 후, 경과 시 사람 1회 통보(dedup) 후 중지",
-     "handling": R, "wired": "server/probe/core.py decide ⓪b draft 분기 (_draft_stalled)",
+     "handling": HANDLING_R, "wired": "server/probe/core.py decide ⓪b draft 분기 (_draft_stalled)",
      "agg": "260(1카드)", "note": "이상치. 현행은 draft-flagged 1회 후 무음 — 통보 추가"},
 
     {"code": "dependency",
-     "judgment": "waiting_for=dependency — 정식 기록 없음(§8)",
-     "default": "기록 없음 — 집계 전까지 연결 금지",
-     "handling": R, "wired": "",
-     "agg": "0", "note": "정식 기록 없음 — census 카드(§11.4)에서 재측정"},
+     "judgment": "waiting_for=dependency 필드 — 필드와 notify_blocked_dependents 경로는 존재하나 "
+                 "정식 집계 기록은 없음(§8 census 불확실)",
+     "default": "release_ready 투영(enrich_blocked) + 사람 통보(notify)",
+     "handling": HANDLING_H, "wired": "server/service.py enrich_blocked/notify_blocked_dependents",
+     "agg": "0(미확인)", "note": "§8 — 정식 이벤트 기록으로 재측정 전까지 집계 불확실"},
 
     {"code": "marker_mismatch",
      "judgment": "마커 불일치 — 정식 기록 없음(§8)",
-     "default": "기록 없음",
-     "handling": R, "wired": "",
+     "default": "미확정 — 확인 전 운영 처리 없음",
+     "handling": HANDLING_PENDING, "wired": "",
      "agg": "미집계", "note": "stale_base와 분리 집계 필요(§8)"},
 
     {"code": "stale_base",
      "judgment": "stale head(리뷰 문맥) — 정식 기록 없음(§8)",
-     "default": "기록 없음",
-     "handling": R, "wired": "",
+     "default": "미확정 — 확인 전 운영 처리 없음",
+     "handling": HANDLING_PENDING, "wired": "",
      "agg": "미집계(리뷰 문맥 55회 언급)", "note": "marker_mismatch와 분리 집계 필요(§8)"},
 
     {"code": "unknown",
      "judgment": "위 어느 조건에도 안 맞음",
      "default": "소형 모델이 가장 가까운 코드 제안(advisory rank) + 사람 확인, 판단 로그 필수",
-     "handling": C, "wired": "",
+     "handling": HANDLING_C, "wired": "",
      "agg": "모호 약 30+", "note": "§5 C1 + §7 그림자 모드 — 상시 존재가 아니므로 규칙 부분은 무음 완결"},
 )
 

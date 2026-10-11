@@ -413,6 +413,31 @@ def _draft_stalled(i, pr_no, now):
     return False
 
 
+def _evidence_unresolved(i):
+    """현재 회차의 done 거부가 아직 해소되지 않았는지(리뷰 R5).
+
+    증거 경계(evidence_after_comment_id — 회차 리셋 시 갱신) 이후의 시스템
+    코멘트만 대상으로 한다. 경계 이전 거부는 이전 회차의 것 — 새 회차에서
+    재사용하지 않는다. 거부(DONE_GATE_MSG)와 접수('보고 접수') 중 최신
+    (ts, id 순)이 거부면 미해결. 접수된 성공 보고 뒤에 남은 과거 거부는
+    재요청하지 않는다. 접수 코멘트 이전 카드 호환으로 reported도 해소로 본다."""
+    b = i.get("evidence_after_comment_id") or 0
+    cands = []
+    for c in (i.get("comments") or []):
+        if c.get("author") != "tt-server" or (c.get("id") or 0) <= b:
+            continue
+        body = c.get("body") or ""
+        if body.startswith("done 증거 없음"):
+            cands.append(("reject", c.get("ts") or c.get("created_at") or "", c.get("id") or 0))
+        elif body.startswith("보고 접수"):
+            cands.append(("accept", c.get("ts") or c.get("created_at") or "", c.get("id") or 0))
+    if i.get("verification_status") == "reported":
+        return False
+    if not cands:
+        return False
+    return max(cands, key=lambda t: (t[1], t[2]))[0] == "reject"
+
+
 def _maybe_review_retry(actions, i, p, pr_repo, now):
     """12MZ: 세션 사망 정체 감지 → 회차 마커로 재발령 1회, 상한 도달 시 에스컬레이션.
 
@@ -639,12 +664,12 @@ def decide(snap):
             want = pr_repo
         if want != pr_repo:
             continue
-        # pr_no_checks(규칙표 §4): checks 0건 PR도 판정 대상 — 유효 리뷰 판정이
-        # 있으면 그 판정을 따르고(approve→병합 후보, request-changes→review-fix),
+        # pr_no_checks(규칙표 §4): 확인된 checks 0건([]) PR만 판정 대상 — 유효 리뷰
+        # 판정이 있으면 그 판정을 따르고(approve→병합 후보, request-changes→review-fix),
         # 무판정이면 리뷰 요청. 기존은 무응답(needs-merge 오표기)이었다.
-        # 게이트 off(TT_REVIEW_AGENT 미설정·비저위험) 레거시 모드에서는 무판정 병합
-        # 방지를 위해 진입 자체를 하지 않는다(기존 무응답 유지).
-        no_checks = not (p.get("checks") or [])
+        # checks=None(조회 실패, collect_prs)은 관측 불가 — 0건 취급 금지(리뷰 R1:
+        # CI 조회 오류의 병합 우회 방지). 게이트 off 레거시 모드는 기존 무응답 유지.
+        no_checks = p.get("checks") == []
         if ci_passed(p) or (no_checks and (reviewer or low_risk)):
             if reviewer or low_risk:
                 if i["state"] != "review":
@@ -730,6 +755,7 @@ def decide(snap):
             actions.append({"agent": "probe", "issue": iid, "action": "merge", "pr": p["number"],
                             "head_sha": p.get("head_sha", ""),
                             "repo": pr_repo, "low_risk": bool(low_risk),
+                            **({"no_ci": True} if no_checks else {}),
                             "reason": merge_reason})
 
     # ⓪b review 카드 중 병합 불가 후보 — 사람 판단 요청 코멘트 (M3R7M0ZR-YF99).
@@ -754,16 +780,8 @@ def decide(snap):
                                 "repo": repo, "pr": prn, "marker": amarker,
                                 "reason": f"코멘트 PR URL 역기입 — {repo}#{prn} 채택"})
                 break
-        marker = f"[needs-merge a{att}]"
-        if any(marker in (c.get("body") or "") for c in (i.get("comments") or [])
-               if c.get("author") == "probe"):
-            # 이미 needs-merge 노트 발행 — PR이 여전히 없을 때만 스탈 재평가 후 무음
-            # (codex P2: PENDING/FAILURE/draft PR 관측 중엔 'PR 없음' 공지 금지).
-            if not prs_for:
-                sa = _stale_act(i, att, snap.get("now") or "")
-                if sa:
-                    actions.append(sa)
-            continue
+        # draft 판정은 needs-merge dedup보다 먼저 — 구 needs-merge 마커가 draft의
+        # ready 요청·48h 사람 통보를 가리지 않게(리뷰 R2).
         drafts = [p for p in prs_for if p.get("isDraft")]
         if drafts and len(drafts) == len(prs_for):
             # 전부 draft — 병합·ci-fix 판정 불가. ready 요청 1회(마커 dedup) 후 무음.
@@ -782,6 +800,16 @@ def decide(snap):
                     actions.append({"agent": "probe", "issue": i["id"], "action": "needs-human",
                                     "note": f"{dh} draft PR#{drafts[0]['number']} ready 전환 없이 "
                                             f"병합 판정 반복(TT_DRAFT_STALL_H 경과) — 사람 판단 대기"})
+            continue
+        marker = f"[needs-merge a{att}]"
+        if any(marker in (c.get("body") or "") for c in (i.get("comments") or [])
+               if c.get("author") == "probe"):
+            # 이미 needs-merge 노트 발행 — PR이 여전히 없을 때만 스탈 재평가 후 무음
+            # (codex P2: PENDING/FAILURE/draft PR 관측 중엔 'PR 없음' 공지 금지).
+            if not prs_for:
+                sa = _stale_act(i, att, snap.get("now") or "")
+                if sa:
+                    actions.append(sa)
             continue
         if prs_for:
             states = [c.get("state") for p in prs_for for c in p.get("checks") or []]
@@ -837,6 +865,24 @@ def decide(snap):
         _ad = 0
     if _ad > 0:
         actions.append({"agent": "probe", "action": "archive-sweep", "days": _ad})
+    # ⑤ evidence_rejected(규칙표 §4) — done 거부 시스템 기록(tt-server DONE_GATE_MSG
+    # 코멘트)이 있는 비완료 카드: 담당 assignee 재제출 요청 노트(회차당 1회 dedup).
+    # 서버는 거부 시 state=review로 돌리므로 review 포함 — 실제 발생 상태(리뷰 R3).
+    for i in issues:
+        if i.get("archived") or i["state"] in ("done", "cancelled"):
+            continue
+        att = i.get("execution_attempt") or 0
+        emarker = f"[evidence-rejected a{att}]"
+        if _probe_marker(i, emarker):
+            continue
+        has_reject = any("done 증거 없음" in (c.get("body") or "")
+                         for c in (i.get("comments") or [])
+                         if c.get("author") == "tt-server")
+        if has_reject and _evidence_unresolved(i):
+            actions.append({"agent": "probe", "issue": i["id"], "action": "review-note",
+                            "marker": emarker, "attempt": att,
+                            "reason": f"done 거부(증거 없음/실패) — assignee 재제출 요청 "
+                                      f"(계약 v2 3단계 보고, tt done {i['id']} --report)"})
     return actions
 
 
@@ -928,9 +974,15 @@ def collect_prs(repos=None):
             continue
         for p in prs:
             try:
-                checks = gh_json("pr", "checks", p["number"], "--repo", repo, "--json", "name,state") or []
+                checks = gh_json("pr", "checks", p["number"], "--repo", repo, "--json", "name,state")
+                if checks is None:
+                    checks = []  # 정상 응답에 check-run 부재 = 확인된 0건
+                else:
+                    checks = list(checks)
             except Exception:
-                checks = []
+                # 조회 실패(API 오류·rate limit·네트워크) — 빈 목록과 구분(리뷰 R1).
+                # None은 '관측 불가': decide는 0건 확인으로 취급하지 않는다(병합 우회 방지).
+                checks = None
             out.append({"number": p["number"], "repo": repo, "branch": p.get("headRefName", ""),
                         "title": p.get("title", ""), "head_sha": p.get("headRefOid", ""),
                         "isDraft": bool(p.get("isDraft")),
@@ -1094,11 +1146,12 @@ def execute(url, act):
                 cr = None
         if st == "review" and cr:
             # 병합 성사 + 유효 보고 → verify 경로로만 done (M3R7M0ZR-YF99: done은 확인 직후)
+            ci_note = "" if act.get("no_ci") else "(CI green) "
             try:
                 api(url, f"/issues/{act['issue']}/verify", "POST",
                     {"verifier": "probe", "completion_report": cr})
                 api(url, f"/issues/{act['issue']}/comments", "POST",
-                    {"author": "probe", "body": f"probe: PR#{act['pr']} merged (CI green) — "
+                    {"author": "probe", "body": f"probe: PR#{act['pr']} merged {ci_note}— "
                                                 "verify 통과 → done"})
             except Exception as e:
                 api(url, f"/issues/{act['issue']}/comments", "POST",
@@ -1290,6 +1343,23 @@ def execute(url, act):
         if "draft" in act.get("reason", ""):
             # draft ready 요청 — decide가 넘긴 마커로 PR 단위 dedup
             marker = act.get("marker") or ""
+            if any(marker in (c.get("body") or "") for c in (cur.get("comments") or [])
+                   if c.get("author") == "probe"):
+                return
+            api(url, f"/issues/{act['issue']}/comments", "POST",
+                {"author": "probe", "body": f"{marker} {act['reason']}"})
+            return
+        if act.get("marker"):
+            # 전용 마커 노트(evidence-rejected 등) — needs-merge 마커와 독립 dedup.
+            # decide가 넘긴 마커를 그대로 영속화한다(리뷰 R3: 전용 마커 유지).
+            marker = act["marker"]
+            if "evidence-rejected" in marker:
+                # 액션의 대상 회차가 현재와 다르면 폐기(리뷰 R5: 재수령 뒤 옛
+                # 회차 액션 집행 금지 — 회차별 dedup 유지).
+                if (act.get("attempt") or 0) != (cur.get("execution_attempt") or 0):
+                    return
+                if not _evidence_unresolved(cur):
+                    return  # 재조회 시점에 이미 해소(성공 보고 접수) — 리뷰 R5
             if any(marker in (c.get("body") or "") for c in (cur.get("comments") or [])
                    if c.get("author") == "probe"):
                 return

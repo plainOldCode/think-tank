@@ -175,7 +175,9 @@ class CollectPrsGrammar(unittest.TestCase):
         self.assertEqual(len(out), 1)
         self.assertEqual(out[0]["branch"], "tt/M3PPRJ49-FYW2-ci")
         self.assertEqual(out[0]["head_sha"], "a" * 40)
-        self.assertEqual(out[0]["checks"], [], "checks 조회 실패는 [] 격리")
+        # 조회 실패는 None 격리(R1 리뷰: 확인된 0건([])과 구분 — None은 병합 우회 금지).
+        # 구 계약([] 격리)은 CI 조회 오류를 0건으로 오독해 병합 우회가 가능했다.
+        self.assertIsNone(out[0]["checks"], "checks 조회 실패는 None 격리(0건 아님)")
 
 
 class CiPassedLiveShape(unittest.TestCase):
