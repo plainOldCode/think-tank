@@ -21,6 +21,8 @@ v1 운영·실험 실측(2026-10-11, mini)이 그대로 근거다.
 | 라벨 카드 49건에서 4/13 제안 발화 | 참표 = 라벨 카드 전수, 매 폴링 재학습(라벨 드리프트 자동 흡수) |
 | 폴링 60s, 임베딩 62벡터 1.9s | POLL=60, MRL 256d, 타임아웃 60s — 유지 |
 
+운영 중 발견된 정체 유형이 하나 더 있다 — probe가 `[review-fix #n/sha]` 위임을 남기고 dispatch가 실행되지 않는 경우(PR#93, 2026-10-11 — 사람이 발견해 수동 진행)와 dispatch 자체가 실패로 기록되는 경우(PR#114, '수정 dispatch 실패(에이전트 미등록)')다. 후자는 마커에 근거가 남지만 전자는 아무 흔적이 없어 probe가 재발령할 근거를 얻지 못한다. 데몬의 7번 감시([fix-stall])가 이 공백을 메운다 — 소비자 재확인 의무는 BG97 계약과 같다.
+
 ## 2. 마커 스키마 (v2)
 
 공통 규칙:
@@ -39,6 +41,7 @@ v1 운영·실험 실측(2026-10-11, mini)이 그대로 근거다.
 [review-stall] reviewer=<agent> since_hours=<n> req_ts=<iso8601>
 [rework-stuck] src_kind=<probe마커kind> src_att=<a{n}|-> src_pr=<n> src_head=<sha8> attempt=<n> target=<agent> kind=<404|non-executor|failed>
 [verdict-seen] key=<card_id>:<comment_id>
+[fix-stall] src_kind=<probe마커kind> src_att=<a{n}|-> src_pr=<n> src_head=<sha8> attempt=<n> minutes=<n> kind=<no-progress|dispatch-failed>
 ```
 
 마커별 이벤트 키 — dedup 단위(카드 스코프, 같은 키 재발화 억제):
@@ -51,6 +54,7 @@ v1 운영·실험 실측(2026-10-11, mini)이 그대로 근거다.
 | [auto-classified] | label |
 | [possible-duplicate] | ref |
 | [verdict-seen] | key (card:comment_id) |
+| [fix-stall] | src_kind + src_pr + src_head + attempt |
 
 `src_*` 정규형 — 공백 포함 probe 마커의 무손실 분해 (rework-stuck):
 
@@ -71,6 +75,7 @@ probe 원본 마커는 공백을 포함하므로(`[review-fix #93/c661baaa]`, `[
 | [possible-duplicate] | 사람/트리아지 | ref 중복 확인 — 자동 취소 없음 |
 | [review-stall] | 12MZ | 감지 보조 기록 — probe 자체 감지와 중복돼도 무해(이벤트 키 상이). 이벤트 키당 1회, 장기 정체 재알림은 소비자 정책 |
 | [verdict-seen] | 없음 | 관측 다이제스트. 액션 없음 |
+| [fix-stall] | BG97 | review-fix 재발령 입력. minutes·kind로 무진행과 즉시실패 구분 — dispatch-failed는 즉시 발화(대기 없음), no-progress는 TT_DAEMON_FIX_STALL_MIN(기본 45분) 경과 후. 진행 증거(dispatch 실행 코멘트·재리뷰·판정·수령)가 마커 뒤에 있으면 침묵. 발단: PR#93 [review-fix] 위임 후 dispatch 미실행을 사람이 발견(2026-10-11), PR#114는 '수정 dispatch 실패(에이전트 미등록)'로 기록 |
 
 ## 3. 검증 기준 (M4NHG5DF-5YM3)
 
