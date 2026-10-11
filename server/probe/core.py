@@ -177,6 +177,9 @@ DEFAULT_REVIEW_MAP = {"codex": "claude", "claude": "codex",
                       "hermes": "codex", "opencode": "codex"}
 # 리뷰어 미가용 폴백 순서 — codex는 최후순위, hermes 자리는 kanban 어댑터가 대행
 REVIEW_FALLBACK = ("claude", "kanban-adapter", "codex")
+# 진행 중 run 상태(runner run_state.ACTIVE 동기) — 이 상태의 dispatch가 있으면
+# 같은 카드에 리뷰/수정 dispatch를 추가로 스폰하지 않는다(M4N469TR-JWW0).
+_ACTIVE_RUN_STATES = frozenset({"queued", "running", "stalled", "finalizing", "held"})
 # CI 봇은 구현 에이전트가 아니다 — 미표기 취급(기본 라우팅)
 CI_BOTS = ("doc-check", "e2e")
 
@@ -745,7 +748,9 @@ def decide(snap):
                                     "reason": "판정 기록 — 리뷰어 점유 반납"})
                 if verdict == "request-changes":
                     marker = f"[review-fix #{p['number']}/{sha8}]"
-                    if not _probe_marker(i, marker):
+                    if not _probe_marker(i, marker) and not i.get("busy_agents"):
+                        # 진행 중 dispatch가 있으면 수정 스폰도 보류(JWW0) — 마커를
+                        # 남기지 않아 다음 사이클 재판정.
                         actions.append({"agent": "probe", "issue": iid, "action": "review-fix",
                                         "pr": p["number"], "repo": pr_repo,
                                         "branch": p.get("branch", ""),
@@ -760,6 +765,12 @@ def decide(snap):
                         # 세션 사망 정체 감지·재발령(W S3C 영구 정체 사고의 미커버 구간).
                         _maybe_review_retry(actions, i, p, pr_repo, now)
                     else:
+                        # 진행 중 dispatch가 있으면 새 리뷰 스폰을 보류한다(JWW0) —
+                        # 수동 재리뷰+자동 리뷰+자동 fix가 같은 카드에 동시 도는
+                        # 사고(PR#87: 325/326/327/328)의 재발 방지. 마커 없이
+                        # 건너뛰어 다음 사이클 재판정(진행 종료 후 정상 스폰).
+                        if i.get("busy_agents"):
+                            continue
                         # 카운터파트 라우팅 — 구현 에이전트(assignee) 기준 리뷰어 결정.
                         # 수령 방식(review-claim 선점)은 #3c 그대로, 대상 선정만 양 경로가
                         # 같은 카운터파트/가족 정책을 따른다(R1).
@@ -1395,6 +1406,18 @@ def execute(url, act):
             cands = [legacy]
         cands = [c for c in cands
                  if c != author and not (author_fam and agent_family(c) == author_fam)]
+        # JWW0 — 진행 중 dispatch가 후보 에이전트를 점유하면 제외(동시 리뷰 방지).
+        # decide 이후 시간이 지났을 수 있어 실행 직전 재확인한다.
+        try:
+            _d = api(url, f"/issues/{act['issue']}/dispatches") or []
+        except Exception:
+            _d = []
+        _busy = {x.get("agent") for x in _d if isinstance(x, dict)
+                 and x.get("run_state") in _ACTIVE_RUN_STATES and x.get("agent")}
+        _had_cands = bool(cands)
+        cands = [c for c in cands if c not in _busy]
+        if _had_cands and not cands:
+            return  # 진행 중 스폰 금지 — 마커 없이 다음 사이클 재판정
         # 동기 수령 — claim-review 거부(409)면 다음 후보로 폴백(R3). 성공 전에는
         # review-req 마커를 남기지 않아 전원 거부 시 다음 사이클이 재판정한다.
         agent = None
@@ -1465,6 +1488,14 @@ def execute(url, act):
                     {"author": "probe", "body": f"{act['marker']} 수정 dispatch 실패"
                                                 f"(에이전트 미등록: {assignee}) — 사람 판단 대기"})
             else:
+                # JWW0 — 대상 에이전트의 진행 중 dispatch가 있으면 스폰 금지(동시 실행 방지)
+                try:
+                    _dfix = api(url, f"/issues/{act['issue']}/dispatches") or []
+                except Exception:
+                    _dfix = []
+                if any(isinstance(x, dict) and x.get("agent") == target
+                       and x.get("run_state") in _ACTIVE_RUN_STATES for x in _dfix):
+                    return
                 try:
                     api(url, f"/issues/{act['issue']}/dispatch", "POST",
                         {"agent": target, "message": msg})
@@ -1594,6 +1625,11 @@ def snapshot(url):
         if auto or i.get("assignee"):
             d = api(url, f"/issues/{i['id']}/dispatches")
             i["dispatches"] = len(d) if isinstance(d, list) else 0
+            # 진행 중 dispatch의 에이전트 집합 — decide가 리뷰/수정 중복 스폰을 막는다(JWW0)
+            i["busy_agents"] = sorted({x.get("agent") for x in (d or [])
+                                       if isinstance(x, dict)
+                                       and x.get("run_state") in _ACTIVE_RUN_STATES
+                                       and x.get("agent")})
         if i["state"] == "review":
             # review-note dedup 판정용 — review 카드는 상세(코멘트 포함)를 별도 취득
             try:

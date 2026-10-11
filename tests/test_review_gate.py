@@ -21,10 +21,12 @@ def gate_on(monkeypatch):
     monkeypatch.setenv("TT_REVIEW_AGENT", REV)
 
 
-def _issue(state="review", iid="M428RMBY-XC0K", attempt=1, comments=(), assignee="a@t"):
+def _issue(state="review", iid="M428RMBY-XC0K", attempt=1, comments=(), assignee="a@t",
+           busy_agents=None):
     return {"id": iid, "state": state, "assignee": assignee, "version": 3, "lease_expires": None,
             "labels": [], "priority": None, "execution_attempt": attempt,
             "dispatches": 1, "release_ready": False, "waiting_for": None,
+            "busy_agents": list(busy_agents or []),
             "work_contract": {"version": "v2"}, "comments": list(comments),
             "updated_at": "2026-10-04T09:00:00+0900", "title": iid}
 
@@ -417,3 +419,68 @@ def test_반납은_리뷰어_판정만_인정한다(gate_on, monkeypatch):
                                     "reviewer": REV, "pr": 9, "head_sha": "b" * 40,
                                     "expected_version": 3})
     assert [s for s in sent if s[1] == "PATCH"]  # 유효 판정 → 반납 실행
+
+
+# --- M4N469TR-JWW0: 진행 중 dispatch가 있으면 리뷰/수정 중복 스폰 금지 ---
+
+def test_진행중_dispatch있으면_새_리뷰요청_보류(gate_on):
+    # 수동 재리뷰+자동 리뷰+자동 fix 동시 스폰 사고(PR#87 325~328) 방지
+    i = _issue(busy_agents=["codex"])
+    acts = dispatchd.decide(_snap([i], _pr()))
+    assert not [a for a in acts if a["action"] in ("review-request", "review-claim")]
+    assert not [a for a in acts if a["action"] == "merge"]
+
+
+def test_진행중_dispatch없으면_정상_스폰(gate_on):
+    i = _issue(busy_agents=[])
+    acts = dispatchd.decide(_snap([i], _pr()))
+    assert [a for a in acts if a["action"] == "review-request"]
+
+
+def test_진행중_dispatch있으면_수정_스폰도_보류(gate_on):
+    i = _issue(comments=[{"author": REV, "body": f"review: request-changes\nPR#9@{SHA8} 고칠 것"}],
+               busy_agents=["codex"])
+    acts = dispatchd.decide(_snap([i], _pr()))
+    assert not [a for a in acts if a["action"] == "review-fix"]
+
+
+def test_review_request_실행은_점유_후보를_제외한다(gate_on, monkeypatch):
+    # 실행 직전 재확인 — decide 이후 상태 변화 방어(2중 가드)
+    calls = []
+
+    def fake_api(url, path, method="GET", body=None):
+        calls.append((method, path))
+        if path.endswith("/dispatches") and method == "GET":
+            return [{"agent": REV, "run_state": "running"}]
+        if path == "/issues/M428RMBY-XC0K":
+            return _issue()
+        return {}
+
+    monkeypatch.setattr(probe.core, "api", fake_api)
+    monkeypatch.setattr(probe.core, "get_version", lambda u, i: 3)
+    act = {"agent": REV, "issue": "M428RMBY-XC0K", "action": "review-request", "pr": 9,
+           "branch": "tt/x", "head_sha": SHA8, "repo": "plainOldCode/think-tank",
+           "marker": f"[review-req #9/{SHA8}]"}
+    probe.core.execute("http://x", act)
+    assert not any(m == "POST" and p.endswith("/dispatch") for m, p in calls)
+
+
+def test_review_fix_실행은_점유_대상에게_스폰하지_않는다(gate_on, monkeypatch):
+    calls = []
+
+    def fake_api(url, path, method="GET", body=None):
+        calls.append((method, path, body))
+        if path.endswith("/dispatches") and method == "GET":
+            return [{"agent": "a@t", "run_state": "queued"}]
+        if path == "/issues/M428RMBY-XC0K":
+            return _issue()
+        if path == "/agents":
+            return [{"name": "a@t", "enabled": True, "base_url": "http://x"}]
+        return {}
+
+    monkeypatch.setattr(probe.core, "api", fake_api)
+    act = {"agent": "probe", "issue": "M428RMBY-XC0K", "action": "review-fix", "pr": 9,
+           "branch": "tt/x", "head_sha": SHA8, "repo": "plainOldCode/think-tank",
+           "marker": f"[review-fix #9/{SHA8}]"}
+    probe.core.execute("http://x", act)
+    assert not any(m == "POST" and p.endswith("/dispatch") for m, p, _ in calls)
