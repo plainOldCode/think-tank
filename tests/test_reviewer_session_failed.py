@@ -273,3 +273,26 @@ def test_execute_review_request는_마커에_dispatch_id를_남긴다(monkeypatc
                                     "marker": f"[review-req #9/{SHA8}]"})
     comments = [b for m, p, b in calls if p.endswith("/comments") and m == "POST"]
     assert any("(dispatch#777)" in (b.get("body") or "") for b in comments)
+
+
+def test_동초_마커는_댓글_id로_최신을_선택한다(monkeypatch):
+    # 리뷰 4차 R3 — 동초(req+retry)에서 첫 행의 구 dispatch id로 고정되면 현재 실패를 놓침
+    monkeypatch.setattr("probe.core._stall_window_min", lambda: 30)
+    i = _i(reviewer="fallback@t",
+           comments=[_pc(REQ.replace("dispatch#294", "dispatch#290"), ts=NOW),
+                     _pc(REQ.replace("[review-req", "[review-retry a1").replace(
+                         "dispatch#294", "dispatch#300"), ts=NOW),
+                     dict(RUNNER_FAIL)])  # dispatch#294 실패 — a1(300)과 불일치 → 무트리거
+    i["comments"][0]["id"], i["comments"][1]["id"] = 10, 11
+    acts = dispatchd.decide(_snap([i], _pr(), [_agent("a2@t")]))
+    assert not [a for a in acts if a["action"] == "review-retry"]
+    # 실패 id가 최신 마커(300)와 일치하면 즉시 트리거
+    i2 = _i(reviewer="fallback@t",
+            comments=[_pc(REQ.replace("dispatch#294", "dispatch#290"), ts=NOW),
+                      _pc(REQ.replace("[review-req", "[review-retry a1").replace(
+                          "dispatch#294", "dispatch#300"), ts=NOW),
+                      {"author": "runner@m2max", "ts": NOW,
+                       "body": "runner:m2max dispatch#300 failed exit=1 session=s"}])
+    i2["comments"][0]["id"], i2["comments"][1]["id"] = 10, 11
+    acts = dispatchd.decide(_snap([i2], _pr(), [_agent("a2@t")]))
+    assert [a["marker"] for a in acts if a["action"] == "review-retry"] == [f"[review-retry a2 #9/{SHA8}]"]

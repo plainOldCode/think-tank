@@ -358,18 +358,21 @@ def _reviewer_session_stalled(i, pr_no, sha8, now):
     (review-req/review-retry)가 TT_REVIEW_STALL_MIN 창 경과.
     """
     comments = i.get("comments") or []
-    latest, latest_did = "", ""
+    latest, latest_id, latest_did = "", 0, ""
     for c in comments:
         if c.get("author") != "probe":
             continue
         body = c.get("body") or ""
         if f"#{pr_no}/{sha8}" not in body:
             continue
-        if ("[review-req #" in body or "[review-retry a" in body) \
-                and _comment_ts(c) > latest:
-            latest = _comment_ts(c)
-            m = _DISPATCH_ID_RE.search(body)
-            latest_did = m.group(1) if m else ""
+        if ("[review-req #" in body or "[review-retry a" in body) and _comment_ts(c):
+            # 동초 마커는 댓글 id로 최신 선택(리뷰 4차 R3) — 첫 행 고정이 구 실패를 오인
+            cid = c.get("id") or 0
+            ts = _comment_ts(c)
+            if ts > latest or (ts == latest and cid > latest_id):
+                latest, latest_id = ts, cid
+                m = _DISPATCH_ID_RE.search(body)
+                latest_did = m.group(1) if m else ""
     if not latest or not now:
         return False
     for c in comments:
