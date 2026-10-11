@@ -82,29 +82,17 @@ def _state_directive(msg):
     """명시적 상태 지시 추출 (ETHX 리뷰 R2/R3 반영).
     ① #state: 마커 — 자연어 배경 서술보다 항상 우선, 복수 마커는 모두 인용(충돌 노출)
     ② 마커가 없으면 자연어 핵심구 라인(첫 일치)
-    반환: (지시 문자열|None, 마커여부) — 지시 없는 dispatch는 기존 footer 그대로."""
+    반환: (지시 문자열|None, 마커여부) — 지시 없는 dispatch는 기존 footer 그대로.
+    인용은 원문 라인 전체 보존(리뷰 R3: 조건·금지·복수 마커가 임의 절단에서 사라지지
+    않도록) — 카드 상단 지시 섹션에도 원문이 남아 상호 대조 가능."""
     lines = [l.strip() for l in (msg or "").splitlines() if l.strip()]
     markers = [l for l in lines if STATE_MARKER_RE.match(l)]
     if markers:
-        return " ; ".join(markers), True
+        return "\n".join(markers), True
     for s in lines:
         if not s.startswith("#") and STATE_HINT_RE.search(s):
             return s, False
     return None, False
-
-
-def _directive_quote(text, is_marker, limit=200):
-    """지시 핵심이 인용에 살아남도록 절단 (리뷰 R3): 마커는 값이 앞에 오므로 앞 절단,
-    자연어 라인은 핵심구 매치 위치 중심 윈도우 — 배경 서술이 지시를 밀어내지 않는다."""
-    if len(text) <= limit:
-        return text
-    if not is_marker:
-        m = STATE_HINT_RE.search(text)
-        if m:
-            start = max(0, m.start() - 60)
-            end = min(len(text), m.end() + 120)
-            return ("… " if start > 0 else "") + text[start:end] + (" …" if end < len(text) else "")
-    return text[:limit] + "…"
 
 
 def build_dispatch_body(p, issue, did, board, task_hint=None):
@@ -123,7 +111,7 @@ def build_dispatch_body(p, issue, did, board, task_hint=None):
         # ETHX: 지시가 있으면 독립 규약 bullet을 '지시 우선'으로 치환하고 규약 2의 tt done도
         # 지시 조건부로 전환(리뷰 R1 — done 금지·반납만 지시에 고정 완료 단계 잔존 제거).
         # 우선순위는 본문 한 곳(실행 경계)에만 존재(수용기준 3). 지시 없으면 기존 문구 그대로.
-        quote = _directive_quote(directive, is_marker)
+        quote = directive  # 원문 라인 전체 보존 (리뷰 R3 — 조건·금지·복수 마커 보존)
         boundary = (
             "- **상태 지시 우선 (dispatch 지시 — 이 카드 한정)**: 이 카드의 상태 지시는 "
             "「%s」이다. 이 지시는 위 독립 규약과 완료 단계(규약 2의 tt done/verify 제출)보다 "
