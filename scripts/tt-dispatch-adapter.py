@@ -72,21 +72,39 @@ def card_status(ent):
 # ETHX: dispatch message의 명시적 상태 지시 — 데이터 취급(V587 dispatch#38 사고:
 # human 지시 'done 가능' vs 고정 footer '생명주기 독립' 충돌 → 워커가 footer 준수,
 # TT done/verify 미제출). #state: 마커가 정식 데이터형, 자연어 핵심구는 보조 탐지.
-STATE_DIRECTIVE_RE = re.compile(
-    r"(#\s*state\s*[:：]|done\s*가능|done\s*해도|done으로\s*마감|tt\s*done\b|"
-    r"verify\s*제출|반납만|close\s*금지|done\s*금지|상태\s*변경\s*금지)", re.I)
+STATE_MARKER_RE = re.compile(r"^#\s*state\s*[:：]", re.I)
+STATE_HINT_RE = re.compile(
+    r"(done\s*가능|done\s*해도|done으로\s*마감|tt\s*done\b|verify\s*제출|"
+    r"반납만|close\s*금지|done\s*금지|상태\s*변경\s*금지)", re.I)
 
 
 def _state_directive(msg):
-    """지시 라인 원문 인용(최대 200자) 또는 None — 지시 없는 dispatch는 기존 footer 그대로."""
-    for raw in (msg or "").splitlines():
-        s = raw.strip()
-        if not s:
-            continue
-        if re.match(r"^#\s*state\s*[:：]", s, re.I) or (
-                not s.startswith("#") and STATE_DIRECTIVE_RE.search(s)):
-            return s[:200]
-    return None
+    """명시적 상태 지시 추출 (ETHX 리뷰 R2/R3 반영).
+    ① #state: 마커 — 자연어 배경 서술보다 항상 우선, 복수 마커는 모두 인용(충돌 노출)
+    ② 마커가 없으면 자연어 핵심구 라인(첫 일치)
+    반환: (지시 문자열|None, 마커여부) — 지시 없는 dispatch는 기존 footer 그대로."""
+    lines = [l.strip() for l in (msg or "").splitlines() if l.strip()]
+    markers = [l for l in lines if STATE_MARKER_RE.match(l)]
+    if markers:
+        return " ; ".join(markers), True
+    for s in lines:
+        if not s.startswith("#") and STATE_HINT_RE.search(s):
+            return s, False
+    return None, False
+
+
+def _directive_quote(text, is_marker, limit=200):
+    """지시 핵심이 인용에 살아남도록 절단 (리뷰 R3): 마커는 값이 앞에 오므로 앞 절단,
+    자연어 라인은 핵심구 매치 위치 중심 윈도우 — 배경 서술이 지시를 밀어내지 않는다."""
+    if len(text) <= limit:
+        return text
+    if not is_marker:
+        m = STATE_HINT_RE.search(text)
+        if m:
+            start = max(0, m.start() - 60)
+            end = min(len(text), m.end() + 120)
+            return ("… " if start > 0 else "") + text[start:end] + (" …" if end < len(text) else "")
+    return text[:limit] + "…"
 
 
 def build_dispatch_body(p, issue, did, board, task_hint=None):
@@ -100,27 +118,42 @@ def build_dispatch_body(p, issue, did, board, task_hint=None):
     labels = ", ".join(issue.get("labels") or []) or "-"
     state = issue.get("state", "?")
     tid = str(issue.get("id"))
-    directive = _state_directive(msg)
+    directive, is_marker = _state_directive(msg)
     if directive:
-        # ETHX: 지시가 있으면 독립 규약 bullet을 '지시 우선'으로 치환 — 우선순위가
-        # 본문 한 곳에만 존재하게 생성(수용기준 3). 지시 없으면 기존 문구 그대로(회귀 안전).
+        # ETHX: 지시가 있으면 독립 규약 bullet을 '지시 우선'으로 치환하고 규약 2의 tt done도
+        # 지시 조건부로 전환(리뷰 R1 — done 금지·반납만 지시에 고정 완료 단계 잔존 제거).
+        # 우선순위는 본문 한 곳(실행 경계)에만 존재(수용기준 3). 지시 없으면 기존 문구 그대로.
+        quote = _directive_quote(directive, is_marker)
         boundary = (
             "- **상태 지시 우선 (dispatch 지시 — 이 카드 한정)**: 이 카드의 상태 지시는 "
-            "「%s」이며 위 독립 규약보다 우선한다. 지시가 done/verify를 요구하면 카드 완료 후 "
-            "TT 보고(`tt note %s` + `tt done %s --report report.json --json` 또는 verify)까지 수행하고, "
-            "TT 본문과의 충돌은 TT 코멘트로 기록한다. completion_report 게이트는 지시가 있어도 우회 불가."
-            % (directive, tid, tid))
+            "「%s」이다. 이 지시는 위 독립 규약과 완료 단계(규약 2의 tt done/verify 제출)보다 "
+            "우선한다 — done/verify를 요구하면 카드 완료 후 TT 보고(`tt note %s` + `tt done %s "
+            "--report report.json --json` 또는 verify)까지 수행하고, done 금지·반납만이면 "
+            "tt done/verify 없이 결과 코멘트로 종결한다. TT 본문과의 충돌은 TT 코멘트로 기록한다."
+            % (quote, tid, tid))
+        rule2 = (
+            "2. 완료 시 ① TT에 결과 코멘트(`tt note %s \"...\"`, 카드 코멘트의 종합 내용 포함) "
+            "② **상태 지시(아래 실행 경계)가 tt done/verify를 요구할 때만** `tt done %s --report report.json --json` "
+            "— report의 contract_version/attempt는 claim 응답 원본 복사, result는 passed/failed/inconclusive enum"
+            "(서술은 evidence에), method tdd면 red_* 필수. 지시가 done 금지·반납만이면 tt done/verify 없이 "
+            "결과 코멘트로 종결한다(지시상 미제출 — 게이트 우회 아님). 실패/불확실 보고는 review에 남는다."
+            % (tid, tid))
     else:
         boundary = ("- TT 이슈 상태와 카드 생명주기는 독립(브리지 reconcile이 회차 동기화). "
                     "dispatch 지시가 TT 본문과 충돌하면 카드는 dispatch 지시를 따르되 "
                     "TT 코멘트에 충돌 사실을 남긴다.")
+        rule2 = (
+            "2. 완료 시 ① TT에 결과 코멘트(`tt note %s \"...\"`, 카드 코멘트의 종합 내용 포함) "
+            "② `tt done %s --report report.json --json` — report의 contract_version/attempt는 claim 응답 원본 복사, "
+            "result는 passed/failed/inconclusive enum(서술은 evidence에), method tdd면 red_* 필수, 대체면 reason. "
+            "실패/불확실 보고는 review에 남는다." % (tid, tid))
     parts = [
         "## 지시 (dispatch#%s, %s)" % (did, p.get("author", "?")),
         msg or "(지시문 없음 — TT 본문 참조)",
         "",
         "## TT 왕복 규약 (어댑터 고정, 9/28~9/30 결정 — 3종 누락 금지; decomposer는 본문 앞 4000자만 본다)",
         "1. 작업 시작 시 `tt claim %s` 또는 lease 연장(`tt heartbeat %s`). 상태가 todo가 아니거나 타 에이전트 보유(409/steal 거부)면 사유를 이 카드에 코멘트하고 kanban_block — 우회 금지." % (tid, tid),
-        "2. 완료 시 ① TT에 결과 코멘트(`tt note %s \"...\"`, 카드 코멘트의 종합 내용 포함) ② `tt done %s --report report.json --json` — report의 contract_version/attempt는 claim 응답 원본 복사, result는 passed/failed/inconclusive enum(서술은 evidence에), method tdd면 red_* 필수, 대체면 reason. 실패/불확실 보고는 review에 남는다." % (tid, tid),
+        rule2,
         "3. 카드 complete(또는 실패 시 kanban_block) 후 장부 회신 확인. root는 자식 결과 집계만 — root가 worker를 겸하지 않는다(9/30 사용자 규약).",
         "",
         "## 실행 경계",
