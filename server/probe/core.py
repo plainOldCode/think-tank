@@ -438,6 +438,53 @@ def _evidence_unresolved(i):
     return max(cands, key=lambda t: (t[1], t[2]))[0] == "reject"
 
 
+# ⑥ 반복 사건 억제(§6, TT M4K87YR0-HN7E) — 같은 (사유코드, 범위) 반복 N회 도달 시
+# 사람 통보 1회 후 해당 키의 자동 대응 스킵. 카운터는 probe 마커 코멘트에서 집계
+# (서버 스키마 변경 없음). 해제는 사람 전용 — [unblocked (코드, 범위)]를 probe/
+# dispatchd가 아닌 author가 남겼을 때만 카운터가 그 시점 이후로 재집계된다.
+# H 처리(budget_exhausted 등)와 reviewer_session_failed(자체 N=3)는 억제하지 않는다.
+
+_ESC_FMT = "[escalated ({}, {})]"
+_UNBLOCK_FMT = "[unblocked ({}, {})]"
+
+
+def _suppressed(i, code, scope):
+    """(억제 여부, 카운터 재집계 시작 comment id) — 해제 마커가 에스컬레이션보다
+    최신이면 해제된 것으로 보고 그 이후만 카운트한다."""
+    esc = _ESC_FMT.format(code, scope)
+    if not any(esc in (c.get("body") or "") for c in (i.get("comments") or [])):
+        return False, 0
+    since = 0
+    latest = None
+    for c in (i.get("comments") or []):
+        if c.get("author") in ("probe", "dispatchd"):
+            continue  # 사람 전용 해제 — probe 자동 초기화 금지(§6)
+        if _UNBLOCK_FMT.format(code, scope) in (c.get("body") or ""):
+            k = (c.get("ts") or c.get("created_at") or "", c.get("id") or 0)
+            if latest is None or k > latest[0]:
+                latest = (k, c.get("id") or 0)
+    if latest is None:
+        return True, 0
+    return False, latest[1]
+
+
+def _repeat_count(i, regex, since_id=0):
+    """probe 마커 코멘트 중 regex 일치 수(해제 시점 이후만) — (코드, 범위) 카운터."""
+    return sum(1 for c in (i.get("comments") or [])
+               if c.get("author") == "probe" and (c.get("id") or 0) > since_id
+               and re.search(regex, c.get("body") or ""))
+
+
+def _escalate(actions, i, code, scope, count):
+    """사람 통보 1회(기존 level4-notify/needs-human 경로) — 마커 dedup."""
+    esc = _ESC_FMT.format(code, scope)
+    if any(esc in (c.get("body") or "") for c in (i.get("comments") or [])):
+        return
+    actions.append({"agent": "dispatchd", "issue": i["id"], "action": "needs-human",
+                    "note": f"{esc} 반복 사건 {count}회 도달 — 사람 확인 전까지 "
+                            "이 키의 자동 대응 중단(§6). 해제: [unblocked (코드, 범위)] 코멘트"})
+
+
 def _maybe_review_retry(actions, i, p, pr_repo, now):
     """12MZ: 세션 사망 정체 감지 → 회차 마커로 재발령 1회, 상한 도달 시 에스컬레이션.
 
@@ -784,9 +831,22 @@ def decide(snap):
         # ready 요청·48h 사람 통보를 가리지 않게(리뷰 R2).
         drafts = [p for p in prs_for if p.get("isDraft")]
         if drafts and len(drafts) == len(prs_for):
+            # 반복 사건 억제(§6): (draft_merge_loop, #pr) — ready 요청이 N번 반복되면
+            # 사람 통보 후 스킵. 억제 중이면 48h 통보도 포함해 모든 자동 대응 중단.
+            dscope = f"#{drafts[0]['number']}"
+            dsup, dsince = _suppressed(i, "draft_merge_loop", dscope)
+            dn = failure_rules.suppress_n()
+            if dsup:
+                print(time.strftime("%F %T"),
+                      f"억제 중 (draft_merge_loop, {dscope}) — draft 대응 스킵(§6)", flush=True)
+                continue
             # 전부 draft — 병합·ci-fix 판정 불가. ready 요청 1회(마커 dedup) 후 무음.
             # draft_merge_loop(규칙표 §4): ready 요청 후에도 경과하면 사람 1회 통보(dedup) 후 중지.
-            marker = f"[draft-flagged #{drafts[0]['number']}]"
+            marker = f"[draft-flagged {dscope}]"
+            if dn and _repeat_count(i, rf"\[draft-flagged {re.escape(dscope)}\]",
+                                    dsince) >= dn:
+                _escalate(actions, i, "draft_merge_loop", dscope, dn)
+                continue
             if not any(marker in (c.get("body") or "") for c in (i.get("comments") or [])
                        if c.get("author") == "probe"):
                 actions.append({"agent": "probe", "issue": i["id"], "action": "review-note",
@@ -802,6 +862,17 @@ def decide(snap):
                                             f"병합 판정 반복(TT_DRAFT_STALL_H 경과) — 사람 판단 대기"})
             continue
         marker = f"[needs-merge a{att}]"
+        # 반복 사건 억제(§6): (no_pr, 카드) — 'PR 없음' 노트가 N회차면 사람 통보 후 스킵.
+        nscope = i["id"]
+        nsup, nsince = _suppressed(i, "no_pr", nscope)
+        nn = failure_rules.suppress_n()
+        if nsup:
+            print(time.strftime("%F %T"),
+                  f"억제 중 (no_pr, {nscope}) — needs-merge 노트 스킵(§6)", flush=True)
+            continue
+        if nn and _repeat_count(i, r"\[needs-merge a\d+\]", nsince) >= nn:
+            _escalate(actions, i, "no_pr", nscope, nn)
+            continue
         if any(marker in (c.get("body") or "") for c in (i.get("comments") or [])
                if c.get("author") == "probe"):
             # 이미 needs-merge 노트 발행 — PR이 여전히 없을 때만 스탈 재평가 후 무음
@@ -823,6 +894,18 @@ def decide(snap):
                 att = i.get("execution_attempt") or 0
                 sha8 = (p0.get("head_sha") or "")[:8]
                 marker = f"[ci-fix a{att} #{p0['number']}/{sha8}]"
+                # 반복 사건 억제(§6): (ci_failed, #pr/sha8) — 위임이 N번 반복되면 사람
+                # 통보 후 스킵. same-head dedup보다 먼저(회차가 바뀌어 같은 head 반복).
+                scope = f"#{p0['number']}/{sha8}"
+                sup, since = _suppressed(i, "ci_failed", scope)
+                if sup:
+                    print(time.strftime("%F %T"),
+                          f"억제 중 (ci_failed, {scope}) — ci-fix 스킵(§6)", flush=True)
+                    continue
+                n = failure_rules.suppress_n()
+                if n and _repeat_count(i, rf"\[ci-fix a\d+ {re.escape(scope)}\]", since) >= n:
+                    _escalate(actions, i, "ci_failed", scope, n)
+                    continue
                 if any(marker in (c.get("body") or "") for c in (i.get("comments") or [])
                        if c.get("author") == "probe"):
                     continue  # same head 재위임 금지 — 새 커밋(head 변경) 시에만 재판정

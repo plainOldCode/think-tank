@@ -159,8 +159,17 @@ def handling_of(code):
 
 
 def draft_stall_hours():
-    """draft 병합 반복 사람 통보 임계(시간) — TT_DRAFT_STALL_H(기본 48). 0이면 통보 없음."""
+    """draft 병합 반복 사람 통보 임계(시간). 0이면 통보 없음. §4 draft_merge_loop."""
     try:
-        return max(0.0, float(os.environ.get("TT_DRAFT_STALL_H", "48")))
+        return max(0.0, float(os.getenv("TT_DRAFT_STALL_H", "48")))
     except ValueError:
         return 48.0
+
+
+def suppress_n():
+    """반복 사건 억제 임계 N(§6) — 같은 (사유코드, 범위) 반복 N회 도달 시 사람 통보
+    1회 후 자동 대응 스킵. 해제는 사람 전용. 0이면 억제 비활성."""
+    try:
+        return max(0, int(os.getenv("TT_SUPPRESS_N", "3")))
+    except ValueError:
+        return 3
