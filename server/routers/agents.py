@@ -73,7 +73,8 @@ def _dispatch_payload(issue, ag, p, did, issue_id, request, ctx, prev, tail,
         # 러너가 페이로드의 agent로 프로필을 정확 매칭한다 — 등록명(폴백 해석 후)을
         # 실어 보내야 codex@m2max → codex 폴백이 실제 세션을 연다(WGT4 리뷰 R1).
         "agent": agent_name or p.agent, "author": p.author, "message": p.message,
-        "context": prev["context"] if prev else "", "comments": tail,
+        "context": "" if p.fresh else (prev["context"] if prev else ""),
+        "comments": tail,
         "tt_url": str(request.base_url).rstrip("/"),
         "model": ag["model"] or "",  # RZ20: 감사 추적 — 이 회차가 어떤 모델로 실행되는지 선언값
         "work_contract": (p.work_contract if p.work_contract is not None else
@@ -191,7 +192,9 @@ def dispatch(issue_id: str, p: DispatchIn, request: Request, ctx: Ctx = Depends(
             # R5: 행 생성 시점부터 resume context를 상속해 둔다 — 전달 실패(error)나
             # 전달 전 크래시로 끝나도 재전달 payload가 원래 context를 잃지 않는다.
             # 전달 성공 시에만 웹훅 응답 token으로 갱신된다.
-            inh_ctx = prev["context"] if prev else ""
+            # 12MZ 리뷰 R5: fresh=True면 상속을 끊는다 — 세션 사망 재발령이 죽은/과거
+            # 세션을 계속(reuse)하지 않게(러너는 빈 context에서 신규 세션으로 폴백).
+            inh_ctx = (prev["context"] if prev else "") if not p.fresh else ""
             try:
                 did = c.execute("INSERT INTO dispatches (issue_id, agent, author, message, context, status, ts, model, idem_key, attempt, delivery_lease) "
                                 "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
