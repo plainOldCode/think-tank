@@ -95,7 +95,7 @@ probe-restructure-design.md §5.2의 단조성 — LLM 출력은 `hold`/`escalat
 | lease_conflict_401 | claim 409 lease_held, hook 401 | 중복 작업 중단 | R | 4 | 409 코드 자체는 변경 금지(§9) |
 | draft_merge_loop | draft PR merge skip 반복 | 같은 사유 N회 반복 시 사람 1회 통보 후 중지(§6) | R | 260(1카드) | 이상치. 현행은 draft-flagged 1회 후 무음(core.py:397) — 통보·스킵 추가 |
 | dependency | waiting_for=dependency | release_ready 투영(enrich_blocked) + 사람 통보(notify). 참고: probe는 auto 활성+idle+release_ready면 resume 후 todo로 PATCH하는 자동 재개 경로도 보유(core.py) | H | blocked 전이 0건(실측) | waiting_for 필드 갱신 이벤트는 159건(63카드, 상태 이탈 시 자동 초기화 포함)이나 값 변화는 old/new 부재로 복원 불가 — §8 실측(10/9~) |
-| marker_mismatch / stale_base | 마커 불일치, stale head | 미확정 — 확인 전 운영 처리 없음(§4.1) | 미확인 | 0(기록 경로 부재) | 정식 기록 경로 자체가 없음 — §8 실측. stale_base 게이트는 tt-push 별개 구현(PR#75) |
+| marker_mismatch / stale_base | 마커 불일치, stale head | 미확정 — 확인 전 운영 처리 없음(§4.1) | 미확인 | 미확인(기록 경로 부재) | 정식 기록 경로 자체가 없음 — 발생 건수 미확인(기록 부재가 0건 증거 아님, §8). stale_base 게이트는 tt-push 별개 구현(PR#75) |
 | unknown | 위 어느 조건에도 안 맞음 | 소형 모델이 가장 가까운 코드 제안(advisory) + 사람 확인, 로그 | C | 모호 약 30+ | §5 C1 + §7 그림자 모드 |
 
 ### 4.1 표 운영 규칙
@@ -103,7 +103,7 @@ probe-restructure-design.md §5.2의 단조성 — LLM 출력은 `hold`/`escalat
 - **새 유형은 코드가 아니라 표에 행을 추가한다.** 행 추가는 데이터 변경이지 계약 변경이 아니다(§9).
 - 판정 입력은 반드시 기계적 조건(스냅샷 필드·이벤트 패턴)으로 기술한다 — "대충 이런 상황"류 서술 금지. 기계적 조건으로 못 쓰면 unknown 행으로 간다.
 - 각 행의 기본 대응은 LLM 없이 완결되야 한다(§3.2 graceful degrade).
-- 집계 열은 출처(코멘트 패턴 추정)와 함께 유지한다 — 숫자가 정식 이벤트 기록으로 대체되기 전까지는 추정치로 명시한다.
+- 집계 열은 행마다 출처와 함께 유지한다 — 413장 코멘트 패턴 추정, 제한된 이벤트 창의 실측, 기록 경로 부재로 인한 미확인을 구분 표기한다(§8).
 
 ## 5. LLM 잔여 지점 — 3곳으로 한정
 
