@@ -70,7 +70,8 @@ FAILURE_RULES = (
      "judgment": "tt-server 시스템 코멘트 'done 증거 없음 또는 실패/미확정 보고' "
                  "(routers/issues DONE_GATE_MSG — done 거부 시 기록됨, comment.added 이벤트 포함)",
      "default": "담당 assignee 재제출 요청 노트(회차당 1회 dedup) — 사유 요약은 advisory(R+S §5 S2)",
-     "handling": HANDLING_R_S, "wired": "server/probe/core.py decide ⑤ (_evidence_rejected)",
+     "handling": HANDLING_R_S, "wired": "server/probe/core.py decide ⑤ evidence 스캔 + "
+                                        "execute review-note 전용 마커",
      "agg": "45(27카드)", "note": "verify 13건은 재제출 성공. 시스템 코멘트가 기계적 입력"},
 
     {"code": "verify_422",

@@ -842,8 +842,9 @@ def decide(snap):
         actions.append({"agent": "probe", "action": "archive-sweep", "days": _ad})
     # ⑤ evidence_rejected(규칙표 §4) — done 거부 시스템 기록(tt-server DONE_GATE_MSG
     # 코멘트)이 있는 비완료 카드: 담당 assignee 재제출 요청 노트(회차당 1회 dedup).
+    # 서버는 거부 시 state=review로 돌리므로 review 포함 — 실제 발생 상태(리뷰 R3).
     for i in issues:
-        if i.get("archived") or i["state"] in ("done", "cancelled", "review"):
+        if i.get("archived") or i["state"] in ("done", "cancelled"):
             continue
         att = i.get("execution_attempt") or 0
         emarker = f"[evidence-rejected a{att}]"
@@ -1317,6 +1318,16 @@ def execute(url, act):
         if "draft" in act.get("reason", ""):
             # draft ready 요청 — decide가 넘긴 마커로 PR 단위 dedup
             marker = act.get("marker") or ""
+            if any(marker in (c.get("body") or "") for c in (cur.get("comments") or [])
+                   if c.get("author") == "probe"):
+                return
+            api(url, f"/issues/{act['issue']}/comments", "POST",
+                {"author": "probe", "body": f"{marker} {act['reason']}"})
+            return
+        if act.get("marker"):
+            # 전용 마커 노트(evidence-rejected 등) — needs-merge 마커와 독립 dedup.
+            # decide가 넘긴 마커를 그대로 영속화한다(리뷰 R3: 전용 마커 유지).
+            marker = act["marker"]
             if any(marker in (c.get("body") or "") for c in (cur.get("comments") or [])
                    if c.get("author") == "probe"):
                 return

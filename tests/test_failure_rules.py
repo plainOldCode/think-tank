@@ -151,7 +151,8 @@ def test_done_거부_기록_카드는_재제출_요청_노트를_낸다():
            comments=[_pc("done 증거 없음 또는 실패/미확정 보고 — 현재 회차의 성공 결과가 필요합니다.",
                          author="tt-server")])
     acts = dispatchd.decide(_snap([i], [], []))
-    notes = [a for a in acts if a["action"] == "review-note"]
+    notes = [a for a in acts if a["action"] == "review-note"
+             and (a.get("marker") or "").startswith("[evidence-rejected")]
     assert len(notes) == 1 and notes[0]["marker"] == "[evidence-rejected a1]"
     assert "재제출" in notes[0]["reason"]
 
@@ -175,3 +176,74 @@ def test_draft_통보는_구_needs_merge_마커에_가려지지_않는다():
     nh = [a for a in acts if a["action"] == "needs-human"]
     assert len(nh) == 1 and "needs-human-draft #9" in nh[0]["note"]
     assert not [a for a in acts if a["action"] == "review-note"]
+
+
+# --- 리뷰 2차 R3/R4: 실제 거부 상태 + 전용 마커 집행 + 행별 입력→대응 ---
+
+def test_실제_done_거부_state_review에서도_재제출_요청이_나온다():
+    # 서버는 done 거부 시 state=review + DONE_GATE_MSG를 함께 저장 — 그 상태가 대상
+    i = _i(state="review",
+           comments=[_pc("done 증거 없음 또는 실패/미확정 보고 — 현재 회차의 성공 결과가 필요합니다.",
+                         author="tt-server")])
+    acts = dispatchd.decide(_snap([i], [], []))
+    notes = [a for a in acts if a["action"] == "review-note"
+             and (a.get("marker") or "").startswith("[evidence-rejected")]
+    assert len(notes) == 1 and notes[0]["marker"] == "[evidence-rejected a1]"
+
+
+def test_execute는_evidence_전용_마커를_보존하고_dedup한다(monkeypatch):
+    import probe.core
+
+    calls = []
+
+    def fake_api(url, path, method="GET", body=None):
+        calls.append((method, path, body))
+        return {"comments": [], "version": 3, "execution_attempt": 1}
+
+    monkeypatch.setattr(probe.core, "api", fake_api)
+    act = {"agent": "probe", "issue": "M4ABCDEF-GH12", "action": "review-note",
+           "marker": "[evidence-rejected a1]", "reason": "done 거부(증거 없음/실패)"}
+    probe.core.execute("http://x", act)
+    posts = [b for m, p, b in calls if p.endswith("/comments") and m == "POST"]
+    assert len(posts) == 1 and posts[0]["body"].startswith("[evidence-rejected a1]")
+    # 기존 needs-merge 유무와 무관하게 재판정 시 dedup(마커 이미 있으면 무음)
+    calls.clear()
+
+    def raced(url, path, method="GET", body=None):
+        calls.append((method, path, body))
+        return {"comments": [{"author": "probe", "body": "[evidence-rejected a1] done 거부"},
+                             {"author": "probe", "body": "[needs-merge a1] PR 없음"}],
+                "version": 3, "execution_attempt": 1}
+
+    monkeypatch.setattr(probe.core, "api", raced)
+    probe.core.execute("http://x", act)
+    assert not [b for m, p, b in calls if p.endswith("/comments") and m == "POST"]
+
+
+def test_미연결_행은_입력이_있어도_무음이다():
+    # runner_stall/verify_422/marker_mismatch/stale_base — wired="" : decide가
+    # 해당 입력을 만들어도 기본 대응이 없다(§4.1 — 데이터만 먼저 고정)
+    for state in ("in_progress", "review"):
+        i = _i(state=state, comments=[_pc("runner:m2max dispatch#294 STALL-killed",
+                                          author="runner@m2max")])
+        acts = dispatchd.decide(_snap([i], [], []))
+        assert not [a for a in acts if a["action"] == "needs-human"], state
+
+
+def test_행별_입력_to_대응_매핑_문서():
+    """배선 행의 입력→대응 검증 위치(행→테스트 연결, 리뷰 R4).
+
+    pr_no_checks: 본 파일 test_checks_0건_* 3면
+    draft_merge_loop: 본 파일 test_draft_* 3면
+    evidence_rejected: 본 파일 test_*done_거부*/test_execute는_evidence_*
+    reviewer_session_failed: tests/test_reviewer_session_failed.py 15건
+    fix_dispatch_404: tests/test_review_gate.py 계열(PR#80 회귀)
+    budget_exhausted: tests/test_policy*.py budget_reason 매트릭스
+    merged_no_report/ci_failed: tests/test_execute_merge_head_guard.py·ci-fix 회귀
+    미연결(runner_stall/verify_422/marker_mismatch/stale_base): 본 파일 test_미연결_행*
+    """
+    wired = {r["code"]: r["wired"] for r in failure_rules.rules()}
+    assert wired["pr_no_checks"] and wired["draft_merge_loop"] and wired["evidence_rejected"]
+    assert wired["reviewer_session_failed"] and wired["fix_dispatch_404"]
+    assert not wired["runner_stall"] and not wired["verify_422"]
+    assert not wired["marker_mismatch"] and not wired["stale_base"] and not wired["unknown"]
