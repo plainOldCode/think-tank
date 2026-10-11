@@ -198,7 +198,9 @@ def test_execute는_evidence_전용_마커를_보존하고_dedup한다(monkeypat
 
     def fake_api(url, path, method="GET", body=None):
         calls.append((method, path, body))
-        return {"comments": [], "version": 3, "execution_attempt": 1}
+        # 재조회 카드에도 거부 기록이 있어야 요청이 유효(R5: 접수되면 생략)
+        return {"comments": [_pc("done 증거 없음 또는 실패/미확정 보고", author="tt-server")],
+                "version": 3, "execution_attempt": 1}
 
     monkeypatch.setattr(probe.core, "api", fake_api)
     act = {"agent": "probe", "issue": "M4ABCDEF-GH12", "action": "review-note",
@@ -212,7 +214,8 @@ def test_execute는_evidence_전용_마커를_보존하고_dedup한다(monkeypat
     def raced(url, path, method="GET", body=None):
         calls.append((method, path, body))
         return {"comments": [{"author": "probe", "body": "[evidence-rejected a1] done 거부"},
-                             {"author": "probe", "body": "[needs-merge a1] PR 없음"}],
+                             {"author": "probe", "body": "[needs-merge a1] PR 없음"},
+                             _pc("done 증거 없음 또는 실패/미확정 보고", author="tt-server")],
                 "version": 3, "execution_attempt": 1}
 
     monkeypatch.setattr(probe.core, "api", raced)
@@ -261,12 +264,11 @@ def test_미연결_행은_review_기준선에_추가_액션을_만들지_않는�
 def test_행별_입력_to_대응_매핑_문서():
     """배선 행의 입력→대응 검증 위치(행→테스트 연결, 리뷰 R4 3차 — 전체 17행).
 
-    no_pr: tests/test_completion_via_merge.py::test_CI명시실패_위임off면_즉시_needs_merge
-           + tests/test_dispatchd.py::test_decide_no_merge_without_card_or_reportless_ok
+    no_pr: tests/test_completion_via_merge.py::test_review카드_PR없으면_needs_merge_판정
     pr_no_checks: 본 파일 test_checks_0건_무판정/승인/게이트_꺼짐/관측_불가
     ci_failed: tests/test_completion_via_merge.py::test_CI실패면_ci_fix_위임판정_needsmerge아님
                + test_ci_fix_head당_1회_marker면_재위임안함
-    merged_no_report: tests/test_completion_via_merge.py::test_review카드_merge는_verify로_done
+    merged_no_report: tests/test_completion_via_merge.py::test_review카드_리포트없으면_merge후_review유지
     fix_dispatch_404: tests/test_review_gate.py (R4(6XKC) 섹션 3건 — 가족 해석/우선/사람통보)
     reviewer_session_failed: tests/test_reviewer_session_failed.py (15건)
     evidence_rejected: 본 파일 test_실제_done_거부* / test_execute는_evidence_*
@@ -293,20 +295,30 @@ def test_행별_입력_to_대응_매핑_문서():
         assert not wired[code], code
 
 
-def test_행별_입력_to_대응_매핑_문서():
-    """배선 행의 입력→대응 검증 위치(행→테스트 연결, 리뷰 R4).
+# --- 리뷰 4차 R5: 성공 보고 접수 후 과거 거부로 재요청하지 않는다 ---
 
-    pr_no_checks: 본 파일 test_checks_0건_* 3면
-    draft_merge_loop: 본 파일 test_draft_* 3면
-    evidence_rejected: 본 파일 test_*done_거부*/test_execute는_evidence_*
-    reviewer_session_failed: tests/test_reviewer_session_failed.py 15건
-    fix_dispatch_404: tests/test_review_gate.py 계열(PR#80 회귀)
-    budget_exhausted: tests/test_policy*.py budget_reason 매트릭스
-    merged_no_report/ci_failed: tests/test_execute_merge_head_guard.py·ci-fix 회귀
-    미연결(runner_stall/verify_422/marker_mismatch/stale_base): 본 파일 test_미연결_행*
-    """
-    wired = {r["code"]: r["wired"] for r in failure_rules.rules()}
-    assert wired["pr_no_checks"] and wired["draft_merge_loop"] and wired["evidence_rejected"]
-    assert wired["reviewer_session_failed"] and wired["fix_dispatch_404"]
-    assert not wired["runner_stall"] and not wired["verify_422"]
-    assert not wired["marker_mismatch"] and not wired["stale_base"] and not wired["unknown"]
+def test_성공_보고_접수된_카드는_과거_거부가_있어도_재요청하지_않는다():
+    # 거부 코멘트가 남아 있어도 현재 회차에 유효 보고(reported)가 접수됐으면 해소된 것
+    i = _i(state="review", verification_status="reported",
+           comments=[_pc("done 증거 없음 또는 실패/미확정 보고", author="tt-server"),
+                    _pc("보고 접수 — review에 정지(병합 대기)", author="tt-server")])
+    acts = dispatchd.decide(_snap([i], [], []))
+    assert not [a for a in acts if a["action"] == "review-note"
+                and (a.get("marker") or "").startswith("[evidence-rejected")]
+
+
+def test_execute도_접수된_보고가_있으면_evidence_요청을_생략한다(monkeypatch):
+    import probe.core
+
+    calls = []
+
+    def raced(url, path, method="GET", body=None):
+        calls.append((method, path, body))
+        return {"comments": [], "version": 3, "execution_attempt": 1,
+                "verification_status": "reported"}
+
+    monkeypatch.setattr(probe.core, "api", raced)
+    act = {"agent": "probe", "issue": "M4ABCDEF-GH12", "action": "review-note",
+           "marker": "[evidence-rejected a1]", "reason": "done 거부(증거 없음/실패)"}
+    probe.core.execute("http://x", act)
+    assert not [b for m, p, b in calls if p.endswith("/comments") and m == "POST"]

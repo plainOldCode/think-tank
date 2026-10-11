@@ -413,6 +413,28 @@ def _draft_stalled(i, pr_no, now):
     return False
 
 
+def _evidence_unresolved(i):
+    """현재 회차의 done 거부가 아직 해소되지 않았는지(리뷰 R5).
+
+    거부(DONE_GATE_MSG)와 접수('보고 접수') 시스템 코멘트 중 최신(ts, id 순)이
+    거부면 미해결. 접수된 성공 보고 뒤에 남은 과거 거부는 재요청하지 않는다.
+    접수 코멘트 이전 카드 호환으로 verification_status=reported도 해소로 본다."""
+    cands = []
+    for c in (i.get("comments") or []):
+        if c.get("author") != "tt-server":
+            continue
+        body = c.get("body") or ""
+        if body.startswith("done 증거 없음"):
+            cands.append(("reject", c.get("ts") or c.get("created_at") or "", c.get("id") or 0))
+        elif body.startswith("보고 접수"):
+            cands.append(("accept", c.get("ts") or c.get("created_at") or "", c.get("id") or 0))
+    if i.get("verification_status") == "reported":
+        return False
+    if not cands:
+        return False
+    return max(cands, key=lambda t: (t[1], t[2]))[0] == "reject"
+
+
 def _maybe_review_retry(actions, i, p, pr_repo, now):
     """12MZ: 세션 사망 정체 감지 → 회차 마커로 재발령 1회, 상한 도달 시 에스컬레이션.
 
@@ -853,7 +875,7 @@ def decide(snap):
         has_reject = any("done 증거 없음" in (c.get("body") or "")
                          for c in (i.get("comments") or [])
                          if c.get("author") == "tt-server")
-        if has_reject:
+        if has_reject and _evidence_unresolved(i):
             actions.append({"agent": "probe", "issue": i["id"], "action": "review-note",
                             "marker": emarker,
                             "reason": f"done 거부(증거 없음/실패) — assignee 재제출 요청 "
@@ -1328,6 +1350,8 @@ def execute(url, act):
             # 전용 마커 노트(evidence-rejected 등) — needs-merge 마커와 독립 dedup.
             # decide가 넘긴 마커를 그대로 영속화한다(리뷰 R3: 전용 마커 유지).
             marker = act["marker"]
+            if "evidence-rejected" in marker and not _evidence_unresolved(cur):
+                return  # 재조회 시점에 이미 해소(성공 보고 접수) — 리뷰 R5
             if any(marker in (c.get("body") or "") for c in (cur.get("comments") or [])
                    if c.get("author") == "probe"):
                 return
