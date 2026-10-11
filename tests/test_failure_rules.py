@@ -221,13 +221,76 @@ def test_execute는_evidence_전용_마커를_보존하고_dedup한다(monkeypat
 
 
 def test_미연결_행은_입력이_있어도_무음이다():
-    # runner_stall/verify_422/marker_mismatch/stale_base — wired="" : decide가
-    # 해당 입력을 만들어도 기본 대응이 없다(§4.1 — 데이터만 먼저 고정)
-    for state in ("in_progress", "review"):
-        i = _i(state=state, comments=[_pc("runner:m2max dispatch#294 STALL-killed",
-                                          author="runner@m2max")])
-        acts = dispatchd.decide(_snap([i], [], []))
-        assert not [a for a in acts if a["action"] == "needs-human"], state
+    """미연결 4행(runner_stall/verify_422/marker_mismatch/stale_base) — wired="".
+
+    각 행의 관측 입력을 서로 다르게 공급하고, 해당 행 때문에 추가되는
+    dispatch/needs-human/merge가 없음을 '전체 액션 집합'으로 검증한다.
+    리뷰 R4: needs-human 부재만 보면 예상 밖 work 주입에도 통과하므로 부족.
+    """
+    # runner_stall — STALL-killed 코멘트(in_progress 기준선: 액션 없음)
+    i = _i(state="in_progress",
+           comments=[_pc("runner:m2max dispatch#294 STALL-killed exit=9",
+                         author="runner@m2max")])
+    assert dispatchd.decide(_snap([i], [], [])) == []
+    # verify_422 — 카드 기록이 아예 없는 조건(호출자 응답만 존재) = 입력 부재.
+    # 기록된 흔적 없이 verify가 실패한 카드 — decide 입력에 나타날 것도 없다.
+    assert dispatchd.decide(_snap([_i(state="in_progress")], [], [])) == []
+    # marker_mismatch — 규격 밖 마커 코멘트(정식 7종 아님) — 반응 없음
+    i = _i(state="in_progress", comments=[_pc("[unknown-garbage-marker xyz] 형식 불일치")])
+    assert dispatchd.decide(_snap([i], [], [])) == []
+    # stale_base — 리뷰 문맥의 base 지적 코멘트(정식 기록 없음) — 반응 없음
+    i = _i(state="in_progress",
+           comments=[_pc("rebase 필요 — base가 main 뒤처짐", author="reviewer@t")])
+    assert dispatchd.decide(_snap([i], [], [])) == []
+
+
+def test_미연결_행은_review_기준선에_추가_액션을_만들지_않는다():
+    """review 상태에서 미연결 행 입력 — no_pr 기준선(needs-merge 노트 1건) 외 추가 없음."""
+    inputs = [
+        [_pc("runner:m2max dispatch#294 STALL-killed exit=9", author="runner@m2max")],
+        [_pc("[unknown-garbage-marker xyz] 형식 불일치")],
+        [_pc("rebase 필요 — base가 main 뒤처짐", author="reviewer@t")],
+    ]
+    for comments in inputs:
+        acts = dispatchd.decide(_snap([_i(comments=comments)], [], []))
+        kinds = [a["action"] for a in acts]
+        assert kinds == ["review-note"], kinds  # no_pr 노트 외 추가 액션 없음
+        assert "PR 없음" in acts[0]["reason"]
+
+
+def test_행별_입력_to_대응_매핑_문서():
+    """배선 행의 입력→대응 검증 위치(행→테스트 연결, 리뷰 R4 3차 — 전체 17행).
+
+    no_pr: tests/test_completion_via_merge.py::test_CI명시실패_위임off면_즉시_needs_merge
+           + tests/test_dispatchd.py::test_decide_no_merge_without_card_or_reportless_ok
+    pr_no_checks: 본 파일 test_checks_0건_무판정/승인/게이트_꺼짐/관측_불가
+    ci_failed: tests/test_completion_via_merge.py::test_CI실패면_ci_fix_위임판정_needsmerge아님
+               + test_ci_fix_head당_1회_marker면_재위임안함
+    merged_no_report: tests/test_completion_via_merge.py::test_review카드_merge는_verify로_done
+    fix_dispatch_404: tests/test_review_gate.py (R4(6XKC) 섹션 3건 — 가족 해석/우선/사람통보)
+    reviewer_session_failed: tests/test_reviewer_session_failed.py (15건)
+    evidence_rejected: 본 파일 test_실제_done_거부* / test_execute는_evidence_*
+    verify_422: 미연결 — 본 파일 test_미연결_행은_입력이_있어도_무음이다 (기록 부재 조건)
+    runner_stall: 미연결 — 본 파일 (STALL 입력, 전체 액션 집단 검증)
+    budget_exhausted: tests/test_dispatchd.py::test_two_dispatch_tries_becomes_needs_human_not_work
+                      + test_attempt_two_becomes_needs_human (사람 통보 기본 대응)
+    needs_decision: tests/test_api.py::test_dispatch_progress_blocked_comment_escalates
+    lease_conflict_401: tests/test_cross_review.py::test_review_eligible_matrix (review_occupied)
+    draft_merge_loop: 본 파일 test_draft_* 3건
+    dependency: tests/test_dispatchd.py::test_release_ready_resume_wins_over_pool
+                + test_not_release_ready_is_not_resumed (blocked 재개 조건)
+    marker_mismatch: 미확인 — 본 파일 (규격 밖 마커 입력 무음)
+    stale_base: 미확인 — 본 파일 (base 지적 입력 무음) + 참고 tests/test_stale_base.py(push 게이트)
+    unknown: 본 파일 test_행별_처리_구분_골든 (C 폴백)
+    """
+    wired = {r["code"]: r["wired"] for r in failure_rules.rules()}
+    for code in ("no_pr", "pr_no_checks", "ci_failed", "merged_no_report",
+                 "fix_dispatch_404", "reviewer_session_failed", "evidence_rejected",
+                 "budget_exhausted", "needs_decision", "lease_conflict_401",
+                 "draft_merge_loop", "dependency"):
+        assert wired[code], code
+    for code in ("verify_422", "runner_stall", "marker_mismatch", "stale_base", "unknown"):
+        assert not wired[code], code
 
 
 def test_행별_입력_to_대응_매핑_문서():
