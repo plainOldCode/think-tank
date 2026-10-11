@@ -41,11 +41,16 @@ def _agent(name):
     return {"name": name, "enabled": True, "base_url": "http://x"}
 
 
-def _pc(body, ts=OLD):
-    return {"author": "probe", "body": body, "created_at": ts}
+def _pc(body, ts=OLD, author="probe"):
+    # 실측 wire 형식(db.comments_of): {author, body, ts} — created_at 아님(리뷰 R1)
+    return {"author": author, "body": body, "ts": ts}
 
 
 REQ = f"[review-req #9/{SHA8}] PR#9 CI green — 리뷰 요청 → fallback@t"
+RUNNER_FAIL = {"author": "runner@m2max", "ts": NOW,  # 실측 author 형식(리뷰 R2)
+               "body": "runner:m2max dispatch#294 failed exit=1 session=tt-codex-294\nReconnecting 5/5"}
+RUNNER_OK = {"author": "runner@m2max", "ts": NOW,
+             "body": "runner:m2max dispatch#294 done exit=0 session=tt-codex-294"}
 
 
 @pytest.fixture(autouse=True)
@@ -86,10 +91,10 @@ def test_회차가_증가하고_상한_도달시_1회만_에스컬레이션한�
     nh = [a for a in acts if a["action"] == "needs-human"]
     assert len(nh) == 1 and "판정 없음" in nh[0]["note"]
 
-    # 에스컬레이션 dedup — needs-human-review 마커가 이미 있으면 반복 없음
+    # 에스컬레이션 dedup — 실제 executor(author=dispatchd) 출력 형식으로도 무반복(리뷰 R6)
     i5 = _i(reviewer="fallback@t",
             comments=[_pc(REQ), _pc(f"[review-retry a3 #9/{SHA8}]"),
-                      _pc(f"[needs-human-review #9/{SHA8}] 사람 판단 대기")])
+                      _pc(f"[needs-human-review #9/{SHA8}] 사람 판단 대기", author="dispatchd")])
     acts = dispatchd.decide(_snap([i5], _pr(), [_agent("a2@t")]))
     assert not [a for a in acts if a["action"] == "needs-human"]
 
@@ -117,8 +122,7 @@ def test_head_변경시_카운터가_리셋된다():
 def test_runner_실패_코멘트는_관망_창_내라도_즉시_트리거한다():
     i = _i(reviewer="fallback@t",
            comments=[_pc(REQ, ts=NOW),  # 방금 발령 — 관망 창 내
-                     {"author": "runner:m2max", "created_at": NOW,
-                      "body": "runner:m2max dispatch#294 failed exit=1 session=tt-codex-294\nReconnecting 5/5"}])
+                     dict(RUNNER_FAIL)])
     acts = dispatchd.decide(_snap([i], _pr(), [_agent("a2@t")]))
     assert [a["marker"] for a in acts if a["action"] == "review-retry"] == [f"[review-retry a1 #9/{SHA8}]"]
 
@@ -127,9 +131,7 @@ def test_runner_성공_코멘트는_트리거가_아니다(monkeypatch):
     # 관망 창 30분 — 마커는 방금(창 내), runner 코멘트는 성공(exit=0)
     monkeypatch.setattr("probe.core._stall_window_min", lambda: 30)
     i = _i(reviewer="fallback@t",
-           comments=[_pc(REQ, ts=NOW),
-                     {"author": "runner:m2max", "created_at": NOW,
-                      "body": "runner:m2max dispatch#294 done exit=0 session=tt-codex-294"}])
+           comments=[_pc(REQ, ts=NOW), dict(RUNNER_OK)])
     acts = dispatchd.decide(_snap([i], _pr(), [_agent("a2@t")]))
     assert not [a for a in acts if a["action"] == "review-retry"]
     assert not [a for a in acts if a["action"] == "needs-human"]
@@ -141,6 +143,34 @@ def test_최근_발령은_관망한다(monkeypatch):
     acts = dispatchd.decide(_snap([i], _pr(), [_agent("a2@t")]))
     assert not [a for a in acts if a["action"] == "review-retry"]
     assert not [a for a in acts if a["action"] == "review-request"]
+
+
+def test_구_실패는_새_세션과_새_head의_관망을_깨지_않는다(monkeypatch):
+    # 리뷰 R3 — 실패 코멘트가 최신 발령 마커보다 오래되면 즉시 트리거가 아니다
+    monkeypatch.setattr("probe.core._stall_window_min", lambda: 30)
+    # 실패(ts=OLD) → 재발령 a1(ts=NOW): 실패 < 최신 마커 → 즉시 트리거 아님(관망)
+    i = _i(reviewer="fallback@t",
+           comments=[_pc(REQ, ts=OLD), dict(RUNNER_FAIL, ts=OLD),
+                     _pc(f"[review-retry a1 #9/{SHA8}]", ts=NOW)])
+    acts = dispatchd.decide(_snap([i], _pr(), [_agent("a2@t")]))
+    assert not [a for a in acts if a["action"] == "review-retry"]
+    # 구 head(cccc) 실패 + 새 head(bbbb) 발령 → 새 head에선 정상 요청 경로(재발령 아님)
+    i2 = _i(reviewer="fallback@t",
+            comments=[_pc(f"[review-req #9/cccccccc] 리뷰 요청"),
+                      {"author": "runner@m2max", "ts": OLD,
+                       "body": "runner:m2max dispatch#280 failed exit=1 session=x"}])
+    acts = dispatchd.decide(_snap([i2], _pr(sha="b" * 40), [_agent("a2@t")]))
+    assert not [a for a in acts if a["action"] == "review-retry"]
+
+
+def test_마지막_재발령도_관망_창을_받는다(monkeypatch):
+    # 리뷰 R7 — a3 직후에는 에스컬레이션하지 않는다(정체 판정이 먼저)
+    monkeypatch.setattr("probe.core._stall_window_min", lambda: 30)
+    i = _i(reviewer="fallback@t",
+           comments=[_pc(REQ, ts=NOW), _pc(f"[review-retry a3 #9/{SHA8}]", ts=NOW)])
+    acts = dispatchd.decide(_snap([i], _pr(), [_agent("a2@t")]))
+    assert not [a for a in acts if a["action"] == "needs-human"]
+    assert not [a for a in acts if a["action"] == "review-retry"]
 
 
 def test_execute_review_retry는_회차_마커로_재발령한다(monkeypatch):
@@ -165,6 +195,39 @@ def test_execute_review_retry는_회차_마커로_재발령한다(monkeypatch):
     assert len(disp) == 1
     assert disp[0]["agent"] == "fallback@t"
     assert "새 세션에서 시작" in disp[0]["message"] and "재사용 금지" in disp[0]["message"]
+    # 리뷰 R4: 회차 마커가 본문에 들어가 멱등키가 회차를 구분한다
+    assert marker in disp[0]["message"]
+    # 리뷰 R5: 이전 세션 context 상속을 끊는다(fresh)
+    assert disp[0]["fresh"] is True
     # 회차 마커 코멘트 영속화
     comments = [b for m, p, b in calls if p.endswith("/comments") and m == "POST"]
     assert any(marker in (b.get("body") or "") for b in comments)
+
+
+def test_fresh_dispatch는_context를_상속하지_않는다(client):
+    # 리뷰 R5 서버 경로 — fresh=True면 이전 회차 resume context를 끊는다
+    import json as _json
+    with client as c:
+        c.post("/agents", json={"name": "r@t", "base_url": "http://hook/x"})
+        r = c.post("/issues", json={"id": "M4FRESH-TEST-01", "title": "t",
+                                    "acceptance": "x"})
+        iid = r.json()["id"]
+        # 1회차 행을 만든 뒤 context 주입(웹훅 응답 상속을 흉내)
+        import sqlite3 as _sq
+        c.post(f"/issues/{iid}/dispatch", json={"agent": "r@t", "message": "1차 지시"})
+        con = _sq.connect(client.app.state.ctx.db_path)
+        con.execute("UPDATE dispatches SET context=? WHERE issue_id=?",
+                    ("runner:m2max:tmux:tt-old-1", iid))
+        con.commit()
+        con.close()
+        # 일반 dispatch는 상속, fresh dispatch는 끊음 — 행의 context 컬럼으로 검증:
+        # fresh는 INSERT 시 inh_ctx=""(전달 실패여도 유지)
+        c.post(f"/issues/{iid}/dispatch", json={"agent": "r@t", "message": "일반 지시"})
+        c.post(f"/issues/{iid}/dispatch", json={"agent": "r@t", "message": "재발령 지시",
+                                                "fresh": True})
+        con = _sq.connect(client.app.state.ctx.db_path)
+        rows = con.execute("SELECT context FROM dispatches WHERE issue_id=? ORDER BY id",
+                           (iid,)).fetchall()
+        con.close()
+        assert rows[1][0] == "runner:m2max:tmux:tt-old-1"
+        assert rows[2][0] == ""

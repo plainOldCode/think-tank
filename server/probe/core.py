@@ -327,6 +327,11 @@ def _stall_window_min():
         return 60
 
 
+def _comment_ts(c):
+    """댓글 시각 필드 — wire 형식은 ts(db.comments_of), 테스트/구형 호환 created_at."""
+    return c.get("ts") or c.get("created_at") or ""
+
+
 def _review_retry_round(i, pr_no, sha8):
     """이 head(pr@sha8)의 재발령 회차 — probe 코멘트의 회차 마커에서 산출.
     head가 바뀌면 마커의 sha8이 달라져 자동 리셋(0)된다."""
@@ -344,16 +349,13 @@ def _review_retry_round(i, pr_no, sha8):
 def _reviewer_session_stalled(i, pr_no, sha8, now):
     """발령 이력 head의 세션 사망 정체 판정(기계적) — 12MZ.
 
-    즉시 트리거: runner:* 코멘트의 `dispatch#N failed exit!=0`.
+    즉시 트리거: runner 신원(author runner* — 실측 runner@machine 형식, 본문은
+    runner:machine 접두) 코멘트의 `dispatch#N failed exit!=0` — 단 최신 발령
+    마커 이후 것만(구 실패가 새 세션·새 head의 관망 창을 무시하지 않게).
     이외: 리뷰어 점유 흔적(release되지 않은 reviewer) + 최신 발령 마커
     (review-req/review-retry)가 TT_REVIEW_STALL_MIN 창 경과.
     """
     comments = i.get("comments") or []
-    if any(_RUNNER_FAIL_RE.search(c.get("body") or "") for c in comments
-           if str(c.get("author") or "").startswith("runner:")):
-        return True
-    if not i.get("reviewer"):
-        return False
     latest = ""
     for c in comments:
         if c.get("author") != "probe":
@@ -362,9 +364,18 @@ def _reviewer_session_stalled(i, pr_no, sha8, now):
         if f"#{pr_no}/{sha8}" not in body:
             continue
         if ("[review-req #" in body or "[review-retry a" in body) \
-                and (c.get("created_at") or "") > latest:
-            latest = c["created_at"]
+                and _comment_ts(c) > latest:
+            latest = _comment_ts(c)
     if not latest or not now:
+        return False
+    for c in comments:
+        if not str(c.get("author") or "").startswith("runner"):
+            continue
+        if not _RUNNER_FAIL_RE.search(c.get("body") or ""):
+            continue
+        if _comment_ts(c) >= latest:
+            return True
+    if not i.get("reviewer"):
         return False
     win = _stall_window_min()
     if win <= 0:
@@ -381,18 +392,20 @@ def _maybe_review_retry(actions, i, p, pr_repo, now):
 
     기존 review-req 마커 dedup은 유지하되, 그 뒤에 무음으로 갇히지 않게 하는 층.
     재발령은 회차 마커([review-retry a<n>])로 dedup — probe dedup과 충돌 없음.
+    정체 판정이 에스컬레이션보다 먼저다(리뷰 R7) — 마지막 회차도 관망 창을 온전히 받는다.
     """
     pr_no, sha8 = p["number"], (p.get("head_sha") or "")[:8]
+    if not _reviewer_session_stalled(i, pr_no, sha8, now):
+        return  # 점유 흔적·실패 기록 없음, 또는 관망 창 내 — 기존 dedup 그대로
     rnd = _review_retry_round(i, pr_no, sha8)
     if rnd >= REVIEW_RETRY_MAX:
         nh = f"[needs-human-review #{pr_no}/{sha8}]"
-        if not _probe_marker(i, nh):
+        # executor가 dispatchd로 기록하므로 author 무관 dedup(리뷰 R6)
+        if not any(nh in (c.get("body") or "") for c in (i.get("comments") or [])):
             actions.append({"agent": "probe", "issue": i["id"], "action": "needs-human",
                             "note": f"{nh} 리뷰 {REVIEW_RETRY_MAX}회차 재발령 후에도 판정 없음 "
                                     f"(PR#{pr_no} @{sha8}, reviewer_session_failed) — 사람 판단 대기"})
         return
-    if not _reviewer_session_stalled(i, pr_no, sha8, now):
-        return  # 점유 흔적·실패 기록 없음, 또는 관망 창 내 — 기존 dedup 그대로
     retry_marker = f"[review-retry a{rnd + 1} #{pr_no}/{sha8}]"
     if _probe_marker(i, retry_marker):
         return  # 경합 방어 — 같은 회차 재발령은 1회만
@@ -1158,10 +1171,16 @@ def execute(url, act):
             return
         msg = _review_dispatch_msg(act, agent)
         if kind == "review-retry":
+            # 리뷰 R4: 회차 마커를 본문에 포함 — 서버 멱등키(issue+agent+attempt+message
+            # 해시)가 회차를 구분하게 해 a2+ 재발령이 a1 행으로 기수락되지 않는다.
             msg += ("\n\n[12MZ] 이전 리뷰 세션이 판정 없이 종료됐다(reviewer_session_failed). "
-                    "**새 세션에서 시작**하고 이전 세션 재사용 금지 — 컨텍스트 누적이 부수 원인이었다.")
+                    "**새 세션에서 시작**하고 이전 세션 재사용 금지 — 컨텍스트 누적이 부수 원인이었다.\n"
+                    + act["marker"])
         try:
             api(url, f"/issues/{act['issue']}/dispatch", "POST",
+                {"agent": agent, "message": msg,
+                 # 12MZ 리뷰 R5: 재발령은 이전 세션 context 상속을 끊는다 — 새 세션 강제
+                 "work_contract": REVIEW_CONTRACT, "fresh": True} if kind == "review-retry" else
                 {"agent": agent, "message": msg, "work_contract": REVIEW_CONTRACT})
         except Exception as e:
             # F4 — claim 점유만 남기고 죽으면 만료까지 타 리뷰어가 409다: 반납 후 기록

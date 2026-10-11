@@ -151,6 +151,9 @@ class DispatchIn(BaseModel):
     author: str = "board"
     # M42KC1XR-2DD1 R2: 리뷰 dispatch는 구현 계약 대신 리뷰 계약을 전달
     work_contract: dict | None = None
+    # 12MZ 리뷰 R5: 세션 사망 재발령 — 이전 resume context 상속을 끊어 러너가
+    # 죽은/과거 세션을 continue_session으로 재사용하지 않게 한다(새 세션 강제).
+    fresh: bool = False
 
 
 class DispatchProgress(BaseModel):
