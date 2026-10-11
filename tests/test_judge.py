@@ -95,7 +95,8 @@ def test_판단_기록은_스키마_필드를_갖는다(tmp_path):
                        log=judge.JudgeLog(jp))
     rec = json.loads(open(jp, encoding="utf-8").read())
     assert set(rec) == set(judge.LOG_SCHEMA)
-    assert rec["point"] == "C1" and rec["mode"] == "shadow" and rec["output"] == "rank"
+    assert rec["point"] == "C1" and rec["mode"] == "shadow"
+    assert rec["output"].startswith("rank:") and "rank: " in rec["output"]  # 제안값 보존(리뷰 R3)
     assert rec["judge"] == "fake@v1" and rec["fallback"] is False and rec["gate"] == "allow"
 
 
@@ -180,7 +181,10 @@ def test_S2_판단기_요약이_재제출_노트에_첨부된다(monkeypatch):
                                     "marker": "[evidence-rejected a1]", "attempt": 1,
                                     "reason": "done 거부(증거 없음/실패)"})
     posts = [b for m, p, b in calls if p.endswith("/comments") and m == "POST"]
-    assert posts and "판정 아님" in posts[0]["body"] and "스키마 필요" in posts[0]["body"]
+    # 마커 노트와 요약은 분리된 코멘트(리뷰 R2 — 요약이 제어마커로 재해석되지 않게)
+    assert len(posts) == 2 and posts[0]["body"].startswith("[evidence-rejected a1]")
+    assert posts[1]["body"].startswith("[judge-note ") and "스키마 필요" in posts[1]["body"]
+    assert "스키마 필요" not in posts[0]["body"]
 
 
 def test_C2_라벨과_repo_마커가_없을때만_판단기가_개입한다(monkeypatch):
@@ -200,7 +204,7 @@ def test_C2_라벨과_repo_마커가_없을때만_판단기가_개입한다(monk
 def test_C1_미매칭_서버_실패_기록을_rank_제안한다(monkeypatch):
     j = FakeJudge("rank", "nearest: verify_422")
     judge.set_judge(j)
-    i = _i(state="review", comments=[_pc("verify 422 — completion_report 구조 오류",
+    i = _i(state="review", comments=[_pc("런너 세션 503 폭발 — 원인 미상 오류",
                                          author="tt-server")])
     dispatchd.decide(_snap([i], [], []))
     assert [pt for pt, _ in j.calls if pt == "C1"] == ["C1"]
@@ -218,3 +222,102 @@ def test_C1_규칙표_행에_해당하는_기록은_건너뛴다(monkeypatch):
         j.calls.clear()
         dispatchd.decide(_snap([i], [], []))
         assert not [pt for pt, _ in j.calls if pt == "C1"]
+
+
+# --- 리뷰 1차 지적 보강 ---
+
+def test_seen은_기록된_해시를_찾는다(tmp_path):
+    # 리뷰 R1 — 구현이 문자열 인덱싱으로 TypeError를 내던 버그
+    jp = str(tmp_path / "j.jsonl")
+    lg = judge.JudgeLog(jp)
+    judge.set_judge(FakeJudge())
+    judge.run_advisory("C1", {"card": "M1", "input": {"x": 1}}, "unknown", log=lg)
+    ih = judge.input_hash("C1", {"card": "M1", "input": {"x": 1}})
+    assert lg.seen("M1", "C1", ih)
+    assert not lg.seen("M2", "C1", ih)  # 다른 카드 — 스코프 밖(리뷰 R9)
+    assert not lg.seen("M1", "C1", "no-such-hash")
+
+
+def test_미구성_판단기와_기존_로그가_있어도_규칙_집행은_계속된다(tmp_path):
+    # 리뷰 R1 후반 — seen() 접근 자체가 규칙 액션을 죽이면 안 된다
+    judge.JudgeLog(str(tmp_path / "j.jsonl")).record(
+        point="C1", judge="x", mode="shadow", output="rank: y", rule_output="r", gate="allow",
+        card="M1", input_hash_="h")
+    judge.set_judge(None)  # 미구성
+    acts = dispatchd.decide(_snap([_i()], [], []))
+    assert [a["action"] for a in acts] == ["review-note"]  # 기존 규칙 동작 보존
+
+
+def test_로그_쓰기_실패가_규칙_집행을_취소하지_않는다(monkeypatch):
+    # 리뷰 R5 — TT_JUDGE_LOG가 불가능한 경로여도 dispatch는 나가야 한다
+    import judge as J
+    calls = _exec_s1(monkeypatch, FakeJudge("annotate", "요약"))
+    monkeypatch.setenv("TT_JUDGE_LOG", "/nonexistent-dir-xyz/j.jsonl")
+    calls2 = _exec_s1(monkeypatch, FakeJudge("annotate", "요약"))
+    assert [x for x in calls2 if x[1].endswith("/dispatch") and x[0] == "POST"]
+
+
+def test_C2_네_조합_결정표(monkeypatch):
+    # 리뷰 R6 — 둘 다 없음/충돌만 판단기 대상, 정확히 하나면 규칙만
+    j = FakeJudge()
+    judge.set_judge(j)
+    combos = {"both": (["docs"], True), "label_only": (["docs"], False),
+              "repo_only": ([], True), "none": ([], False)}
+    for name, (labels, repo) in combos.items():
+        j.calls.clear()
+        body = "repo: plainOldCode/think-tank" if repo else ""
+        dispatchd.decide(_snap([_i(labels=labels, body=body)], [], []))
+        called = any(pt == "C2" for pt, _ in j.calls)
+        assert called == (name in ("both", "none")), name
+
+
+def test_C1은_카드의_최신_사건을_판정한다(monkeypatch):
+    # 리뷰 R7 — id 오름차순 순회에서 오래된 것만 잡히던 버그
+    j = FakeJudge("rank", "x")
+    judge.set_judge(j)
+    i = _i(state="review", comments=[
+        _pc("오래된 오류 A", author="tt-server", cid=1),
+        _pc("최신 오류 B", author="tt-server", cid=2)])
+    dispatchd.decide(_snap([i], [], []))
+    c1 = [v for pt, v in j.calls if pt == "C1"]
+    assert c1 and "오류 B" in c1[0]["input"]["comment"]
+
+
+def test_C1은_verify_422를_알려진_사유로_건너뛴다(monkeypatch):
+    # 리뷰 R8 — 정식 규칙표 행(verify_422)의 기계적 사유는 unknown이 아니다
+    j = FakeJudge()
+    judge.set_judge(j)
+    i = _i(state="review", comments=[_pc("verify 422 — completion_report 구조 오류",
+                                         author="tt-server")])
+    dispatchd.decide(_snap([i], [], []))
+    assert not [pt for pt, _ in j.calls if pt == "C1"]
+
+
+def test_C1_dedup은_카드별로_스코프된다(tmp_path):
+    # 리뷰 R9 — 같은 스니펫이 다른 카드에 있으면 각각 판정된다
+    j = FakeJudge("rank", "x")
+    judge.set_judge(j)
+    for cid in ("M1", "M2"):
+        i = _i(id=cid, state="review",
+               comments=[_pc("세션 503 폭발 오류", author="tt-server")])
+        dispatchd.decide(_snap([i], [], []))
+    assert len([pt for pt, _ in j.calls if pt == "C1"]) == 2
+
+
+def test_S1_로그에_완전한_pr_식별값과_사이클이_기록된다(monkeypatch):
+    # 리뷰 R4 — pr은 repo#n@sha8, cycle_id는 스냅샷에서 전달
+    jp = judge.log_path()
+    calls = []
+
+    def fake_api(url, path, method="GET", body=None):
+        calls.append((method, path, body))
+        return {"comments": [], "version": 3, "execution_attempt": 1}
+
+    monkeypatch.setattr(probe.core, "api", fake_api)
+    judge.set_judge(FakeJudge("annotate", "요약"))
+    probe.core.execute("http://x", {"agent": "dispatchd", "issue": "M1", "action": "ci-fix",
+                                    "pr": 9, "repo": "plainOldCode/think-tank",
+                                    "branch": "tt/M1-x", "head_sha": "b" * 40,
+                                    "checks_failed": ["t"], "cycle_id": "cyc-1"})
+    rec = json.loads(open(jp, encoding="utf-8").read())
+    assert rec["pr"] == "plainOldCode/think-tank#9@bbbbbbbb" and rec["cycle_id"] == "cyc-1"

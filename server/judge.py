@@ -64,18 +64,28 @@ def log_path():
     return os.environ.get("TT_JUDGE_LOG", "judge-log.jsonl")
 
 
-def input_hash(view):
-    """정규화 입력의 sha256 — 동일 입력 재판정 dedup(C1)과 감사 대조용."""
-    norm = json.dumps(view.get("input"), ensure_ascii=False, sort_keys=True, default=str)
+def input_hash(point, view):
+    """(지점, 카드, 정규화 입력)의 sha256 — dedup 키가 카드·지점에 스코프된다(리뷰 R9:
+    서로 다른 카드의 동일 스니펫을 하나로 지우지 않게)."""
+    norm = json.dumps({"point": point, "card": view.get("card"),
+                       "input": view.get("input")},
+                      ensure_ascii=False, sort_keys=True, default=str)
     return hashlib.sha256(norm.encode()).hexdigest()
 
 
 class JudgeLog:
     """§8.1 판단 로그 — JSONL. 저장 위치는 열린 질문 Q2(§10)의 구현 카드 결정 사항:
-    서버 스키마 변경 없음 + 파일 1개(TT_JUDGE_LOG, 기본 judge-log.jsonl)."""
+    서버 스키마 변경 없음 + 파일 1개(TT_JUDGE_LOG, 기본 judge-log.jsonl).
+    쓰기 장애는 규칙 동작을 중단시키지 않는다(기록 우선, 규칙 우선 — 리뷰 R5)."""
 
     def __init__(self, path=None):
         self.path = path or log_path()
+        try:
+            d = os.path.dirname(self.path)
+            if d:
+                os.makedirs(d, exist_ok=True)
+        except OSError:
+            pass
 
     def record(self, *, point, judge, mode, output, rule_output, gate,
                cycle_id=None, card=None, pr=None, input_hash_=None,
@@ -89,21 +99,37 @@ class JudgeLog:
                "rule_output": rule_output, "gate": gate,
                "latency_ms": latency_ms, "fallback": bool(fallback),
                "trace_id": trace_id}
-        with _LOCK:
-            with open(self.path, "a", encoding="utf-8") as f:
-                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        try:
+            with _LOCK:
+                with open(self.path, "a", encoding="utf-8") as f:
+                    f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        except OSError as e:
+            # 기록 실패가 규칙 집행을 취소하지 않는다(리뷰 R5) — 관측만 남긴다.
+            print(time.strftime("%F %T"), f"판단 로그 쓰기 실패({e}) — 기록 생략", flush=True)
+            return None
         return rec
 
-    def seen(self, input_hash_):
-        """같은 입력 판정 이력 — C1 dedup(로그 재집계 방지)."""
+    def seen(self, card, point, input_hash_):
+        """(카드, 지점, 입력 해시) 판정 이력 — C1 dedup(재시작 후에도). 리뷰 R9:
+        스코프는 카드+지점+해시 조합. 파일 오류 시 False(보수적으로 재판정)."""
         if not os.path.exists(self.path):
             return False
         try:
             with open(self.path, encoding="utf-8") as f:
-                return any(json.dumps({"h": input_hash_})["h"] in line
-                           for line in f if input_hash_ in line)
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        r = json.loads(line)
+                    except ValueError:
+                        continue
+                    if (r.get("card") == card and r.get("point") == point
+                            and r.get("input_hash") == input_hash_):
+                        return True
         except OSError:
             return False
+        return False
 
     @staticmethod
     def counts(path=None):
@@ -124,11 +150,12 @@ class JudgeLog:
                     continue
                 out["total"] += 1
                 out["by_point"][r["point"]] = out["by_point"].get(r["point"], 0) + 1
-                out["by_output"][r["output"]] = out["by_output"].get(r["output"], 0) + 1
+                otype = (r.get("output") or "").split(":", 1)[0].strip()
+                out["by_output"][otype] = out["by_output"].get(otype, 0) + 1
                 out["by_mode"][r["mode"]] = out["by_mode"].get(r["mode"], 0) + 1
                 if r.get("fallback"):
                     out["fallback"] += 1
-                if r.get("output") == "no_response":
+                if (r.get("output") or "").startswith("no_response"):
                     out["no_response"] += 1
         return out
 
@@ -138,12 +165,14 @@ def run_advisory(point, view, rule_output, *, log=None, judge=None, cycle_id=Non
 
     구성된 판단기: propose → Proposal이면 §8.1 기록 후 반환(shadow/advisory —
     호출자는 출력을 동작에 직결하지 않는다). 오류·무응답·비정상 출력이면
-    재시도 1회까지 시도 후 규칙 기본(None) + fallback 기록."""
+    재시도 1회까지 시도 후 규칙 기본(None) + fallback 기록. 반환 Proposal에는
+    decision_id가 붙는다 — 기존 파서와 충돌하지 않는 [judge-note <id>] 주석
+    식별자로 쓴다(§5.2 원칙 3, 리뷰 R2)."""
     j = judge if judge is not None else get_judge()
     if j is None:
         return None
     log = log or JudgeLog()
-    ih = input_hash(view)
+    ih = input_hash(point, view)
     t0 = time.monotonic()
     result, err = None, True
     for attempt in (1, 2):  # 재시도는 1회 한정(§5.4) — 사이클 정지 방지
@@ -163,9 +192,11 @@ def run_advisory(point, view, rule_output, *, log=None, judge=None, cycle_id=Non
                    input_hash_=ih, latency_ms=latency, fallback=True,
                    trace_id=getattr(result, "trace_id", None) if result else None)
         return None
-    log.record(point=point, judge=getattr(j, "name", "judge"), mode="shadow",
-               output=result.output, rule_output=rule_output, gate="allow",
-               cycle_id=cycle_id, card=view.get("card"), pr=view.get("pr"),
-               input_hash_=ih, latency_ms=latency, fallback=False,
-               trace_id=result.trace_id)
+    value = "" if result.value is None else str(result.value)
+    rec = log.record(point=point, judge=getattr(j, "name", "judge"), mode="shadow",
+                     output=f"{result.output}: {value[:200]}", rule_output=rule_output,
+                     gate="allow", cycle_id=cycle_id, card=view.get("card"),
+                     pr=view.get("pr"), input_hash_=ih, latency_ms=latency,
+                     fallback=False, trace_id=result.trace_id)
+    result.decision_id = rec["decision_id"] if rec else None
     return result
