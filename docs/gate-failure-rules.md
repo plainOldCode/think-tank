@@ -78,7 +78,7 @@ probe-restructure-design.md §5.2의 단조성 — LLM 출력은 `hold`/`escalat
 
 ## 4. 사유 코드 규칙표
 
-매트릭스 초안 15행을 현행 probe 코드(origin/main 5a90bad) 처리 위치와 정합시킨 규칙표다. "현행 처리"는 이미 코드에 있는 동작, "규칙 반영 후"는 이 설계로 바뀌는 동작이다. 집계는 413장 코멘트 패턴 기반 추정치(§8 한계 참조)다.
+매트릭스 초안 15행을 현행 probe 코드(origin/main 5a90bad) 처리 위치와 정합시킨 규칙표다. "현행 처리"는 이미 코드에 있는 동작, "규칙 반영 후"는 이 설계로 바뀌는 동작이다. 집계 열은 혼합 출처(§8)다 — 기존 행은 413장 코멘트 패턴 기반 추정치, dependency는 제한된 이벤트 창(seq<=1363, 10/09~10/11)의 blocked 전이 관측 0건, marker_mismatch/stale_base는 기록 경로 부재로 발생 미확인.
 
 | 사유 코드 | 판정 입력(기계적 조건) | 기본 대응(규칙) | 처리 | 집계 | 비고 |
 | --- | --- | --- | --- | --- | --- |
@@ -156,7 +156,7 @@ probe-restructure-design.md §5.2의 단조성 — LLM 출력은 `hold`/`escalat
 
 ## 8. 데이터 출처와 한계
 
-- **blocked 기록이 비어 있어** 413장 집계는 코멘트 패턴 기반 추정이다. §4 표의 집계 열은 추정치임이 유지된다.
+- **blocked 기록이 비어 있어** 413장 집계는 코멘트 패턴 기반 추정이다. §4 표의 집계 열은 기존 행은 추정치 — 단 dependency·marker_mismatch/stale_base 행은 §8 이벤트 실측/기록 경로 확인으로 갱신됐다(혼합 출처).
 - **이벤트 기반 재측정(TT M4K88X68-66ZE, 2026-10-11)** — events outbox는 2026-10-09 13:38(TT 개선#2 신설)부터 존재하므로 목표 창(9/21~10/10)의 선행 부분은 정식 기록이 없어 재측정 불가다. 실측 창(10/09 13:38~10/11 17:35, seq<=1363, 독립 리뷰가 동일 cap으로 재현): ① state=blocked 전이 이벤트 0건 ② waiting_for 필드명 갱신 이벤트 **159건(63카드)** — service.bump는 변경 필드명만 기록하고 값을 기록하지 않아(service.py bump) old/new 값 변화는 복원 불가 ③ 현재 waiting_for 설정 카드 0건 ④ marker_mismatch·stale_base는 기록 경로 자체가 없어 발생 건수 미확인(기록 부재가 0건의 증거는 아님). §4 표는 **혼합 출처**다 — 기존 행은 413장 코멘트 추정, dependency는 제한된 이벤트 창의 blocked 전이 관측 0건, marker_mismatch/stale_base는 기록 경로 부재. 9/21~10/9 구간과 값 변화는 여전히 확인 안 됨이며, 이 실측을 목표 창 전체의 0건으로 읽으면 안 된다.
 - **blocked 기록 체계 제안(후속 카드)**: blocked 전이를 독립 이벤트 kind로 기록하고 waiting_for의 old/new 값을 payload에 포함해야 다음 census가 전 창을 실측한다. 스키마 변경은 이 카드에서 하지 않음(카드 명세 3번).
 - census 원본(`/workspace/tt-block-census.md`)은 box 워크스페이스에 있어 본 문서는 대조하지 않았다 — 코멘트 초안 인용만. 이번 실측도 원본과 무관한 이벤트 기반 값이다.
@@ -206,6 +206,6 @@ probe-restructure-design.md §5.2의 단조성 — LLM 출력은 `hold`/`escalat
 
 - 시크릿: 저장소 secret-scan 통과 — 운영 주소(Tailscale IP/hostname)·토큰 0건(TT_URL은 환경변수로만 언급).
 - 코드 참조: core.py 행 번호는 origin/main 5a90bad 실측(2026-10-10 fetch). 커밋 후 이동 시 file:symbol 기준으로 재확인할 것.
-- 수치: 집계는 모두 매트릭스 초안 코멘트 인용(코멘트 패턴 추정) — 원본 census 미대조로 확인 안 됨 항목은 §8에 그대로 보존.
+- 수치: 기존 행의 집계는 매트릭스 초안 코멘트 인용(코멘트 패턴 추정) — dependency·marker_mismatch/stale_base는 2026-10-11 이벤트 재측정값(TT M4K88X68-66ZE, §8). 원본 census 미대조로 확인 안 됨 항목은 §8에 그대로 보존.
 - 기존 파일: 무수정(git status 기준 docs/ 신규 1개만).
 - 최종 실측(커밋 ad64f4c blob): 205줄, 표 6개, `## ` 절 14개, 코드펜스 0개 — §8 자기 점검 수치와 일치. 집계 인용 수치(no_pr 20 등 15행 전체)는 매트릭스 초안 코멘트 원문 대조 확인.
