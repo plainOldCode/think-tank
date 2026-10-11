@@ -10,7 +10,7 @@ tt-bridge.py의 함수(tt/kPick_board/ledger/kanban)를 import해 재사용하�
 장부 포맷은 브리지와 단일 소스. ledger state="dispatch" 엔트리는 phase_a reconcile이
 건드리지 않는다(open/watch만 처리) — 브리지 크론과 병행 무충돌.
 
-바인딩: tailnet IP 전용(기본 100.87.7.45:7795). 0.0.0.0 바인딩 금지.
+바인딩: tailnet IP 전용 — TT_ADAPTER_BIND 환경변수(launchd plist)에서 지정. 0.0.0.0 바인딩 금지.
 secret: ~/.hermes/tt-adapter.secret (chmod 600), TT /agents 등록 시 같은 값.
 """
 import importlib.util
@@ -26,7 +26,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 BRIDGE_PATH = os.path.expanduser("~/bin/tt-bridge.py")
 SECRET_PATH = os.path.expanduser("~/.hermes/tt-adapter.secret")
 LOG_PATH = os.path.expanduser("~/.hermes/tt-dispatch-adapter.log")
-BIND = os.environ.get("TT_ADAPTER_BIND", "100.87.7.45")
+BIND = os.environ.get("TT_ADAPTER_BIND", "")
 PORT = int(os.environ.get("TT_ADAPTER_PORT", "7795"))
 
 _spec = importlib.util.spec_from_file_location("tt_bridge", BRIDGE_PATH)
@@ -277,5 +277,8 @@ class H(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
+    if not BIND:
+        log("FATAL TT_ADAPTER_BIND 미설정 — launchd plist EnvironmentVariables 또는 export로 지정")
+        raise SystemExit(2)
     log("START bind=%s:%d" % (BIND, PORT))
     ThreadingHTTPServer((BIND, PORT), H).serve_forever()
