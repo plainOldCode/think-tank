@@ -17,8 +17,9 @@ def issue(iid, state="todo", **kw):
 
 
 def agent(name="hermes@mini", **kw):
+    # RQRT: 등록 에이전트 fixture — 수신 계약 선언이 배정 후보 조건
     base = {"name": name, "enabled": True, "base_url": "http://127.0.0.1:7799",
-            "release_hook": True}
+            "release_hook": True, "receive_mode": "hook"}
     base.update(kw)
     return base
 

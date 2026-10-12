@@ -579,13 +579,15 @@ def _fix_stall_fields(body):
 def _relay_timer_s(assignee, agents):
     """무반응 양도 타이머(초) — receive_mode: hook 1h / relay(기본) 6h.
 
-    watcher 모드는 선언 주기×3인데 주기 필드가 아직 없어(RQRT) relay 기본값을
-    쓴다. 미선언 에이전트는 relay 기본값(카드 정책) — receive_mode 컬럼이
-    생기면 자동 반영."""
+    watcher 모드는 선언 주기×3(RQRT) — 주기 없는 watcher는 relay 기본값.
+    미선언 에이전트는 relay 기본값(카드 정책)."""
     mode = ""
     for a in agents or []:
         if a.get("name") == assignee:
             mode = (a.get("receive_mode") or "").strip()
+            iv = a.get("watcher_interval")
+            if mode == "watcher" and iv and int(iv) >= 1:
+                return int(iv) * 3 * 60  # 주기×3 — watcher 폴링 계약 정합
             break
     return int({"hook": 1.0, "relay": 6.0}.get(mode, 6.0) * 3600)
 
@@ -745,8 +747,12 @@ def decide(snap):
     if not snap.get("auto"):
         return []
     issues = snap.get("issues") or []
+    # RQRT: 수신 계약 미선언 등록 에이전트는 배정 후보 제외 — claim 409 반복으로
+    # 사이클 전체가 중단되는 것을 배정 단계에서 원천 차단. 비등록 세션은
+    # 스냅샷 agents에 없으므로 영향 없다(암묵 relay).
     agents = [a for a in (snap.get("agents") or [])
-              if a.get("enabled") and a.get("base_url")]
+              if a.get("enabled") and a.get("base_url")
+              and (a.get("receive_mode") or "").strip()]
     now = snap.get("now") or ""
     actions = []
     claimed = set()
@@ -2195,7 +2201,14 @@ def execute(url, act):
         labels = sorted((set(cur.get("labels") or []) | {"needs-human"}) - {"auto"})
         api(url, f"/issues/{act['issue']}", "PATCH", {"labels": labels})
     elif kind == "work":
-        r = api(url, f"/issues/{act['issue']}/claim", "POST", {"agent": act["agent"]})
+        # claim 409(선점·수신 계약 위반 등)는 경합 — 사이클 전체 중단 대신 폐기.
+        # 다음 사이클 판정이 다시 대상을 고른다(JXYS R1 패턴과 동일).
+        try:
+            api(url, f"/issues/{act['issue']}/claim", "POST", {"agent": act["agent"]})
+        except Exception as e:
+            print(time.strftime("%F %T"), f"[dispatchd] work claim 폐기 {act['issue']}"
+                  f" → {act['agent']}: {str(e)[:120]}", flush=True)
+            return act
         msg = (f"[auto dispatchd] 작업 {act['issue']}: {act['reason']}. 수령(claim)·lease heartbeat·"
                f"3단계 완료 보고(계약 v2)를 준수할 것. tt pull(풀) 금지. "
                f"코드 작업은 브랜치 tt/{act['issue']}-<slug>에서 커밋 후 GitHub PR로만 main에 올려라"

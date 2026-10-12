@@ -76,7 +76,8 @@ def test_snapshot_enriches_and_decides_cards_on_later_pages(client, snapshot_api
         con.execute("INSERT INTO comments (issue_id,author,body,ts) VALUES (?,?,?,?)",
                     (review, "tester", "review context", "2026-01-01T00:00:00"))
         con.commit()
-    assert client.post("/agents", json={"name": "worker", "base_url": "http://127.0.0.1:1"}).status_code == 201
+    assert client.post("/agents", json={"name": "worker", "base_url": "http://127.0.0.1:1",
+                                        "receive_mode": "hook"}).status_code == 201
     calls = snapshot_api()
     monkeypatch.setenv("TT_AUTO_DISPATCH", "1")
     monkeypatch.setenv("TT_REVIEW_GRACE_MIN", "0")

@@ -43,7 +43,8 @@ def test_round_claims_and_records_dispatch(live):
     os.environ["TT_AUTO_DISPATCH"] = "1"
     try:
         i = new_issue(live, "do work")
-        live.post("/agents", json={"name": "r1@mini", "base_url": "http://127.0.0.1:1"})
+        live.post("/agents", json={"name": "r1@mini", "base_url": "http://127.0.0.1:1",
+                           "receive_mode": "hook"})
         snap = dispatchd.snapshot("http://x")
         assert any(x["id"] == i["id"] for x in snap["issues"])
         acts = dispatchd.decide(snap)

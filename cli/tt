@@ -349,21 +349,28 @@ case "$cmd" in
     req "$URL/agents" | $JQ '.[] | "\(.name)  \(.base_url)  \(if .enabled==1 then "on" else "off" end)  ok=\(.last_ok // "-")  err=\(.last_err // "")" + (if (.model or .reasoning or .tier) then (if .model then "  model=\(.model)\(if .reasoning then "/\(.reasoning)" else "" end)" elif .reasoning then "  reasoning=\(.reasoning)" else "" end) + (if .tier then " [\(.tier)]" else "" end) else "" end)' ;;
 
   agent)
-    sub="${1:-}"; [[ -z "$sub" ]] && { echo "usage: tt agent add NAME URL [secret] [--model M] [--reasoning R] [--tier T] | set NAME key=val... | rm NAME | enable|disable NAME | release|notify NAME on|off" >&2; exit 1; }
+    sub="${1:-}"; [[ -z "$sub" ]] && { echo "usage: tt agent add NAME URL [secret] [--receive-mode hook|watcher|relay] [--watcher-interval MIN] [--model M] [--reasoning R] [--tier T] | set NAME key=val... | rm NAME | enable|disable NAME | release|notify NAME on|off" >&2; exit 1; }
     case "$sub" in
       add)
-        [[ $# -lt 3 ]] && { echo "usage: tt agent add NAME URL [secret] [--model M] [--reasoning R] [--tier T]" >&2; exit 1; }
+        [[ $# -lt 3 ]] && { echo "usage: tt agent add NAME URL [secret] [--receive-mode hook|watcher|relay] [--watcher-interval MIN] [--model M] [--reasoning R] [--tier T]" >&2; exit 1; }
         name="$2"; url="$3"; secret=""
         shift 3   # 남은 것: [secret] 또는 옵션들
         if [[ $# -gt 0 && "$1" != --* ]]; then secret="$1"; shift; fi
         payload="$(jq -n --arg n "$name" --arg u "$url" --arg s "$secret" '{name:$n, base_url:$u, secret:$s}')"
         while [[ $# -gt 0 ]]; do case "$1" in
+          --receive-mode|--watcher-interval)
+            [[ $# -ge 2 ]] || { echo "값 누락: $1 (사용법: $1 값)" >&2; exit 1; }
+            if [[ "$1" == --receive-mode ]]; then
+              payload="$(echo "$payload" | jq --arg v "$2" '. + {receive_mode:$v}')"
+            else
+              payload="$(echo "$payload" | jq --argjson v "$2" '. + {watcher_interval:$v}')"
+            fi; shift 2 ;;
           --model|--reasoning|--tier)
             [[ $# -ge 2 ]] || { echo "값 누락: $1 (사용법: $1 값)" >&2; exit 1; }
             payload="$(echo "$payload" | jq --arg k "${1#--}" --arg v "$2" '. + {($k):$v}')"; shift 2 ;;
           *) echo "알 수 없는 옵션: $1" >&2; exit 1 ;;
         esac; done
-        req -X POST "$URL/agents" -d "$payload" | $JQ '"등록: \(.name) → \(.base_url)" + (if (.model or .reasoning or .tier) then (if .model then "  model=\(.model)\(if .reasoning then "/\(.reasoning)" else "" end)" elif .reasoning then "  reasoning=\(.reasoning)" else "" end) + (if .tier then " [\(.tier)]" else "" end) else "" end)' ;;
+        req -X POST "$URL/agents" -d "$payload" | $JQ '"등록: \(.name) → \(.base_url)  수신계약: \(.receive_mode // "미선언(claim 409)")" + (if .receive_mode == "watcher" then " 주기=\(.watcher_interval)분" else "" end) + (if (.model or .reasoning or .tier) then (if .model then "  model=\(.model)\(if .reasoning then "/\(.reasoning)" else "" end)" elif .reasoning then "  reasoning=\(.reasoning)" else "" end) + (if .tier then " [\(.tier)]" else "" end) else "" end)' ;;
       set)
         [[ $# -lt 3 ]] && { echo "usage: tt agent set NAME model=M reasoning=R tier=T" >&2; exit 1; }
         name="$2"; shift 2
@@ -371,7 +378,7 @@ case "$cmd" in
         for kv in "$@"; do k="${kv%%=*}"; v="${kv#*=}"; [[ "$k" == "$v" ]] && { echo "key=val 형식: $kv" >&2; exit 1; }
           payload="$(echo "$payload" | jq --arg k "$k" --arg v "$v" '. + {($k):$v}')"
         done
-        req -X PATCH "$URL/agents/$name" -d "$payload" | $JQ '"\(.name): model=\(.model // "-") reasoning=\(.reasoning // "-") tier=\(.tier // "-")"' ;;
+        req -X PATCH "$URL/agents/$name" -d "$payload" | $JQ '"\(.name): receive_mode=\(.receive_mode // "-")\(if .receive_mode == "watcher" then "(주기 \(.watcher_interval // "-")분)" else "" end) model=\(.model // "-") reasoning=\(.reasoning // "-") tier=\(.tier // "-")"' ;;
       rm)
         req -X DELETE "$URL/agents/$2" | $JQ '"삭제: \(.ok)"' ;;
       enable|disable)

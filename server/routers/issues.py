@@ -127,6 +127,18 @@ def get_tree(issue_id: str, ctx: Ctx = Depends(get_ctx)):
         return build(issue_id, 0, c)
 
 
+def _receive_contract_guard(c, agent):
+    """RQRT(M4MGV3CM): 수신 계약 — 등록 에이전트는 수신 모드 선언이 claim/pull 전제.
+    비등록 세션은 암묵 relay(사람 전달)라 검증 대상 아님. claim/pull 공통 관문."""
+    ar = c.execute("SELECT receive_mode FROM agents WHERE name=?", (agent,)).fetchone()
+    if ar is not None and not (ar["receive_mode"] or "").strip():
+        raise HTTPException(
+            409, f"cannot claim: agent {agent} has no receive_mode declared "
+                 f"[policy: receive_mode_undeclared] — "
+                 f"수신 계약 선언 필요(hook|watcher+interval|relay), "
+                 f"예: tt agent set {agent} receive_mode=hook")
+
+
 @router.post("/issues/{issue_id}/claim")
 def claim(issue_id: str, p: ClaimIn, ctx: Ctx = Depends(get_ctx)):
     with ctx.con() as c:
@@ -138,6 +150,7 @@ def claim(issue_id: str, p: ClaimIn, ctx: Ctx = Depends(get_ctx)):
                                 + (f" [policy: {code}]" if code else ""))
         if row["assignee"] and row["assignee"] != p.agent:
             raise HTTPException(409, f"already claimed by {row['assignee']}")
+        _receive_contract_guard(c, p.agent)
         held = c.execute("SELECT COUNT(*) n FROM issues WHERE lease_by=? AND lease_expires>?",
                          (p.agent, dbmod.now())).fetchone()["n"]
         if held >= config.max_leases():
@@ -325,6 +338,7 @@ def pull(p: ClaimIn, ctx: Ctx = Depends(get_ctx)):
                          (p.agent, ts)).fetchone()["n"]
         if held >= config.max_leases():
             raise HTTPException(409, f"lease limit: active leases={held} (max={config.max_leases()}) — heartbeat or done first")
+        _receive_contract_guard(c, p.agent)
         # TT 개선#3b R1: policy가 완전한 카드를 보게 — 전체 행 + dispatch 횟수
         # (dispatches는 별도 테이블 카운트라 이슈 컬럼이 아니다 — 프로브 스냅샷과 동일 차원)
         sql = ("SELECT i.*, (SELECT COUNT(*) FROM dispatches d WHERE d.issue_id=i.id) AS dispatches "

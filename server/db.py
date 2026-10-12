@@ -197,6 +197,9 @@ def connect(path):
         pass
     for col in ("release_hook INTEGER NOT NULL DEFAULT 0",
                 "notify_hook INTEGER NOT NULL DEFAULT 0",
+                # RQRT(M4MGV3CM): 수신 계약 — hook|watcher|relay, watcher는 간격(분) 필수
+                "receive_mode TEXT",
+                "watcher_interval INTEGER",
                 # M3ER6G3S-RZ20: 모델 메타데이터 — 선언(declaration)이지 실행 보장이 아님
                 "model TEXT",
                 "reasoning TEXT",
