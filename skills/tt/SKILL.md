@@ -57,6 +57,29 @@ immediately after their own step**. Do not wait for, poll, or watch CI results, 
 - If you genuinely cannot proceed without a human decision, use `tt block ID human` (waiting_for=human)
   instead of idling in a live session.
 
+## Lifecycle — report at PR, stay in review
+
+For contracted cards the **probe owns the PR lifecycle**. Executor steps:
+
+1. `tt claim` (in_progress) → implement → push the PR branch.
+2. **Submit the completion report as soon as the PR is up** — `tt done ID --report report.json`
+   moves the card to review. Do not keep the card in in_progress "until merge": in_progress+PR is
+   a safety-net state (JXYS ⓪c — CI-failure relay, submit reminders, adoption), where the probe
+   can neither dispatch reviews nor merge.
+3. **Stay in review through fix rounds.** After a request-changes, fix and push the same branch —
+   no state transition. The probe auto-dispatches the first review on green, review-fix to the
+   executor, re-review on each new head, and merges on approve+green.
+4. After merge the **probe auto-verifies** with the stored report (`POST /issues/ID/verify`,
+   verifier=probe) and moves the card to done — a manual executor verify afterwards would 409
+   (review-only guard). Manual `tt verify` is only a fallback for cards still in review after a
+   merge that were handed over separately.
+
+Do not hand-roll `[auto review]`/`[re-review]` dispatches or merges for a review-state card — that
+is the probe's job. Manual push+dispatch chains are where wrong-SHA pushes and duplicate dispatches
+come from (2026-10-12 PR#100 incident: a fix push that resolved HEAD on the deploy host force-pushed
+main onto the PR branch, emptying the diff and auto-closing the PR; GitHub refuses reopen when the
+closed head is an ancestor of base — re-register the branch as a new PR instead).
+
 ## Card-creation PR-linking contract
 
 Code-work cards follow a **1 card = 1 PR** principle. Put a `repo: owner/name` marker on the card body's first line
@@ -87,7 +110,11 @@ yields a false "no PR" verdict (measured 2026-10-06). Contract details are in
   For independent verification commands, check the tool's usage first and read stdout together — a wrong flag also exits 2,
   so the exit code alone cannot distinguish an expected failure from an argument error.
   Do not bypass report errors with `force_done`/`close`. Explicit approval exceptions are distinguished as `approved`.
-- Rework is review → todo → claim. Scope changes and re-claiming can invalidate evidence.
+- Rework is review → todo → claim — **except a same-PR fix round** (Lifecycle §3): when the probe
+  relays a review-fix for the same PR, stay in review and just push. The todo transition clears
+  assignee and completion_report, and re-claiming increments the attempt — the old report would
+  409 as stale. Reserve review → todo → claim for new-round rework (scope change, handover,
+  probe's no-response fallback).
   On handover, leave the current state, reproduction method, remaining implementation, and verification commands in a note, and release the lease.
 
 If only the CLI is old and the server supports reports, use PATCH `/issues/ID` with
