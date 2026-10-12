@@ -57,6 +57,26 @@ immediately after their own step**. Do not wait for, poll, or watch CI results, 
 - If you genuinely cannot proceed without a human decision, use `tt block ID human` (waiting_for=human)
   instead of idling in a live session.
 
+## Lifecycle — report at PR, stay in review
+
+For contracted cards the **probe owns the PR lifecycle**. Executor steps:
+
+1. `tt claim` (in_progress) → implement → push the PR branch.
+2. **Submit the completion report as soon as the PR is up** — `tt done ID --report report.json`
+   moves the card to review. Do not keep the card in in_progress "until merge": in_progress+PR is
+   a safety-net state (JXYS ⓪c — CI-failure relay, submit reminders, adoption), where the probe
+   can neither dispatch reviews nor merge.
+3. **Stay in review through fix rounds.** After a request-changes, fix and push the same branch —
+   no state transition. The probe auto-dispatches the first review on green, review-fix to the
+   executor, re-review on each new head, and merges on approve+green.
+4. After merge: `tt verify ID --report report.json` → done.
+
+Do not hand-roll `[auto review]`/`[re-review]` dispatches or merges for a review-state card — that
+is the probe's job. Manual push+dispatch chains are where wrong-SHA pushes and duplicate dispatches
+come from (2026-10-12 PR#100 incident: a fix push that resolved HEAD on the deploy host force-pushed
+main onto the PR branch, emptying the diff and auto-closing the PR; GitHub refuses reopen when the
+closed head is an ancestor of base — re-register the branch as a new PR instead).
+
 ## Card-creation PR-linking contract
 
 Code-work cards follow a **1 card = 1 PR** principle. Put a `repo: owner/name` marker on the card body's first line
