@@ -108,26 +108,31 @@ def test_잠금_획득_프로세스는_정상_구동된다(tmp_path, monkeypatch
 
 # --- codex 리뷰: fd 누수·잠금 해제 ---
 
-def _lock_fds(tmp_path):
-    """현재 프로세스에서 잠금파일을 가리키는 fd 수."""
-    lock = str(tmp_path / "t.db.probe.lock")
-    n = 0
-    for e in os.listdir("/proc/self/fd"):
-        try:
-            if os.readlink(f"/proc/self/fd/{e}") == lock:
-                n += 1
-        except OSError:
-            pass
-    return n
-
-
-def test_선점_실패는_fd를_누수하지_않는다(tmp_path):
+def test_선점_실패는_fd를_누수하지_않는다(tmp_path, monkeypatch):
+    """반복 경합 후 잠금 fd가 닫혀 있어야 한다 — /proc 의존 없이 fstat EBADF로
+    양 플랫폼(Linux/macOS CI)에서 검증한다."""
     db = str(tmp_path / "t.db")
     leader = probe_core._acquire_probe_lock(db)
     assert leader is not None
-    for _ in range(32):
-        assert probe_core._acquire_probe_lock(db) is None  # 반복 경합
-    assert _lock_fds(tmp_path) == 1  # 리더 것만 — 실패마다 누수 없음
+    opened = []
+    real_open = os.open
+
+    def spy_open(path, *a, **k):
+        fd = real_open(path, *a, **k)
+        if str(path).endswith(".probe.lock"):
+            opened.append(fd)
+        return fd
+
+    monkeypatch.setattr(probe_core.os, "open", spy_open)
+    try:
+        for _ in range(32):
+            assert probe_core._acquire_probe_lock(db) is None  # 반복 경합
+    finally:
+        monkeypatch.setattr(probe_core.os, "open", real_open)
+    assert opened
+    for fd in opened:
+        with pytest.raises(OSError):
+            os.fstat(fd)  # 닫혔어야 한다 — 누수면 유효
     os.close(leader)
 
 
@@ -146,4 +151,42 @@ def test_루프_종료_후_잠금이_해제된다(tmp_path, monkeypatch):
     t.start()
     t.join(10)
     assert ran and not t.is_alive()
-    assert probe_core._acquire_probe_lock(db) is not None  # 후속 앱 — 즉시 선점 가능
+    fd = probe_core._acquire_probe_lock(db)  # 후속 앱 — 즉시 선점 가능
+    assert fd is not None
+    os.close(fd)  # 검증용 — 잠금을 남기지 않는다
+
+
+def test_실제_앱_종료_재생성에서도_probe가_정상_구동된다(monkeypatch, tmp_path):
+    """create_app/lifespan 실제 경로 — 앱1 종료 → 잠금 해제 → 앱2 probe 인수계."""
+    from app import create_app
+    from fastapi.testclient import TestClient
+    db = str(tmp_path / "live.db")
+    ran, stop_all = [], threading.Event()
+
+    def fake_run_once(url, dry=False):
+        ran.append(url)
+
+    monkeypatch.setattr(probe_core, "run_once", fake_run_once)
+    monkeypatch.setenv("TT_PROBE_INTERVAL", "1")
+    with TestClient(create_app(db)):
+        deadline = time.time() + 5
+        while not ran and time.time() < deadline:
+            time.sleep(0.02)
+        assert ran  # 앱1 probe 정상 구동
+    # 앱1 종료(lifespan stop) — 스레드 종료+잠금 해제 대기
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        fd = probe_core._acquire_probe_lock(db)
+        if fd is not None:
+            os.close(fd)
+            break
+        time.sleep(0.02)
+    else:
+        pytest.fail("앱1 종료 후 잠금이 해제되지 않음")
+    # 앱2 재생성 — 인수계로 정상 구동
+    before = len(ran)
+    with TestClient(create_app(db)):
+        deadline = time.time() + 5
+        while len(ran) <= before and time.time() < deadline:
+            time.sleep(0.02)
+        assert len(ran) > before, "앱2 probe가 구동되지 않음"
