@@ -1692,8 +1692,9 @@ def execute(url, act):
         msg = (f"[auto probe] PR #{act['pr']} ({act.get('repo','')}) CI 실패"
                f"(failing: {','.join(act.get('checks_failed') or [])}). 임무: PR을 읽고 **수정**할 것"
                f" — 단순 review 금지, 목적은 CI red 해소. 브랜치 {act.get('branch','')} 위에서 커밋 계속, "
-               f"범위는 CI 실패 수정만(리팩·스킵·assertion 약화 금지). 카드 {act['issue']} review 대기 — "
-               f"CI green이면 probe가 자동 병합·done. 인수: {target} 담당.{_s1_txt}")
+               f"범위는 CI 실패 수정만(리팩·스킵·assertion 약화 금지). push 후 즉시 종료 — "
+               f"CI 재판정·병합은 probe가 자동 진행하니 CI·리뷰를 기다리거나 폴링하지 말 것"
+               f"(다음 단계 필요 시 보드가 재호출). 인수: {target} 담당.{_s1_txt}")
         try:
             api(url, f"/issues/{act['issue']}/dispatch", "POST", {"agent": agent, "message": msg})
         except Exception as e:
@@ -2057,7 +2058,9 @@ def execute(url, act):
             target = _resolve_executor(assignee, agents)
             msg = (f"[auto review-fix] PR #{act['pr']} 리뷰 request-changes — 리뷰 코멘트(PR/카드)를 "
                    f"읽고 같은 브랜치 {act.get('branch', '')} 위에서 수정 커밋. "
-                   f"head {(act.get('head_sha') or '')[:8]}. push하면 probe가 재리뷰 요청.")
+                   f"head {(act.get('head_sha') or '')[:8]}. push 후 즉시 종료 — "
+                   f"재리뷰 요청·병합은 probe가 자동 진행하니 결과를 기다리거나 폴링하지 말 것"
+                   f"(다음 단계 필요 시 보드가 재호출).")
             if target is None:
                 _ratt = cur.get("execution_attempt") or 0
                 _rm = f"[rework-relay #{act['pr']}/{(act.get('head_sha') or '')[:8]} a{_ratt}]"
@@ -2211,6 +2214,8 @@ def execute(url, act):
             return act
         msg = (f"[auto dispatchd] 작업 {act['issue']}: {act['reason']}. 수령(claim)·lease heartbeat·"
                f"3단계 완료 보고(계약 v2)를 준수할 것. tt pull(풀) 금지. "
+               f"자기 단계(구현·push·보고)가 끝나면 즉시 종료 — CI·리뷰 결과를 기다리거나 "
+               f"폴링하지 말 것(후속 전이는 probe 소유, 필요 시 보드가 재호출). "
                f"코드 작업은 브랜치 tt/{act['issue']}-<slug>에서 커밋 후 GitHub PR로만 main에 올려라"
                f"(메인 직push 금지 — 예외는 message 명시 시만). tt issue {act['issue']} 로 상세 확인 후 시작.")
         api(url, f"/issues/{act['issue']}/dispatch", "POST",

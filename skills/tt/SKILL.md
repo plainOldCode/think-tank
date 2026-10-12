@@ -43,6 +43,20 @@ The bundled reference is the contract copy shipped with the package and does not
 The comments themselves do not cause skill registration or execution on the client.
 Only when an agent discovers, selects, and reads this `SKILL.md` do the client procedures above apply as guidance.
 
+## Stage-exit contract — wait for nothing
+
+Agents running **staged delegation** (ci-fix, review-fix, or any push-and-continue flow) must **exit
+immediately after their own step**. Do not wait for, poll, or watch CI results, review verdicts, or merges:
+
+- The probe owns all subsequent transitions — re-review dispatch on new head, merge on green,
+  completion reminders, and reassignment timers.
+- Waiting invites the failure modes the board already detects: silent panes get STALL-killed by the
+  runner (600s silence → notify → kill) and long watches hit the runner session TIMEOUT.
+- If your step is needed again (e.g. review returns request-changes), the board re-dispatches you with
+  the context — that is the resume path, not polling.
+- If you genuinely cannot proceed without a human decision, use `tt block ID human` (waiting_for=human)
+  instead of idling in a live session.
+
 ## Card-creation PR-linking contract
 
 Code-work cards follow a **1 card = 1 PR** principle. Put a `repo: owner/name` marker on the card body's first line
