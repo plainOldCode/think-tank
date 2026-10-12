@@ -46,14 +46,24 @@ class ReadIn(BaseModel):
 
 def _parse_mentions(con, body):
     """@토큰에서 등록 에이전트명 추출. 조사 결합(@agy도) 허용 — 이름 뒤에 ASCII 식별자가
-    붙지 않으면 멘션으로 인정. 긴 이름 우선(codex vs codex-read-only)."""
-    names = sorted((r["name"] for r in con.execute("SELECT name FROM agents").fetchall()),
-                   key=len, reverse=True)
+    붙지 않으면 멘션으로 인정. 긴 이름 우선(codex vs codex-read-only).
+    Z1HP(M4CKEJGX): 별칭 사전 — 각 에이전트의 aliases도 후보값에 포함하고, 매칭 시
+    등록명으로 해석한다. 후보값 전체를 길이 내림차순으로 정렬해 긴 토큰 우선은 동일."""
+    rows = con.execute("SELECT name, aliases FROM agents").fetchall()
+    candidates = []
+    for r in rows:
+        try:
+            aliases = json.loads(r["aliases"] or "[]")
+        except ValueError:
+            aliases = []
+        for v in [r["name"]] + list(aliases):
+            candidates.append((v, r["name"]))
+    candidates.sort(key=lambda p: len(p[0]), reverse=True)
     seen, out = set(), []
     for tok in re.findall(r"@([^\s@,]+)", body):
-        for name in names:
-            if tok.startswith(name):
-                rest = tok[len(name):]
+        for value, name in candidates:
+            if tok.startswith(value):
+                rest = tok[len(value):]
                 if not rest or not re.search(r"[A-Za-z0-9_-]", rest):
                     if name not in seen:
                         seen.add(name)

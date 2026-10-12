@@ -1,6 +1,7 @@
 """에이전트·디스패치 라우터 — agent registry, hook dispatch, runner progress."""
 import hashlib
 import json
+import re
 import sqlite3
 from datetime import datetime, timedelta
 
@@ -91,7 +92,7 @@ def get_ctx(request: Request) -> Ctx:
 def list_agents(ctx: Ctx = Depends(get_ctx)):
     with ctx.con() as c:
         rows = c.execute("SELECT * FROM agents ORDER BY created_at").fetchall()
-    return [dict(r) for r in rows]
+    return [{**dict(r), "aliases": _aliases_out(r)} for r in rows]
 
 
 def _validate_receive_mode(mode, interval, current_interval=None):
@@ -105,6 +106,44 @@ def _validate_receive_mode(mode, interval, current_interval=None):
         raise HTTPException(422, "watcher 모드는 watcher_interval(분) 필수 — 주기 폴링 계약의 명시 의무(RQRT)")
 
 
+def _normalize_aliases(aliases):
+    """Z1HP(M4CKEJGX) — 별칭 형식 검증. 값 자체만 판정(충돌은 con 있는 callers에서)."""
+    out = []
+    for a in aliases or []:
+        a = a.strip()
+        if not a:
+            raise HTTPException(422, "별칭은 비어 있을 수 없다")
+        if re.search(r"[\s@,]", a):
+            raise HTTPException(422, f"별칭 '{a}' — 공백·@·쉼표는 사용할 수 없다")
+        if a in out:
+            raise HTTPException(422, f"별칭 '{a}' 중복")
+        out.append(a)
+    return out
+
+
+def _check_alias_conflicts(c, aliases, self_name=None):
+    """다른 에이전트의 이름·별칭과 충돌하는 별칭은 422 — 사전 매핑의 결정론 보장.
+    자기 이름과 동일한 별칭도 중복으로 거부(등록명이 언제나 후보라 중복 선언은 노이즈)."""
+    for a in aliases:
+        if self_name is not None and a == self_name:
+            raise HTTPException(422, f"별칭 '{a}'은(는) 자기 이름과 동일하다")
+        row = c.execute("SELECT name FROM agents WHERE name=?", (a,)).fetchone()
+        if row:
+            raise HTTPException(422, f"별칭 '{a}'은(는) 이미 에이전트 이름이다")
+        # 전수 디코딩 비교 — LIKE 사전필터는 JSON 이스케이프(따옴표·역슬래시) 값에서
+        # 후보 행을 놓친다(리뷰 P2). agents 테이블은 소규모라 전수 스캔 비용이 무의미.
+        for r in c.execute("SELECT name, aliases FROM agents").fetchall():
+            if a in _aliases_out(r) and (self_name is None or r["name"] != self_name):
+                raise HTTPException(422, f"별칭 '{a}'은(는) {r['name']}의 별칭이다")
+
+
+def _aliases_out(row):
+    try:
+        return json.loads(row["aliases"] or "[]")
+    except ValueError:
+        return []
+
+
 @router.post("/agents", status_code=201, summary="Register a webhook agent (receives dispatch POSTs at base_url)", description="base_url must be a reachable HTTP endpoint (hook mode). Agents without a listener cannot receive dispatch — see /api.md integration table. release_hook=true 선언 시 카드 terminalize 시 release 명령(x-tt-command: release)도 수신 — runner류만 켠다. notify_hook=true 시 blocked(waiting_for=human) Level4 알림(x-tt-command: notify) 수신 — 알림 주입 어댑터(Hermes)용. RQRT: receive_mode 필수 선언(hook|watcher+watcher_interval|relay) — 미선언 claim 409.")
 def add_agent(p: AgentIn, ctx: Ctx = Depends(get_ctx)):
     name = p.name.strip()
@@ -114,13 +153,23 @@ def add_agent(p: AgentIn, ctx: Ctx = Depends(get_ctx)):
     with ctx.con() as c:
         if c.execute("SELECT 1 FROM agents WHERE name=?", (name,)).fetchone():
             raise HTTPException(409, f"agent {name} 이미 등록됨")
-        c.execute("INSERT INTO agents (name, base_url, secret, enabled, release_hook, notify_hook, model, reasoning, tier, receive_mode, watcher_interval, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+        # 새 등록명도 기존 별칭과 충돌하면 거부(리뷰 P2) — 안 거부하면 별칭 소유자가
+        # 멘션을 계속 가져가 새 에이전트 본명 멘션이 다른 에이전트로 간다.
+        for r in c.execute("SELECT name, aliases FROM agents").fetchall():
+            if name in _aliases_out(r):
+                raise HTTPException(422, f"이름 '{name}'은(는) {r['name']}의 별칭이다")
+        aliases = _normalize_aliases(p.aliases)
+        _check_alias_conflicts(c, aliases, self_name=name)
+        c.execute("INSERT INTO agents (name, base_url, secret, enabled, release_hook, notify_hook, model, reasoning, tier, receive_mode, watcher_interval, aliases, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                   (name, p.base_url, p.secret, 1 if p.enabled else 0, 1 if p.release_hook else 0,
                    1 if p.notify_hook else 0, p.model, p.reasoning, p.tier,
-                   (p.receive_mode or "").strip().lower() or None, p.watcher_interval, dbmod.now()))
+                   (p.receive_mode or "").strip().lower() or None, p.watcher_interval,
+                   json.dumps(aliases, ensure_ascii=False) if aliases else "", dbmod.now()))
         c.commit()
         row = c.execute("SELECT * FROM agents WHERE name=?", (name,)).fetchone()
-    return dict(row)
+    d = dict(row)
+    d["aliases"] = _aliases_out(row)
+    return d
 
 
 @router.patch("/agents/{name}")
@@ -144,9 +193,14 @@ def patch_agent(name: str, p: AgentPatch, ctx: Ctx = Depends(get_ctx)):
     for k in ("model", "reasoning", "tier"):
         if k in p.model_fields_set:
             fields[k] = getattr(p, k) or None
+    # Z1HP: aliases — None=유지, []=전면 삭제(빈 목록이 유효한 '클리어'라 fields_set 불필요)
+    new_aliases = _normalize_aliases(p.aliases) if p.aliases is not None else None
     with ctx.con() as c:
         if not c.execute("SELECT 1 FROM agents WHERE name=?", (name,)).fetchone():
             raise HTTPException(404, f"agent {name} not found")
+        if new_aliases is not None:
+            _check_alias_conflicts(c, new_aliases, self_name=name)
+            fields["aliases"] = json.dumps(new_aliases, ensure_ascii=False) if new_aliases else ""
         # RQRT(M4MGV3CM): 수신 계약 — watcher로 바꿀 때 기존 간격이 있으면 유지.
         # 명시적 삭제는 fields_set으로 구분(RZ20-F1 패턴) — None PATCH = 선언 취소.
         if p.receive_mode is not None or "receive_mode" in p.model_fields_set \
@@ -168,7 +222,9 @@ def patch_agent(name: str, p: AgentPatch, ctx: Ctx = Depends(get_ctx)):
             c.execute(f"UPDATE agents SET {sets} WHERE name=?", (*fields.values(), name))
             c.commit()
         row = c.execute("SELECT * FROM agents WHERE name=?", (name,)).fetchone()
-    return dict(row)
+    d = dict(row)
+    d["aliases"] = _aliases_out(row)
+    return d
 
 
 @router.delete("/agents/{name}")

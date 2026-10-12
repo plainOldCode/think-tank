@@ -108,6 +108,8 @@ class AgentIn(BaseModel):
     model: str | None = None
     reasoning: str | None = None
     tier: str | None = None
+    # Z1HP(M4CKEJGX): 멘션 별칭 사전 — @별칭을 등록명으로 해석. 형식 검증은 라우터에서.
+    aliases: list[str] = []
 
     @model_validator(mode="after")
     def normalize_tier(self):
@@ -143,6 +145,8 @@ class AgentPatch(BaseModel):
     model: str | None = None
     reasoning: str | None = None
     tier: str | None = None
+    # Z1HP: None=유지, []=전면 삭제, 그 외=전면 교체
+    aliases: list[str] | None = None
 
     @model_validator(mode="after")
     def normalize_tier(self):

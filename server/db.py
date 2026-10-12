@@ -202,6 +202,8 @@ def connect(path):
                 "watcher_interval INTEGER",
                 # M3ER6G3S-RZ20: 모델 메타데이터 — 선언(declaration)이지 실행 보장이 아님
                 "model TEXT",
+                # Z1HP(M4CKEJGX): 멘션 별칭 사전 — JSON 배열 문자열('' = 미선언)
+                "aliases TEXT NOT NULL DEFAULT ''",
                 "reasoning TEXT",
                 "tier TEXT"):
         try:
