@@ -538,8 +538,9 @@ def test_claim_redelivery_requires_fresh_lease_for_both_statuses():
     함수 하나를 공유하므로 INSERT 충돌 경계도 동일하게 차단된다."""
     import sqlite3 as _sq
     from datetime import datetime, timedelta
-    from server.routers.agents import _claim_redelivery, DELIVERY_RECOVER_S
-    from server import db as dbmod
+    # pytest.ini pythonpath=server 기준 — 레포 루트 기준 임포트는 로컬에서만 실패했다
+    from routers.agents import _claim_redelivery, DELIVERY_RECOVER_S
+    import db as dbmod
     con = _sq.connect(":memory:")
     con.row_factory = _sq.Row
     con.execute("CREATE TABLE dispatches (id INTEGER PRIMARY KEY, status TEXT, delivery_lease TEXT, context TEXT)")
