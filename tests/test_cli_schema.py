@@ -156,3 +156,15 @@ def test_version_해시는_이식가능_도구_사용(cli):
     out = run("version").stdout
     m = re.search(r"server openapi ([0-9a-f]{8})", out)
     assert m, out
+
+
+def test_submit은_done과_동일한_제출_경로로_review에_둔다(cli):
+    """Z1HP 후속: done 명령은 제출 행위인데 결과 상태는 review — 동사를 실제 효과에
+    맞춘 tt submit 별칭(동일 경로). 제출의 종착지는 review(M3R7M0ZR-YF99)."""
+    run, url, api, db = cli
+    iid = json.loads(run("new", "submit 별칭 테스트", "-a", "완료 기준: 제출", "--json").stdout)["id"]
+    run("claim", iid)
+    p = run("submit", iid, "제출 로그")
+    assert p.returncode == 0, p.stderr
+    assert "review" in p.stdout, p.stdout
+    assert api(f"/issues/{iid}")["state"] == "review"

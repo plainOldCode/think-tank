@@ -62,8 +62,8 @@ immediately after their own step**. Do not wait for, poll, or watch CI results, 
 For contracted cards the **probe owns the PR lifecycle**. Executor steps:
 
 1. `tt claim` (in_progress) → implement → push the PR branch.
-2. **Submit the completion report as soon as the PR is up** — `tt done ID --report report.json`
-   moves the card to review. Do not keep the card in in_progress "until merge": in_progress+PR is
+2. **Submit the completion report as soon as the PR is up** — `tt submit ID --report report.json`
+   (alias of `tt done --report`) moves the card to review. Do not keep the card in in_progress "until merge": in_progress+PR is
    a safety-net state (JXYS ⓪c — CI-failure relay, submit reminders, adoption), where the probe
    can neither dispatch reviews nor merge.
 3. **Stay in review through fix rounds.** After a request-changes, fix and push the same branch —
