@@ -148,14 +148,16 @@ def patch_agent(name: str, p: AgentPatch, ctx: Ctx = Depends(get_ctx)):
         if not c.execute("SELECT 1 FROM agents WHERE name=?", (name,)).fetchone():
             raise HTTPException(404, f"agent {name} not found")
         # RQRT(M4MGV3CM): 수신 계약 — watcher로 바꿀 때 기존 간격이 있으면 유지.
-        if p.receive_mode is not None or p.watcher_interval is not None:
+        # 명시적 삭제는 fields_set으로 구분(RZ20-F1 패턴) — None PATCH = 선언 취소.
+        if p.receive_mode is not None or "receive_mode" in p.model_fields_set \
+                or p.watcher_interval is not None:
             row = c.execute("SELECT watcher_interval FROM agents WHERE name=?",
                             (name,)).fetchone()
             _validate_receive_mode(p.receive_mode, p.watcher_interval,
                                    current_interval=(row or {}).get("watcher_interval")
                                    if isinstance(row, dict) else
                                    (row["watcher_interval"] if row else None))
-            if p.receive_mode is not None:
+            if "receive_mode" in p.model_fields_set:
                 fields["receive_mode"] = (p.receive_mode or "").strip().lower() or None
             if p.watcher_interval is not None:
                 if p.watcher_interval < 1:

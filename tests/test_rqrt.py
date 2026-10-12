@@ -146,3 +146,40 @@ def test_probe는_미선언_에이전트에게_배정하지_않는다(monkeypatc
     assert len(exec_acts) == 1
     assert exec_acts[0]["agent"] == "declared-agent"  # 미선언 후보 제외 — 선언 에이전트만 배정
     # execute는 스텁 — 실제 전이는 claim/pull API 테스트가 담당
+
+
+# --- R1 잔여: 실제 execute 왕복 — claim 409 전파 차단 + 후속 집행 생존 ---
+
+def test_work_claim_409은_사이클을_죽이지_않는다(monkeypatch, tmp_path):
+    """execute를 실제 호출(외부 webhook만 스텁) — decide 이후 선언 취소 경합 재현."""
+    from fastapi.testclient import TestClient
+    from app import create_app
+    app = TestClient(create_app(str(tmp_path / "rt.db")))
+    app.post("/agents", json={"name": "race-agent", "base_url": "https://agent.example/hook",
+                              "receive_mode": "hook"})
+    i1 = app.post("/issues", json={"title": "실제 배정", "state": "todo",
+                                   "labels": ["auto"], "acceptance": "완료 기준: 테스트 통과"}).json()
+    i2 = app.post("/issues", json={"title": "후속 카드", "state": "todo",
+                                   "labels": ["auto"], "acceptance": "완료 기준: 테스트 통과"}).json()
+    monkeypatch.setattr(probe_core, "api", _make_api(app))
+    work = {"agent": "dispatchd", "issue": None, "action": "work",
+            "agent": "race-agent", "reason": "RQRT 왕복"}
+
+    # 1) 실제 배정 — claim+dispatch 저장
+    probe_core.execute("u", dict(work, issue=i1["id"]))
+    got = app.get(f"/issues/{i1['id']}").json()
+    assert got["state"] == "in_progress" and got["lease_by"] == "race-agent"
+    assert app.get(f"/issues/{i1['id']}/dispatches").json()
+
+    # 2) decide 이후 선언 취소 경합 → claim 409 → 예외 전파 없음(사이클 생존)
+    app.patch("/agents/race-agent", json={"receive_mode": None})
+    probe_core.execute("u", dict(work, issue=i2["id"]))  # 409여도 raise 안 함
+    got2 = app.get(f"/issues/{i2['id']}").json()
+    assert got2["state"] == "todo" and not got2["lease_by"]  # 수령 안 됨
+    assert not app.get(f"/issues/{i2['id']}/dispatches").json()
+
+    # 3) 같은 사이클 후속 집행 — 재선언 후 정상 수령
+    app.patch("/agents/race-agent", json={"receive_mode": "hook"})
+    probe_core.execute("u", dict(work, issue=i2["id"]))
+    got2 = app.get(f"/issues/{i2['id']}").json()
+    assert got2["state"] == "in_progress" and got2["lease_by"] == "race-agent"
