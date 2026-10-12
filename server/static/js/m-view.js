@@ -86,7 +86,7 @@ function card(i){
      : `<button class="go" onclick="startMenu('${esc(i.id)}')">▶ 시작</button>`);
   if (i.state === "in_progress") {
     if (ME && (i.lease_by === ME || i.assignee === ME)) { mine = true; acts =
-      `<button class="rev" onclick="send('${esc(i.id)}','review')">→ 리뷰 요청</button>
+      `<button class="rev" onclick="send('${esc(i.id)}','review')">📤 제출(submit)</button>
        <button class="hb" onclick="beat('${esc(i.id)}')">♥ 연장</button>`; }
     else { other = true; acts = `<span class="tag" style="color:var(--prog)">@${esc(i.assignee||i.lease_by||"?")} ${TT_EN ? "In progress" : "진행중"}</span>`; }
   }

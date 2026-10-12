@@ -5,7 +5,7 @@ URL="${TT_URL:-http://127.0.0.1:7800}"  # serve-time 주입 계약 — 설치본
 AGENT="${TT_AGENT:-$USER@$(hostname -s)}"
 JQ="jq -r"
 # TT 개선#3f: CLI 버전 — 서버 openapi 해시와 함께 `tt version`으로 표기(드리프트 감지)
-TT_CLI_VERSION="2.3.0"
+TT_CLI_VERSION="2.4.0"
 jfilter() { if [[ "${JSON:-0}" == 1 ]]; then jq .; else jq -r "$@"; fi; }
 
 usage() {
@@ -28,7 +28,8 @@ tt — think-tank issue tracker ($URL)
   tt ... --json                 # (어디든) 서버 원 JSON 그대로 — 스크립트/파이프라인용
   tt note ID "로그"          # 진행 로그 코멘트
   tt contract                # 현재 공통 방법론 조회
-  tt done ID ["로그"] [--report FILE]  # 완료 보고 (증거 없으면 review)
+  tt submit ID ["로그"] [--report FILE]  # 완료 제출 → review (done의 별칭 — 병합 후 probe 자동 verify)
+  tt done ID ["로그"] [--report FILE]  # (submit의 구별칭 — 기존 스크립트 호환)
   tt verify ID ["테스트 결과"] [--report FILE] [--human]  # review → done. --human=사람 자기선언 승인
   tt state ID STATE          # 상태 이동 (상태 가드 있음)
   tt block ID KIND [-a 액터] [-d 상세]  # blocked 전이+사족 (KIND: dependency|human|gate|external)
@@ -218,7 +219,7 @@ case "$cmd" in
     req -X POST "$URL/issues/$1/comments" -d "$(jq -cn --arg a "$AGENT" --arg b "$2" '{author:$a,body:$b}')" >/dev/null || { echo "실패: 코멘트" >&2; exit 1; }
     echo "note ok" ;;
 
-  done|verify)
+  done|submit|verify)
     [[ $# -lt 1 ]] && { echo "usage: tt $cmd ID [text] [--report FILE]" >&2; exit 1; }
     id="$1"; shift; summary=""; report_file=""
     while [[ $# -gt 0 ]]; do case "$1" in
@@ -227,13 +228,13 @@ case "$cmd" in
         report_file="$2"; shift 2 ;;
       *) summary="$1"; shift ;;
     esac; done
-    if [[ "$cmd" == done ]]; then payload='{"state":"done"}'
+    if [[ "$cmd" != verify ]]; then payload='{"state":"done"}'
     else payload="$(jq -cn --arg a "$AGENT" --arg e "$summary" '{verifier:$a,evidence:$e}')"; fi
     if [[ -n "$report_file" ]]; then
       payload="$(jq -cn --argjson p "$payload" --slurpfile r "$report_file" \
         'if ($r|length)==1 and ($r[0]|type)=="object" then $p + {completion_report:$r[0]} else error("one report object required") end')" || exit 1
     fi
-    if [[ "$cmd" == done ]]; then
+    if [[ "$cmd" != verify ]]; then
       if [[ -n "$summary" ]]; then
         completion_req -X POST "$URL/issues/$id/comments" -d "$(jq -cn --arg a "$AGENT" --arg b "$summary" '{author:$a,body:$b}')" >/dev/null || exit 1
       fi
@@ -245,7 +246,7 @@ case "$cmd" in
       jq . <<<"$out"
     elif [[ "$(jq -r '.state' <<<"$out")" == review ]]; then
       echo "◆ $id → review (성공 결과 보고 필요)"
-      echo "  확정: tt verify $id --report report.json"
+      echo "  확정: 병합 후 probe가 자동 verify → done (수동 폴백: tt verify $id --report report.json)"
       echo "  재작업: tt edit $id --state todo 후 tt claim $id"
     else
       jq -r '"✓ \(.id) \(.title) 완료 \(.completed_at) [\(.verification_status // "legacy")]"' <<<"$out"
