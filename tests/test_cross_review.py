@@ -56,7 +56,7 @@ def _pr(number=9, sha="b" * 40):
 
 
 def _agent(name):
-    return {"name": name, "enabled": True, "base_url": "http://x"}
+    return {"name": name, "enabled": True, "base_url": "http://x", "receive_mode": "hook"}
 
 
 @pytest.fixture(autouse=True)

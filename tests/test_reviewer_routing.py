@@ -24,7 +24,8 @@ AGENTS_ALL = ("codex", "claude", "kanban-adapter", "opencode-tp13", "hermes@host
 
 
 def _agents(*names):
-    return [{"name": n, "enabled": 1, "base_url": "http://x/hook"} for n in names]
+    return [{"name": n, "enabled": 1, "base_url": "http://x/hook",
+             "receive_mode": "hook"} for n in names]
 
 
 # --- route_reviewer: 기본 표 + 가족 정규화 ---

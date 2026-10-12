@@ -102,3 +102,47 @@ def test_receive_mode_undeclared가_규칙표에_있다():
     rows = [r for r in failure_rules.rules()
             if r.get("code") == "receive_mode_undeclared"]
     assert rows and "409" in rows[0]["judgment"]
+
+
+# --- codex 리뷰: 경합·우회 방어 ---
+
+def test_pull도_수신_계약을_거친다(client):
+    """pull 우회 차단(R2) — claim과 같은 관문."""
+    _agent(client, "silent-agent")
+    _todo(client, title="RQRT pull 우회", labels=["auto"])
+    r = client.post("/pull", json={"agent": "silent-agent", "require_label": "auto"})
+    assert r.status_code == 409 and "receive_mode_undeclared" in r.json()["detail"]
+    # 선언 에이전트는 pull 정상
+    _agent(client, "hook-agent", mode="hook")
+    _todo(client, title="RQRT pull 정상", labels=["auto"])
+    ok = client.post("/pull", json={"agent": "hook-agent", "require_label": "auto"})
+    assert ok.status_code == 200 and ok.json()["assignee"] == "hook-agent"
+
+
+def _make_api(client):
+    def api(url, path, method="GET", body=None):
+        r = client.request(method, path, json=body)
+        if r.status_code >= 400:
+            raise RuntimeError(f"{method} {path} -> {r.status_code} {r.text[:200]}")
+        return r.json() if r.text else None
+    return api
+
+
+def test_probe는_미선언_에이전트에게_배정하지_않는다(monkeypatch, tmp_path):
+    """실제 왕복 — 미선언+선언 혼합: 미선언은 후보 제외, 사이클 중단 없음(R1)."""
+    from fastapi.testclient import TestClient
+    from app import create_app
+    app = TestClient(create_app(str(tmp_path / "mix.db")))
+    app.post("/agents", json={"name": "silent-agent", "base_url": "https://agent.example/hook"})
+    app.post("/agents", json={"name": "declared-agent", "base_url": "https://agent.example/hook",
+                              "receive_mode": "hook"})
+    app.post("/issues", json={"title": "혼합 배정", "state": "todo", "labels": ["auto"],
+                              "acceptance": "완료 기준: 테스트 통과"})
+    monkeypatch.setattr(probe_core, "api", _make_api(app))
+    monkeypatch.setenv("TT_AUTO_DISPATCH", "1")
+    exec_acts = []
+    monkeypatch.setattr(probe_core, "execute", lambda url, a: exec_acts.append(a))
+    probe_core.run_once("http://x", dry=False)
+    assert len(exec_acts) == 1
+    assert exec_acts[0]["agent"] == "declared-agent"  # 미선언 후보 제외 — 선언 에이전트만 배정
+    # execute는 스텁 — 실제 전이는 claim/pull API 테스트가 담당
