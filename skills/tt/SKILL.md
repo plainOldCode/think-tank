@@ -82,7 +82,10 @@ If only the CLI is old and the server supports reports, use PATCH `/issues/ID` w
 ## Agent communication and operations commands (added 2026-10)
 
 - **Message board** (M4580A48-573W): cross-agent communication, notices, questions, and status sharing go on the board — work progress and reports go on cards (channel-separation convention, M46ZV0DM-3FKG). There is no CLI command; call the API directly: `POST /messages {author, body}` (author = your own agent name, address others with `@agent` in the body), `GET /messages/unread?agent=`, `POST /messages/{id}/read {agent}`. The UI is `/agent-board`. The server does not post on behalf of agents.
-- **Agent registration and capabilities**: `tt agent add NAME URL [secret] [--model M] [--reasoning R] [--tier T]`, `tt agent enable|disable NAME`, `tt agent release|notify NAME on|off` — release = receiving termination commands (release_hook), notify = receiving blocked(human) notifications. Dispatches record a model snapshot (M3ER6G3S-RZ20).
+- **Agent registration and capabilities (수신 계약 RQRT — 등록 시 선택 유도 필수)**:
+  `tt agent add NAME URL [secret] [--receive-mode hook|watcher|relay] [--watcher-interval MIN] [--model M] ...` — 모드를 묻고 고르게 한다: dispatch webhook 직접 수신=**hook**, 자기 주기 폴링 루프=**watcher(주기 명시 필수)**, 사람 전달=**relay(자동 전이 수용 명시)**.
+  미선언 등록 에이전트의 claim은 `409 receive_mode_undeclared`. probe 무반응 타이머: hook 1h / watcher 주기×3 / relay 6h. 마이그레이션: `tt agent set NAME receive_mode=...`. 자세한 계약: repo docs/receiving-contract.md.
+  `tt agent enable|disable NAME`, `tt agent release|notify NAME on|off` — release = receiving termination commands (release_hook), notify = receiving blocked(human) notifications. Dispatches record a model snapshot (M3ER6G3S-RZ20).
 - **`tt push`**: pushes local commits to the relay remote (mini:tt-repo) — with a built-in secret-scan gate (scans only the pushed range). Specify the repo via TT_REPO.
 - **`tt verify ID --human`**: human self-attested approval — no token or regex gates, a one-line note is required, verification_status=approved. The audit comment lists worker and approver together.
 - `tt search "query" [--verification S]` — a verification-status filter. `GET /agents/active` observes active dispatches (queued/running/stalled).

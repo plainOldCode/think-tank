@@ -94,17 +94,30 @@ def list_agents(ctx: Ctx = Depends(get_ctx)):
     return [dict(r) for r in rows]
 
 
-@router.post("/agents", status_code=201, summary="Register a webhook agent (receives dispatch POSTs at base_url)", description="base_url must be a reachable HTTP endpoint (hook mode). Agents without a listener cannot receive dispatch — see /api.md integration table. release_hook=true 선언 시 카드 terminalize 시 release 명령(x-tt-command: release)도 수신 — runner류만 켠다. notify_hook=true 시 blocked(waiting_for=human) Level4 알림(x-tt-command: notify) 수신 — 알림 주입 어댑터(Hermes)용.")
+def _validate_receive_mode(mode, interval, current_interval=None):
+    """RQRT(M4MGV3CM) — 수신 계약 선언 검증. mode가 None이면 판정도 없다."""
+    if mode is None:
+        return
+    m = (mode or "").strip().lower()
+    if m and m not in ("hook", "watcher", "relay"):
+        raise HTTPException(422, "receive_mode은 hook|watcher|relay 중 하나")
+    if m == "watcher" and not ((interval and interval >= 1) or (current_interval and current_interval >= 1)):
+        raise HTTPException(422, "watcher 모드는 watcher_interval(분) 필수 — 주기 폴링 계약의 명시 의무(RQRT)")
+
+
+@router.post("/agents", status_code=201, summary="Register a webhook agent (receives dispatch POSTs at base_url)", description="base_url must be a reachable HTTP endpoint (hook mode). Agents without a listener cannot receive dispatch — see /api.md integration table. release_hook=true 선언 시 카드 terminalize 시 release 명령(x-tt-command: release)도 수신 — runner류만 켠다. notify_hook=true 시 blocked(waiting_for=human) Level4 알림(x-tt-command: notify) 수신 — 알림 주입 어댑터(Hermes)용. RQRT: receive_mode 필수 선언(hook|watcher+watcher_interval|relay) — 미선언 claim 409.")
 def add_agent(p: AgentIn, ctx: Ctx = Depends(get_ctx)):
     name = p.name.strip()
     if not name or not service.valid_url(p.base_url):
         raise HTTPException(422, "name 필수, base_url은 http(s)만 허용")
+    _validate_receive_mode(p.receive_mode, p.watcher_interval)
     with ctx.con() as c:
         if c.execute("SELECT 1 FROM agents WHERE name=?", (name,)).fetchone():
             raise HTTPException(409, f"agent {name} 이미 등록됨")
-        c.execute("INSERT INTO agents (name, base_url, secret, enabled, release_hook, notify_hook, model, reasoning, tier, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+        c.execute("INSERT INTO agents (name, base_url, secret, enabled, release_hook, notify_hook, model, reasoning, tier, receive_mode, watcher_interval, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                   (name, p.base_url, p.secret, 1 if p.enabled else 0, 1 if p.release_hook else 0,
-                   1 if p.notify_hook else 0, p.model, p.reasoning, p.tier, dbmod.now()))
+                   1 if p.notify_hook else 0, p.model, p.reasoning, p.tier,
+                   (p.receive_mode or "").strip().lower() or None, p.watcher_interval, dbmod.now()))
         c.commit()
         row = c.execute("SELECT * FROM agents WHERE name=?", (name,)).fetchone()
     return dict(row)
@@ -125,6 +138,7 @@ def patch_agent(name: str, p: AgentPatch, ctx: Ctx = Depends(get_ctx)):
         fields["release_hook"] = 1 if p.release_hook else 0
     if p.notify_hook is not None:
         fields["notify_hook"] = 1 if p.notify_hook else 0
+
     # M3ER6G3S-RZ20: model/reasoning은 자유 문자열, tier는 모델에서 정규화 완료.
     # RZ20-F1: model_fields_set으로 미지정과 명시적 삭제를 구분 — ""/null은 NULL 기록.
     for k in ("model", "reasoning", "tier"):
@@ -133,6 +147,20 @@ def patch_agent(name: str, p: AgentPatch, ctx: Ctx = Depends(get_ctx)):
     with ctx.con() as c:
         if not c.execute("SELECT 1 FROM agents WHERE name=?", (name,)).fetchone():
             raise HTTPException(404, f"agent {name} not found")
+        # RQRT(M4MGV3CM): 수신 계약 — watcher로 바꿀 때 기존 간격이 있으면 유지.
+        if p.receive_mode is not None or p.watcher_interval is not None:
+            row = c.execute("SELECT watcher_interval FROM agents WHERE name=?",
+                            (name,)).fetchone()
+            _validate_receive_mode(p.receive_mode, p.watcher_interval,
+                                   current_interval=(row or {}).get("watcher_interval")
+                                   if isinstance(row, dict) else
+                                   (row["watcher_interval"] if row else None))
+            if p.receive_mode is not None:
+                fields["receive_mode"] = (p.receive_mode or "").strip().lower() or None
+            if p.watcher_interval is not None:
+                if p.watcher_interval < 1:
+                    raise HTTPException(422, "watcher_interval은 1분 이상")
+                fields["watcher_interval"] = p.watcher_interval
         if fields:
             sets = ", ".join(f"{k}=?" for k in fields)
             c.execute(f"UPDATE agents SET {sets} WHERE name=?", (*fields.values(), name))

@@ -69,7 +69,7 @@ CLI: `tt contract`, `tt done ID --report FILE`, `tt verify ID --report FILE`. Ol
 
 ## Agent registry + dispatch (hook/callback conversation)
 
-- `GET/POST /agents`, `PATCH/DELETE /agents/{name}` — `{name, base_url(http/s), secret?, enabled?, model?, reasoning?, tier?}`
+- `GET/POST /agents`, `PATCH/DELETE /agents/{name}` — `{name, base_url(http/s), secret?, enabled?, model?, reasoning?, tier?, receive_mode?, watcher_interval?}`. **Receiving contract (RQRT)**: `receive_mode` = `hook|watcher|relay`; `watcher` requires `watcher_interval` (minutes, 422 otherwise) — see docs/receiving-contract.md. Undeclared agents are rejected at claim with `409 receive_mode_undeclared` (unregistered sessions are implicit relay)
   - `model`/`reasoning`: free strings (no validation). **A declaration, not enforcement** — if the runner actually uses a different model, that is the runner's problem. Lesson from the 2026-09-26 model-pinning incident (M3ER6G3S-RZ20): a judge-tier convention that lives nowhere in TT looks like an accident
   - `tier`: tier enum `sota|exec|impl|human` — Korean aliases `판정|실행|구형` auto-normalized, case-insensitive, invalid values 422. sota=judge (design/review), exec=execution/reading, impl=implementation, human=human
   - Explicit deletion: PATCHing the field as `""` or `null` records NULL (distinguished from omission — model_fields_set). Invalid tier values return 422 and keep the old value. `tt agent set NAME tier=` = deletion

@@ -100,6 +100,15 @@ FAILURE_RULES = (
      "handling": HANDLING_H, "wired": "server/service.py reconcile/notify 경로",
      "agg": "2~3", "note": "RBAC, 멘션 설계 등. go/stop 아님"},
 
+    {"code": "receive_mode_undeclared",
+     "judgment": "claim 409 receive_mode_undeclared (RQRT M4MGV3CM) — 등록 에이전트가 "
+                 "수신 계약(hook|watcher+interval|relay) 미선언 상태로 claim",
+     "default": "선언 안내 1회 후 재시도 — tt agent set NAME receive_mode=... "
+                "(watcher는 watcher_interval=분 필수). 비등록 세션은 검증 대상 아님(암묵 relay)",
+     "handling": HANDLING_R, "wired": "server/routers/issues.py claim 409 + "
+                                      "server/routers/agents.py _validate_receive_mode",
+     "agg": "0(신규, 2026-10-12)", "note": "§12 신규 행 — 수신 계약 의무화(409 코드 자체는 변경 금지 §9)"},
+
     {"code": "lease_conflict_401",
      "judgment": "claim 409 lease_held 또는 hook 401",
      "default": "중복 작업 중단 — 사이클 재판정(마커 없음)",

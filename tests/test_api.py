@@ -817,6 +817,7 @@ def test_reconcile_release_command(client, hook_server):
     Hook.received, Hook.mode = [], "ok"
     i = mk(client, title="실행 중 취소")
     client.post("/agents", json={"name": "runner-x", "base_url": hook_server,
+                                 "receive_mode": "hook",
                                  "secret": "sekret", "release_hook": True})
     client.post(f"/issues/{i['id']}/dispatch", json={"agent": "runner-x", "message": "실행해"})
     did = Hook.received[0][1]["dispatch_id"]

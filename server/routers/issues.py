@@ -138,6 +138,16 @@ def claim(issue_id: str, p: ClaimIn, ctx: Ctx = Depends(get_ctx)):
                                 + (f" [policy: {code}]" if code else ""))
         if row["assignee"] and row["assignee"] != p.agent:
             raise HTTPException(409, f"already claimed by {row['assignee']}")
+        # RQRT(M4MGV3CM): 수신 계약 — 등록 에이전트는 수신 모드 선언이 claim 전제.
+        # 비등록 세션은 암묵 relay(사람 전달)라 검증 대상 아님.
+        ar = c.execute("SELECT receive_mode FROM agents WHERE name=?",
+                       (p.agent,)).fetchone()
+        if ar is not None and not (ar["receive_mode"] or "").strip():
+            raise HTTPException(
+                409, f"cannot claim: agent {p.agent} has no receive_mode declared "
+                     f"[policy: receive_mode_undeclared] — "
+                     f"수신 계약 선언 필요(hook|watcher+interval|relay), "
+                     f"예: tt agent set {p.agent} receive_mode=hook")
         held = c.execute("SELECT COUNT(*) n FROM issues WHERE lease_by=? AND lease_expires>?",
                          (p.agent, dbmod.now())).fetchone()["n"]
         if held >= config.max_leases():

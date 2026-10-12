@@ -97,6 +97,12 @@ class AgentIn(BaseModel):
     enabled: bool = True
     release_hook: bool = False  # reconcile release 명령 수신 능력 (M3BZS1FS-5722 ③)
     notify_hook: bool = False  # blocked(human) Level4 알림 수신 능력 (M3BZV172-9F0S B)
+    # RQRT(M4MGV3CM): 수신 계약 — 등록 에이전트의 메시지 수신 방식 선언.
+    # hook=webhook 직접 도달 / watcher=주기 폴링(간격 필수) / relay=사람 전달.
+    # 선언 없는 등록 에이전트의 claim은 409 receive_mode_undeclared.
+    # 비등록 세션은 암묵 relay(사람 전달) — 검증 대상 아님.
+    receive_mode: str | None = None
+    watcher_interval: int | None = None  # 분 — watcher 모드에서 필수
     # M3ER6G3S-RZ20: 실행 모델 메타데이터 — 선언(declaration)일 뿐 실행 보장이 아니다.
     # model/reasoning은 자유 문자열(검증 없음), tier는 정규화된 계층 enum.
     model: str | None = None
@@ -132,6 +138,8 @@ class AgentPatch(BaseModel):
     enabled: bool | None = None
     release_hook: bool | None = None
     notify_hook: bool | None = None
+    receive_mode: str | None = None
+    watcher_interval: int | None = None
     model: str | None = None
     reasoning: str | None = None
     tier: str | None = None

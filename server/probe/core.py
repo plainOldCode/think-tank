@@ -579,13 +579,15 @@ def _fix_stall_fields(body):
 def _relay_timer_s(assignee, agents):
     """무반응 양도 타이머(초) — receive_mode: hook 1h / relay(기본) 6h.
 
-    watcher 모드는 선언 주기×3인데 주기 필드가 아직 없어(RQRT) relay 기본값을
-    쓴다. 미선언 에이전트는 relay 기본값(카드 정책) — receive_mode 컬럼이
-    생기면 자동 반영."""
+    watcher 모드는 선언 주기×3(RQRT) — 주기 없는 watcher는 relay 기본값.
+    미선언 에이전트는 relay 기본값(카드 정책)."""
     mode = ""
     for a in agents or []:
         if a.get("name") == assignee:
             mode = (a.get("receive_mode") or "").strip()
+            iv = a.get("watcher_interval")
+            if mode == "watcher" and iv and int(iv) >= 1:
+                return int(iv) * 3 * 60  # 주기×3 — watcher 폴링 계약 정합
             break
     return int({"hook": 1.0, "relay": 6.0}.get(mode, 6.0) * 3600)
 
