@@ -125,3 +125,27 @@ def test_이름_멘션은_기존과_동일하게_동작한다(client):
     _agent(client, "ghost-u", aliases=["gu"])
     m = _post(client, "@ghost-u 본명도 된다")
     assert m["mentions"] == ",ghost-u,"
+
+
+# --- 리뷰 P2 회귀 (PR#100 codex 판정) ---
+
+def test_새_등록_이름이_기존_별칭과_같으면_거부한다(client):
+    _agent(client, "ghost-v", aliases=["vx"])
+    r = _agent(client, "vx")
+    assert r.status_code == 422
+    assert "ghost-v" in r.json()["detail"]
+
+
+def test_따옴표_별칭도_충돌을_검출한다(client):
+    _agent(client, "ghost-w", aliases=['w"q'])
+    r = _agent(client, "ghost-x", aliases=['w"q'])
+    assert r.status_code == 422
+    r = _agent(client, "ghost-y")
+    r = client.patch("/agents/ghost-y", json={"aliases": ['w"q']})
+    assert r.status_code == 422
+
+
+def test_역슬래시_별칭도_충돌을_검출한다(client):
+    _agent(client, "ghost-z", aliases=["w\\q"])
+    r = _agent(client, "ghost-w2", aliases=["w\\q"])
+    assert r.status_code == 422

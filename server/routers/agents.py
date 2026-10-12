@@ -130,14 +130,10 @@ def _check_alias_conflicts(c, aliases, self_name=None):
         row = c.execute("SELECT name FROM agents WHERE name=?", (a,)).fetchone()
         if row:
             raise HTTPException(422, f"별칭 '{a}'은(는) 이미 에이전트 이름이다")
-        row = c.execute("SELECT name, aliases FROM agents WHERE aliases LIKE ?",
-                        (f'%"{a}"%',)).fetchall()
-        for r in row:
-            try:
-                existing = json.loads(r["aliases"] or "[]")
-            except ValueError:
-                continue
-            if a in existing and (self_name is None or r["name"] != self_name):
+        # 전수 디코딩 비교 — LIKE 사전필터는 JSON 이스케이프(따옴표·역슬래시) 값에서
+        # 후보 행을 놓친다(리뷰 P2). agents 테이블은 소규모라 전수 스캔 비용이 무의미.
+        for r in c.execute("SELECT name, aliases FROM agents").fetchall():
+            if a in _aliases_out(r) and (self_name is None or r["name"] != self_name):
                 raise HTTPException(422, f"별칭 '{a}'은(는) {r['name']}의 별칭이다")
 
 
@@ -157,6 +153,11 @@ def add_agent(p: AgentIn, ctx: Ctx = Depends(get_ctx)):
     with ctx.con() as c:
         if c.execute("SELECT 1 FROM agents WHERE name=?", (name,)).fetchone():
             raise HTTPException(409, f"agent {name} 이미 등록됨")
+        # 새 등록명도 기존 별칭과 충돌하면 거부(리뷰 P2) — 안 거부하면 별칭 소유자가
+        # 멘션을 계속 가져가 새 에이전트 본명 멘션이 다른 에이전트로 간다.
+        for r in c.execute("SELECT name, aliases FROM agents").fetchall():
+            if name in _aliases_out(r):
+                raise HTTPException(422, f"이름 '{name}'은(는) {r['name']}의 별칭이다")
         aliases = _normalize_aliases(p.aliases)
         _check_alias_conflicts(c, aliases, self_name=name)
         c.execute("INSERT INTO agents (name, base_url, secret, enabled, release_hook, notify_hook, model, reasoning, tier, receive_mode, watcher_interval, aliases, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
