@@ -104,3 +104,46 @@ def test_잠금_획득_프로세스는_정상_구동된다(tmp_path, monkeypatch
     t.start()
     t.join(10)
     assert ran and not t.is_alive()
+
+
+# --- codex 리뷰: fd 누수·잠금 해제 ---
+
+def _lock_fds(tmp_path):
+    """현재 프로세스에서 잠금파일을 가리키는 fd 수."""
+    lock = str(tmp_path / "t.db.probe.lock")
+    n = 0
+    for e in os.listdir("/proc/self/fd"):
+        try:
+            if os.readlink(f"/proc/self/fd/{e}") == lock:
+                n += 1
+        except OSError:
+            pass
+    return n
+
+
+def test_선점_실패는_fd를_누수하지_않는다(tmp_path):
+    db = str(tmp_path / "t.db")
+    leader = probe_core._acquire_probe_lock(db)
+    assert leader is not None
+    for _ in range(32):
+        assert probe_core._acquire_probe_lock(db) is None  # 반복 경합
+    assert _lock_fds(tmp_path) == 1  # 리더 것만 — 실패마다 누수 없음
+    os.close(leader)
+
+
+def test_루프_종료_후_잠금이_해제된다(tmp_path, monkeypatch):
+    """같은 프로세스에서 앱을 종료하고 다시 만들어도 후속 probe가 파킹하지 않는다."""
+    db = str(tmp_path / "t.db")
+    ran, stop = [], threading.Event()
+
+    def fake_run_once(url, dry=False):
+        ran.append(url)
+        stop.set()
+
+    monkeypatch.setattr(probe_core, "run_once", fake_run_once)
+    t = threading.Thread(target=probe_core.loop, args=(None, 0.05, stop),
+                         kwargs={"db_path": db}, daemon=True)
+    t.start()
+    t.join(10)
+    assert ran and not t.is_alive()
+    assert probe_core._acquire_probe_lock(db) is not None  # 후속 앱 — 즉시 선점 가능

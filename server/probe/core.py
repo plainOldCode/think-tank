@@ -2302,10 +2302,15 @@ def _acquire_probe_lock(db_path):
     lock_path = db_path + ".probe.lock"
     try:
         fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)
+    except OSError:
+        return None
+    try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         os.write(fd, str(os.getpid()).encode())
         return fd
     except OSError:
+        # 선점 실패 — fd를 닫지 않으면 5~30초마다 재시도하는 대기 워커가 누수한다
+        os.close(fd)
         return None
 
 
@@ -2319,28 +2324,38 @@ def loop(url=None, interval=30, stop=None, dry=None, db_path=None):
     """
     if dry is None:
         dry = os.getenv("TT_DISPATCH_DRYRUN") == "1"
-    if db_path and _acquire_probe_lock(db_path) is None:
-        print(time.strftime("%F %T"), "probe: 다른 워커가 구동 중 — 파킹(인수계 대기)",
-              flush=True)
-        while _sleep(min(max(interval, 5), 30), stop):
-            if _acquire_probe_lock(db_path) is not None:
-                break  # 리더 종료 — 인수계
-        else:
-            return  # stop 요청
-    fails = 0
-    while not (stop is not None and stop.is_set()):
-        cur = url or os.environ.get("TT_URL", "http://127.0.0.1:7800")
-        try:
-            run_once(cur, dry=dry)
-            fails = 0
-        except Exception as e:  # 서버 장애 — 백오프. 쓰기가 없으면 lease는 TTL로 자연 해금.
-            fails += 1
-            print(time.strftime("%F %T"), "error:", e, flush=True)
-            if not _sleep(min(interval * 2 ** min(fails, 4), 300), stop):
+    lock_fd = None
+    if db_path:
+        lock_fd = _acquire_probe_lock(db_path)
+        if lock_fd is None:
+            print(time.strftime("%F %T"), "probe: 다른 워커가 구동 중 — 파킹(인수계 대기)",
+                  flush=True)
+            while _sleep(min(max(interval, 5), 30), stop):
+                lock_fd = _acquire_probe_lock(db_path)
+                if lock_fd is not None:
+                    break  # 리더 종료 — 인수계
+            else:
+                return  # stop 요청
+    try:
+        fails = 0
+        while not (stop is not None and stop.is_set()):
+            cur = url or os.environ.get("TT_URL", "http://127.0.0.1:7800")
+            try:
+                run_once(cur, dry=dry)
+                fails = 0
+            except Exception as e:  # 서버 장애 — 백오프. 쓰기가 없으면 lease는 TTL로 자연 해금.
+                fails += 1
+                print(time.strftime("%F %T"), "error:", e, flush=True)
+                if not _sleep(min(interval * 2 ** min(fails, 4), 300), stop):
+                    break
+                continue
+            if not _sleep(interval, stop):
                 break
-            continue
-        if not _sleep(interval, stop):
-            break
+    finally:
+        # 정상 stop·예외·이미 설정된 stop 등 모든 종료에서 해제 — 같은 프로세스의
+        # 후속 앱 생성이 파킹하지 않도록(리뷰 P2). os.close가 커널 flock을 푼다.
+        if lock_fd is not None:
+            os.close(lock_fd)
 
 
 def main():
