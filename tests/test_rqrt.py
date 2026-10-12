@@ -183,3 +183,57 @@ def test_work_claim_409은_사이클을_죽이지_않는다(monkeypatch, tmp_pat
     probe_core.execute("u", dict(work, issue=i2["id"]))
     got2 = app.get(f"/issues/{i2['id']}").json()
     assert got2["state"] == "in_progress" and got2["lease_by"] == "race-agent"
+
+
+def test_실제_사이클_409_후_후속_집행_생존(monkeypatch, tmp_path):
+    """커밋된 실제 run_once 사이클 — decide 후 선언 취소 경합 409 →
+    첫 카드 미수령, 같은 사이클 두 번째 카드는 정상 수령·전달(codex R1)."""
+    import service as svc
+    from fastapi.testclient import TestClient
+    from app import create_app
+    app = TestClient(create_app(str(tmp_path / "rc.db")))
+
+    sent = []
+
+    def fake_deliver(url, secret, payload):
+        sent.append(payload)
+        return 200, ""
+
+    monkeypatch.setattr(svc, "deliver", fake_deliver)
+    monkeypatch.setattr(probe_core, "api", _make_api(app))
+    monkeypatch.setenv("TT_AUTO_DISPATCH", "1")
+    # 후보 순서: 등록 순 — 미선언 먼저, 선언 에이전트 a/b
+    app.post("/agents", json={"name": "silent-agent", "base_url": "https://agent.example/hook"})
+    app.post("/agents", json={"name": "agent-a", "base_url": "https://agent.example/hook",
+                              "receive_mode": "hook"})
+    app.post("/agents", json={"name": "agent-b", "base_url": "https://agent.example/hook",
+                              "receive_mode": "hook"})
+    c1 = app.post("/issues", json={"title": "경합 카드", "state": "todo",
+                                   "labels": ["auto"], "acceptance": "완료 기준: 테스트 통과"}).json()
+    c2 = app.post("/issues", json={"title": "후속 카드", "state": "todo",
+                                   "labels": ["auto"], "acceptance": "완료 기준: 테스트 통과"}).json()
+    # decide 직후 첫 배정 에이전트의 선언 취소 — 실제 claim 409 경합 시뮬레이션
+    real_decide = probe_core.decide
+
+    def decide_then_cancel(snap):
+        acts = real_decide(snap)
+        first = next((a for a in acts if a.get("action") == "work"), None)
+        if first:
+            app.patch(f"/agents/{first['agent']}", json={"receive_mode": None})
+        return acts
+
+    monkeypatch.setattr(probe_core, "decide", decide_then_cancel)
+    probe_core.run_once("http://x", dry=False)
+
+    g1 = app.get(f"/issues/{c1['id']}").json()
+    g2 = app.get(f"/issues/{c2['id']}").json()
+    # 첫 카드 — 409로 미수령(사이클이 중단되지 않고 다음 action이 집행됐음이 관건)
+    assert g1["state"] == "todo" and not g1["lease_by"]
+    assert not app.get(f"/issues/{c1['id']}/dispatches").json()
+    # 두 번째 카드 — 같은 사이클에서 정상 수령·전달(status=ok, payload 캡처)
+    assert g2["state"] == "in_progress" and g2["lease_by"] == "agent-b"
+    ds = app.get(f"/issues/{c2['id']}/dispatches").json()
+    assert ds and ds[0]["status"] == "ok" and ds[0]["agent"] == "agent-b"
+    assert any(p.get("dispatch_id") == ds[0]["id"] for p in sent)
+    # 미선언 에이전트는 배정 후보에서 빠졌다(카드 어느 쪽도 배정 안 됨)
+    assert all(p.get("agent") != "silent-agent" for p in sent)
