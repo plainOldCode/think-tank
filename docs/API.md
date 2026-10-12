@@ -48,7 +48,7 @@ For common guidance and JSON examples, follow the base-methodology and completio
 `work_contract` is a snapshot of version, instructions, and report policy, linked to the completion report together with `execution_attempt`.
 `verification_status=reported` means a report was received; `approved` is the force_done/close approval exception. Neither implies independently verified execution.
 Reopen, new claim, and scope changes invalidate previous evidence. Existing DBs are preserved via column additions; past completions are marked `legacy`.
-CLI: `tt contract`, `tt done ID --report FILE`, `tt verify ID --report FILE`. Old CLI/runner builds are not auto-updated.
+CLI: `tt contract`, `tt submit ID --report FILE` (alias `tt done`), `tt verify ID --report FILE`. Old CLI/runner builds are not auto-updated.
 
 ## blocked intelligence (M3BZS1FS-5722)
 

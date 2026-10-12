@@ -149,9 +149,11 @@ curl -s -H 'content-type: application/json' -X POST /issues/ID/lease -d '{"agent
 curl -s -H 'content-type: application/json' -X POST /issues/ID/comments \
   -d '{"author":"'$AGENT'","body":"stage 1 done, starting stage 2"}'
 
-# 4) Submit when the PR is up — lands in review (lease auto-cleared)
+# 4) Submit the completion report when the PR is up — lands in review (lease auto-cleared)
 curl -s -H 'content-type: application/json' -X PATCH /issues/ID \
   -d '{"state":"done","completion_report":{"...":...}}'   # or: tt submit ID --report report.json
+# NOTE: a bare PATCH state=review is NOT a submit — no report is stored, so probe's
+# merge will not auto-verify. Only the report path enables probe verify → done.
 # The probe owns the rest: review dispatch on green, re-review on each new head,
 # merge on approve+green, auto-verify from the stored report (→ done). Same-PR fixes
 # are a push, not a transition — the card stays in review. Exit after pushing; do not
@@ -226,7 +228,7 @@ backlog ──→ todo ──(pull/claim)──→ in_progress ──(submit)─
               └────→ cancelled ←──── blocked                └→ (new-round rework) → todo → claim
 ```
 
-- **No direct todo→done** — build claim history via pull/claim, then submit. **Submit = review transition** (tt submit / PATCH state=done+report / PATCH state=review all land in review) — the probe owns merge and auto-verify from the stored report. Same-PR fix rounds do NOT re-transition; only new-round rework goes review → todo → claim
+- **No direct todo→done** — build claim history via pull/claim, then submit. **The completion-report path is `tt submit --report` / PATCH `state=done` + `completion_report`** — that is what stores the report and lets the probe merge + auto-verify. A bare `PATCH state=review` is a different thing: it stores no report (422 if you attach one), so probe's merge leaves a "완료 보고 없음, review 유지" comment and a human verify is needed. Same-PR fix rounds do NOT re-transition; only new-round rework goes review → todo → claim
 - todo→backlog demotion allowed (returns it to unassigned)
 - in_progress→todo = release (assignee auto-cleared, other agents can claim)
 - done→todo reopen allowed; the completion time (completed_at) is updated

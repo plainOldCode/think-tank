@@ -66,7 +66,7 @@ export TT_URL=http://<TT_HOST>:7800   # 설치 기본값으로 구워짐
 RED/GREEN 또는 사유를 갖춘 대체 검증 보고가 있어야 완료된다. 기본값 0은 기존 성공 코멘트 경로를 유지한다.
 `tt submit ID --report report.json`(별칭 `tt done`) / `tt verify ID --report report.json`을 사용한다.
 보고 접수(`reported`)와 승인 예외(`approved`)를 구분하며, 실제 실행의 진위는 CI·프로젝트 검증기·검토자 영역이다.
-형식과 호환성은 [AI 작업 계약서](server/static/api.md), 개발 증거는 [검증 기록](docs/verification-first-contract-validation.md)에 있다.
+형식과 호환성은 [AI 작업 계약서](server/static/api.md), 개발 증거는 [검증 기록](docs/verification-first-contract-validation.md)에 있다. 3개 계약 블록은 [skills/tt/references/api.md](skills/tt/references/api.md)에 복제되며 동기화 유지 필수(tests/test_contract_docs.py 검증).
 
 클라이언트 스킬 갱신본은 [skills/tt/SKILL.md](skills/tt/SKILL.md)에 있다. 스킬을 읽은 에이전트가
 수령 응답의 지침·계약 버전·작업 회차를 적용하고 완료 보고를 제출하도록 안내한다.

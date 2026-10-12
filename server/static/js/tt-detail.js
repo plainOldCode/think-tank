@@ -23,7 +23,7 @@ async function show(id, keep) {
     ${i.lease_by ? `<br>🔒 lease <b>${esc(i.lease_by)}</b> · 만료 ${esc(i.lease_expires?.slice(5,16))} · heartbeat ${esc(i.heartbeat_at?.slice(5,16) || "–")}` : ""}
     ${i.state==="blocked" && i.waiting_for ? `<br>⏸ waiting_for <b>${esc(i.waiting_for)}</b>${i.waiting_actor?` · 책임 ${esc(i.waiting_actor)}`:""}${i.blocked_detail?` · ${esc(i.blocked_detail)}`:""}${i.release_ready?` · <b style="color:var(--warn)">해제 가능</b>`:""}` : ""}</div>
     <pre>${esc(i.body || "(내용 없음)")}</pre>
-    <div class="row"><span class="lab">이동:</span> ${nextStates[i.state].map(s=>`<button onclick="move('${esc(id)}','${s}')">${i.state==="in_progress"&&s==="review"?"submit(제출)":s}</button>`).join(" ")}
+    <div class="row"><span class="lab">이동:</span> ${nextStates[i.state].map(s=>`<button onclick="move('${esc(id)}','${s}')">${i.state==="in_progress"&&s==="review"?"submit(제출)":s}</button>`.replace("<button onclick="move", "<button title="보고는 CLI(tt submit --report)로 — 이 버튼은 보고 없는 review 전이" onclick="move"))).join(" ")}
      ${i.state==="review" ? `· <button onclick="verifyCard('${esc(id)}')">✅ 사람 승인으로 완료</button><input id="vfee" placeholder="성공 결과(예: pytest 5 passed)" style="width:220px">` : ""}
      ${i.verified ? `· <span style="color:var(--done)">✓ ${{reported:"결과 보고",approved:"승인 예외",legacy:"기존 완료 기록"}[i.verification_status] || "기존 완료 기록"}${i.verified_evidence?` — ${esc(i.verified_evidence.slice(0,80))}`:""}</span>` : ""}
      ${["done","cancelled"].includes(i.state) ? (i.archived ? `· <button onclick="arch('${esc(id)}',false)">복원</button>` : `· <button onclick="arch('${esc(id)}',true)">아카이브</button>`) : ""}</div>
