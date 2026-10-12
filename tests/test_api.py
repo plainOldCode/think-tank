@@ -1353,7 +1353,8 @@ def test_정적_자산은_no_cache로_서빙된다(tmp_path):
     from fastapi.testclient import TestClient
     static_dir = pathlib.Path(__file__).resolve().parents[1] / "server" / "static"
     client = TestClient(create_app(str(tmp_path / "t.db")))
-    for path in ("/", "/js/tt-util.js", "/js/tt-detail.js", "/css/board.css"):
+    for path in ("/", "/js/tt-util.js", "/js/tt-detail.js", "/css/board.css", "/api.md"):
+        # /api.md 포함(PR#104 후속): 문서 갱신 후에도 브라우저가 묵은 계약서를 보여주는 사례
         assert client.get(path).headers.get("cache-control") == "no-cache", path
     # API 응답은 건드리지 않는다
     r = client.get("/issues")
