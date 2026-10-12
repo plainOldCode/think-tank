@@ -487,10 +487,10 @@ def test_review_request_실행은_부분_점유시_다음_후보에_수령한다
                                     "head_sha": SHA8, "marker": f"[review-req #9/{SHA8}]",
                                     "reviewer": "claude"})
     claims = [b for m, p, b in calls if p.endswith("/claim-review") and m == "POST"]
-    assert claims and claims[0]["agent"] == "kanban-adapter"
+    assert claims and claims[0]["agent"] == "agy"
     assert not any(b.get("agent") == "claude" for b in claims)
     disp = [b for m, p, b in calls if p.endswith("/dispatch") and m == "POST"]
-    assert len(disp) == 1 and disp[0]["agent"] == "kanban-adapter"
+    assert len(disp) == 1 and disp[0]["agent"] == "agy"
 
 
 def test_review_retry_실행은_정체_dispatch에_막히지_않는다(gate_on, monkeypatch):

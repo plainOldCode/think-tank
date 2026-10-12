@@ -82,9 +82,10 @@ prevention takes priority over the codex default (issuer decision 2026-10-10).
 - **Unavailable reviewer fallback** (issuer decision 2026-10-10): if the routed reviewer is
   unavailable — offline (not a registered+enabled agent) or holding an active lease (judged
   **per resolved agent name, not per family** — one busy family member must not block an idle
-  sibling, F3) — or refusing the claim (`claim-review` 409), walk **claude → kanban-adapter
-  (hermes's board adapter) → codex**. codex is last because its availability is the flakiest.
-  The author's identity and implementing family stay excluded through the whole chain (self-review
+  sibling, F3) — or refusing the claim (`claim-review` 409), walk **agy → codex → claude**
+  (issuer decision 2026-10-12; the counterpart table picks the first candidate, this chain
+  follows it). The author's identity and implementing family stay excluded through the whole
+  chain (self-review
   prevention holds). If nobody in the chain is claimable, the probe does **not** widen to a general
   idle scan (F1 — an unassigned agent would end up reviewing); the legacy fallback applies:
   `TT_REVIEW_AGENT` env, or the `kanban-adapter` default — and a legacy reviewer that is the

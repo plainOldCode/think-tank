@@ -5,7 +5,7 @@
 - 미표기·미매칭→codex 기본, codex* 가족 구현→claude (자기 리뷰 방지 우선)
 - 자기 리뷰 방지 가드는 고정 가족 어휘+어댑터 별칭(kanban-adapter≡hermes)+본인
   신원 — TT_REVIEW_MAP 확장으로 우회 불가
-- 미가용 폴백: claude→kanban-adapter(hermes 어댑터)→codex, 구현 가족 제외
+- 미가용 폴백: agy→codex→claude, 구현 가족 제외 (발령자 결정 2026-10-12)
 - 수령 인계: probe가 대신 claim-review — 거부(409)면 다음 후보, 전원 거부·활성
   점유면 마커 없이 다음 사이클 재시도
 """
@@ -20,7 +20,7 @@ from probe.core import agent_family, pick_reviewer, route_reviewer
 SHA8 = "b" * 8
 NOW = "2026-10-10T10:00:00+0900"
 RMAP = probe.core.DEFAULT_REVIEW_MAP
-AGENTS_ALL = ("codex", "claude", "kanban-adapter", "opencode-tp13", "hermes@host")
+AGENTS_ALL = ("codex", "claude", "agy", "kanban-adapter", "opencode-tp13", "hermes@host")
 
 
 def _agents(*names):
@@ -138,10 +138,15 @@ def test_1순위_오프라인이면_폴백한다():
     assert pick_reviewer("opencode-tp13", agents, set(), RMAP) == "claude"
 
 
-def test_폴백순서는_claude_다음_kanban_어댑터다():
-    # codex 구현 → claude 1순위. claude 오프라인 → hermes 자리=kanban 어댑터
-    agents = _agents("codex", "kanban-adapter")
-    assert pick_reviewer("codex", agents, set(), RMAP) == "kanban-adapter"
+def test_폴백순서는_agy_다음_codex_다음_claude다():
+    # codex 구현 → claude 1순위(카운터파트 표). claude 오프라인 → agy
+    agents = _agents("codex", "agy")
+    assert pick_reviewer("codex", agents, set(), RMAP) == "agy"
+    # agy도 오프라인 → codex는 자기 리뷰라 제외 → claude가 남지만 이미 오프라인 → None
+    assert pick_reviewer("codex", _agents("codex"), set(), RMAP) is None
+    # opencode 구현 → codex 1순위 오프라인 → agy → agy도 오프라인 → claude
+    agents2 = _agents("opencode-tp13", "claude")
+    assert pick_reviewer("opencode-tp13", agents2, set(), RMAP) == "claude"
 
 
 def test_폴백에서도_구현가족은_제외된다():
@@ -153,14 +158,14 @@ def test_폴백에서도_구현가족은_제외된다():
 
 def test_리스_보유_리뷰어는_미가용이다():
     agents = _agents(*AGENTS_ALL)
-    assert pick_reviewer("codex", agents, {"claude"}, RMAP) == "kanban-adapter"
-    assert pick_reviewer("opencode-tp13", agents, {"codex"}, RMAP) == "claude"
+    assert pick_reviewer("codex", agents, {"claude"}, RMAP) == "agy"
+    assert pick_reviewer("opencode-tp13", agents, {"codex"}, RMAP) == "agy"
 
 
 def test_전원_미가용이면_None_레거시_폴백으로_흐른다():
     assert pick_reviewer("codex", [], set(), RMAP) is None
     assert pick_reviewer("codex", _agents("codex"),
-                         {"claude", "kanban-adapter"}, RMAP) is None
+                         {"claude", "agy", "codex"}, RMAP) is None
 
 
 def test_라우팅은_작성자_자신의_가족을_지목하지_않는다():
@@ -336,20 +341,20 @@ def test_execute는_수령_확인_후_마커를_남긴다(monkeypatch):
 
 
 def test_execute는_수령_거부시_다음_후보로_폴백한다(monkeypatch):
-    # claude 거부 → 폴백 체인의 kanban-adapter로 성공(R3)
+    # claude 거부 → 폴백 체인의 agy로 성공(R3)
     card = {"id": "M4JTJ970-WS3C", "state": "review", "version": 3, "comments": []}
     fake, calls = _api_double(card, claim_fail={"claude"})
     monkeypatch.setattr(probe.core, "api", fake)
     probe.core.execute("u", _act(reviewer="claude"))
-    assert [c["agent"] for c in calls["claim"]] == ["claude", "kanban-adapter"]
-    assert calls["dispatch"][0]["agent"] == "kanban-adapter"
-    assert any("→ kanban-adapter" in (c.get("body") or "") for c in calls["comments"])
+    assert [c["agent"] for c in calls["claim"]] == ["claude", "agy"]
+    assert calls["dispatch"][0]["agent"] == "agy"
+    assert any("→ agy" in (c.get("body") or "") for c in calls["comments"])
 
 
 def test_execute는_전원_거부시_마커없이_건너뛴다(monkeypatch):
     # 리뷰 R3 — 마커가 남으면 같은 head 재시도가 영구 차단된다
     card = {"id": "M4JTJ970-WS3C", "state": "review", "version": 3, "comments": []}
-    fake, calls = _api_double(card, claim_fail={"claude", "kanban-adapter", "codex"})
+    fake, calls = _api_double(card, claim_fail={"claude", "agy", "codex"})
     monkeypatch.setattr(probe.core, "api", fake)
     probe.core.execute("u", _act(reviewer="claude"))
     assert not calls["dispatch"]
@@ -362,7 +367,7 @@ def test_execute는_거부_공지를_head당_한번만_남긴다(monkeypatch):
             "comments": [{"author": "probe",
                           "body": f"[review-claim-fail #9/{SHA8}] 리뷰어 수령 거부(HTTP 409) — "
                                   "다음 사이클 재시도"}]}
-    fake, calls = _api_double(card, claim_fail={"claude", "kanban-adapter", "codex"})
+    fake, calls = _api_double(card, claim_fail={"claude", "agy", "codex"})
     monkeypatch.setattr(probe.core, "api", fake)
     probe.core.execute("u", _act(reviewer="claude"))
     assert not [c for c in calls["comments"] if "review-claim-fail" in (c.get("body") or "")]

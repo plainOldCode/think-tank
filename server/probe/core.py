@@ -176,8 +176,9 @@ HOST_FAMILY_ALIASES = {"tp-13": "opencode"}
 # 발령자 결정(2026-10-10) 기본 카운터파트 표 — TT_REVIEW_MAP env로 override·확장
 DEFAULT_REVIEW_MAP = {"codex": "claude", "claude": "codex",
                       "hermes": "codex", "opencode": "codex"}
-# 리뷰어 미가용 폴백 순서 — codex는 최후순위, hermes 자리는 kanban 어댑터가 대행
-REVIEW_FALLBACK = ("claude", "kanban-adapter", "codex")
+# 리뷰어 미가용 폴백 순서 (발령자 결정 2026-10-12) — agy→codex→claude.
+# 1순위는 카운터파트 표(DEFAULT_REVIEW_MAP)가 정하고, 이 체인은 그 뒤를 잇는다.
+REVIEW_FALLBACK = ("agy", "codex", "claude")
 # 진행 중 run 상태(runner run_state.ACTIVE 동기) — 이 상태의 dispatch가 있으면
 # 같은 카드에 리뷰/수정 dispatch를 추가로 스폰하지 않는다(M4N469TR-JWW0).
 _ACTIVE_RUN_STATES = frozenset({"queued", "running", "stalled", "finalizing", "held"})
