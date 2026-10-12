@@ -203,6 +203,7 @@ def _archive_one(c, issue_id: str, days: int, cutoff: str):
         pid = prow["parent_id"]
     c.execute("UPDATE issues SET archived=1, version=version+1, updated_at=? WHERE id=?",
               (dbmod.now(), issue_id))
+    service.finish_issue_dispatches(c, issue_id)
     service.log_event(c, "issue.updated", "issue", issue_id,
                       {"archived": True, "via": "auto-archive"})
     return None
@@ -609,6 +610,7 @@ def verify_issue(issue_id: str, p: VerifyIn, ctx: Ctx = Depends(get_ctx)):
             # 리뷰 R2 2차: 사람 승인 분기도 상태 전이 이벤트 기록 — done 소비자가 놓치지 않게
             service.log_event(c, "issue.updated", "issue", issue_id,
                               {"state": "done", "via": "human-verify", "verifier": p.verifier})
+            service.finish_issue_dispatches(c, issue_id)
             row2 = service.get_issue(c, issue_id)
             return dbmod.to_dict(row2)
         proof = p.completion_report

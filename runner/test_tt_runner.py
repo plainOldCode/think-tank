@@ -1669,7 +1669,9 @@ class TestReviewEdgeRegressions(unittest.TestCase):
         killed = []
         R.tmux_run = lambda *a, **k: killed.append(a) or subprocess.CompletedProcess(a, 0)
         self.assertFalse(R.stall_check(self.KEY, R.get_run(self.KEY), now))
-        self.assertEqual(killed, [])  # 관찰 없는 kill 없음
+        # Physical pane inspection is now independent of heartbeat capture.
+        # Failed inspection may read tmux, but cannot send keys or kill work.
+        self.assertFalse(any(a[0] in {"kill-session", "send-keys"} for a in killed))
         self.assertEqual(R.get_run(self.KEY)["status"], "running")
 
     def test_r6_heartbeat_pass_marks_observation_failure(self):

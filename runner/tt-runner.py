@@ -886,6 +886,71 @@ def session_alive(name):
     return r.returncode == 0
 
 
+def session_work_state(name):
+    """missing/idle/busy/unknown, inspecting every pane; uncertainty preserves work."""
+    if not name:
+        return "unknown"
+    try:
+        r = tmux_run("list-panes", "-s", "-t", "=" + name,
+                     "-F", "#{pane_pid}\t#{pane_dead}",
+                     capture_output=True, text=True, timeout=5)
+        if r.returncode != 0:
+            err = r.stderr or ""
+            if ("can't find session" in err or "no server running" in err
+                    or ("error connecting" in err and "No such file" in err)):
+                return "missing"
+            return "unknown"
+        panes = [tuple(map(int, line.split())) for line in (r.stdout or "").splitlines()]
+        if not panes or any(len(p) != 2 or p[1] not in (0, 1) for p in panes):
+            return "unknown"
+        live = [pid for pid, dead in panes if not dead]
+        if not live:
+            return "idle"
+        ps = subprocess.run(["ps", "-axo", "pid=,ppid=,comm="],
+                            capture_output=True, text=True, timeout=5)
+        if ps.returncode != 0:
+            return "unknown"
+        processes = {}
+        for line in (ps.stdout or "").splitlines():
+            pid, parent, command = line.strip().split(None, 2)
+            processes[int(pid)] = (int(parent), os.path.basename(command).lstrip("-"))
+        for pid in live:
+            if pid not in processes:
+                return "unknown"
+            if processes[pid][1] not in {"sh", "bash", "zsh", "fish", "dash", "ksh", "tcsh", "csh"}:
+                return "busy"
+            if any(parent == pid for parent, _ in processes.values()):
+                return "busy"
+        return "idle"
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return "unknown"
+
+
+def cleanup_terminal_session(key, snap):
+    """Only recorded runner sessions without live work or another owner may be killed."""
+    session = snap.get("session") or ""
+    if not session.startswith("tt-") or session_work_state(session) != "idle":
+        return False
+    # Serialize with preempt_round/claim_dispatch, then inspect again: a resumed
+    # dispatch must not be killed between the initial observation and cleanup.
+    with ledger_lock():
+        runs = load_runs()
+        cur = runs.get(key)
+        if (cur is None or cur.get("status") not in run_state.TERMINAL
+                or not _observes_round(cur, snap)):
+            return False
+        if any(k != key and r.get("session") == session and r.get("status") in run_state.ACTIVE
+               for k, r in runs.items()):
+            return False
+        if session_work_state(session) != "idle":
+            return False
+        try:
+            r = tmux_run("kill-session", "-t", "=" + session, capture_output=True, timeout=5)
+            return r.returncode == 0
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+
+
 def session_tail(name, limit=200):
     try:
         r = tmux_run("capture-pane", "-p", "-t", name, "-S", "-80",
@@ -1422,6 +1487,14 @@ def stall_check(key, ent, now):
     모든 장부 쓰기는 회차 가드(set_status_if_round/update_run_if_round) — stale
     감시자가 재회차 엔트리를 failed로 덮는 부류가 불가능하다. wall-clock TIMEOUT과
     구분되는 이벤트. 반환 True면 이번 순회 추가 판정 생략."""
+    physical = session_work_state(ent.get("session") or "")
+    if physical in ("missing", "idle"):
+        cur = get_run(key)
+        if cur is None or not _observes_round(cur, ent) or cur.get("status") not in run_state.STALLABLE:
+            return True
+        finalize(None, key, ent, 143, "session %s without exit marker" % physical)
+        cleanup_terminal_session(key, ent)
+        return True
     hb = read_heartbeat(key)
     if hb is None or not hb.get("ok", True) or hb.get("pane_fp") is None:
         return False  # 무관찰/관찰 실패 순회 — 판정 스킵 (리뷰 R6)
@@ -1460,6 +1533,9 @@ def watch_once():
     _flush_pending_reports()  # 접수 실패 종료 보고 CAS 재전송 (리뷰 R3)
     runs = load_runs()
     for key, ent in list(runs.items()):
+        if ent.get("status") in run_state.TERMINAL:
+            cleanup_terminal_session(key, ent)
+            continue
         if ent.get("status") not in run_state.STALLABLE:
             continue
         base = key.replace("#", "_")
@@ -1472,9 +1548,7 @@ def watch_once():
             except Exception:
                 rc = 0
             finalize(None, key, ent, rc)
-            continue
-        if session and not session_alive(session):
-            finalize(None, key, ent, 143, "session dead without marker; pane tail: " + session_tail(session))
+            cleanup_terminal_session(key, ent)
             continue
         if session and stall_check(key, ent, time.time()):
             continue
