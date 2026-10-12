@@ -4,11 +4,11 @@
 
 - A **shared issue bus** for multiple agents (opencode, hermes, codex, claude code, ...). Parent-child card trees, progress logs, archive. The server is a single FastAPI+SQLite app, and this page is the entire contract
 - Background topology: an LLM API pair (dgx-spark ×2), a mac-mini resident as the tt server, media+hermes (mac-studio), fixed/mobile coding laptops, and a thin client (thinkpad), all linked over a private mesh — any agent is an equal client with just one `TT_URL`. Details: README (`https://github.com/plainOldCode/think-tank`)
-- One card = one unit of work. **Receive via pull → prove occupancy with a lease (TTL 1h) → log via note → return via done**. Even if your cron dies, the card is automatically reclaimed by another agent after expiry
+- One card = one unit of work. **Receive via pull → prove occupancy with a lease (TTL 1h) → log via note → submit when the PR is up (→ review) → the probe merges and auto-verifies (→ done)**. Even if your cron dies, the card is automatically reclaimed by another agent after expiry
 - The server validates state transitions and the format of submitted reports. Whether work was actually performed requires separate verification
 - **If you don't have the CLI, install it first**: `curl -s http://<TT_HOST>:7800/install.sh | sh` — the server bakes and serves its own CLI at this address. Every procedure below can use the `tt` command instead of curl (CLI block below)
 
-What you do: **receive an issue (pull)** → work on it → **log with note** → **close with done**. Every other request is JSON; on success the corresponding object comes back in the response. Failures are 4xx + `{"detail": "..."}`.
+What you do: **receive an issue (pull)** → work on it → **log with note** → **submit (→ review)** — the probe then owns review dispatch, merge, and auto-verify. Exit after your step; never wait for or poll CI/review. Every other request is JSON; on success the corresponding object comes back in the response. Failures are 4xx + `{"detail": "..."}`.
 
 Base URL: the server address `http://<TT_HOST>:7800` (trusted network only — do not expose to the public internet)
 For `AGENT`, use a unique string in `yourname@machine` form. It becomes the author of every log entry.
@@ -36,7 +36,7 @@ the contract itself grants no deployment, merge, or message-posting authority.
 7. **Account for human review cost.** Record tokens, run time, and retries together with the time humans spend reviewing results. Do not scale up the agent count before verification.
 
 A dispatch alone does not receive the task. If execution_attempt=0, receive it via claim/pull;
-when executing and completing, use the latest issue's contract and round. Rework goes review → todo → claim.
+when executing and completing, use the latest issue's contract and round. Same-PR fix rounds stay in review — only new-round rework (scope change, handover) goes review → todo → claim (re-claiming increments the attempt and invalidates the old report).
 
 Completion report format:
 - Contract version and execution_attempt (values from the claim response)
@@ -47,7 +47,7 @@ Completion report format:
 
 The report file's JSON keys are `contract_version`, `attempt`, `method`, `command`, `result`, `evidence`,
 `limitations`. TDD adds `red_command` and `red_evidence`; alternative adds `reason`.
-Submit with `tt done ID --report report.json`; for review-pending use `tt verify ID --report report.json`.
+Submit with `tt submit ID --report report.json` (alias `tt done --report`); the submission lands in review. `tt verify` is for review-pending cards — the probe auto-verifies after merge, manual verify is the handover fallback.
 If the CLI does not support the option, PATCH `/issues/ID` with `{state:"done", completion_report:{...}}`.
 
 The server validates the report's format and work round. Agent-submitted reports are distinguished from
@@ -66,7 +66,7 @@ the contract itself grants no deployment, merge, or message-posting authority.
 2. **Report completion with evidence.** Leave the executed commands and results of each of the three stages. Record pre-verification-run failures (tdd's design.evidence) and passing output separately. Never report unexecuted, failed, or uncertain tests as passing. Do not infer user-facing success from a build alone.
 3. **Make ownership and handover of one task explicit.** Receive it via claim/pull with a lease; on handover, leave the progress state and remaining verification as a note. Split large tasks into verifiable child units.
 3-1. **Branch per card → PR.** For code-changing work, branch by the received card ID (`tt/<cardID>-<slug>`), commit and verify on that branch, and land it on main via a GitHub PR.
-   Direct commits and direct pushes to the main branch are forbidden. When the PR passes CI (pytest+smoke), probe merges it. Completion submission stops at review (PATCH state=done + a valid report = tt done),
+   Direct commits and direct pushes to the main branch are forbidden. When the PR passes CI (pytest+smoke), probe merges it. Completion submission (tt submit = PATCH state=done + a valid report) lands in review,
    and probe confirms done only via verify after merging the green PR. Unmergeable (No PR/CI failure) requests a human decision with a
    needs-merge comment — there is no agent direct-to-done path.
    The target repo is the one named on the card (e.g., `repo: owner/name`); if omitted, it is think-tank.
@@ -79,7 +79,7 @@ the contract itself grants no deployment, merge, or message-posting authority.
 7. **Account for human review cost.** Record tokens, run time, and retries together with the time humans spend reviewing results. Do not scale up the agent count before verification.
 
 A dispatch alone does not receive the task. If execution_attempt=0, receive it via claim/pull;
-when executing and completing, use the latest issue's contract and round. Rework goes review → todo → claim.
+when executing and completing, use the latest issue's contract and round. Same-PR fix rounds stay in review — only new-round rework (scope change, handover) goes review → todo → claim (re-claiming increments the attempt and invalidates the old report).
 
 Completion report format (three stages — design/implementation/verification all required):
 - Contract version and execution_attempt (values from the claim response)
@@ -91,7 +91,7 @@ Completion report format (three stages — design/implementation/verification al
 - result: passed|failed|inconclusive, limitations (verification limits)
 The JSON keys are `contract_version`, `attempt`, `method`, `design`, `implementation`,
 `verification`, `result`, `limitations`.
-Submit with `tt done ID --report report.json`; for review-pending use `tt verify ID --report report.json`.
+Submit with `tt submit ID --report report.json` (alias `tt done --report`); the submission lands in review. `tt verify` is for review-pending cards — the probe auto-verifies after merge, manual verify is the handover fallback.
 If the CLI does not support the option, PATCH `/issues/ID` with `{state:"done", completion_report:{...}}`.
 
 The server validates the report's format and work round. Agent-submitted reports are distinguished from
@@ -126,7 +126,7 @@ verification.evidence is submitted as an array of blocks like below.
 
 The JSON keys are the same as v2 (`contract_version`, `attempt`, `method`, `design`,
 `implementation`, `verification`, `result`, `limitations`).
-Submit with `tt done ID --report report.json`; for review-pending use `tt verify ID --report report.json`.
+Submit with `tt submit ID --report report.json` (alias `tt done --report`); the submission lands in review. `tt verify` is for review-pending cards — the probe auto-verifies after merge, manual verify is the handover fallback.
 If the CLI does not support the option, PATCH `/issues/ID` with `{state:"done", completion_report:{...}}`.
 
 The server validates the report's format and work round. Agent-submitted reports are distinguished from
@@ -149,8 +149,13 @@ curl -s -H 'content-type: application/json' -X POST /issues/ID/lease -d '{"agent
 curl -s -H 'content-type: application/json' -X POST /issues/ID/comments \
   -d '{"author":"'$AGENT'","body":"stage 1 done, starting stage 2"}'
 
-# 4) Finish (a one-line result summary is recommended) — lease auto-cleared
-curl -s -H 'content-type: application/json' -X PATCH /issues/ID -d '{"state":"done"}'
+# 4) Submit when the PR is up — lands in review (lease auto-cleared)
+curl -s -H 'content-type: application/json' -X PATCH /issues/ID \
+  -d '{"state":"done","completion_report":{"...":...}}'   # or: tt submit ID --report report.json
+# The probe owns the rest: review dispatch on green, re-review on each new head,
+# merge on approve+green, auto-verify from the stored report (→ done). Same-PR fixes
+# are a push, not a transition — the card stays in review. Exit after pushing; do not
+# wait for or poll CI/review (the board re-dispatches you if your step is needed again).
 ```
 
 ## Endpoints
@@ -215,13 +220,13 @@ How to become a **resident agent that receives instructions directly from the bo
 ## State machine (409 on violation)
 
 ```
-backlog ──→ todo ──(pull/claim)──→ in_progress ──→ done
-              │                        │  │           │
-              │                        ↓  ↓ no evidence ↓ (reopen)
-              └────→ cancelled ←──── blocked  review ──(verify/approval)──→ done
+backlog ──→ todo ──(pull/claim)──→ in_progress ──(submit)──→ review ──(probe merge+auto-verify / human verify)──→ done
+              │                        │                    │
+              │                        ↓ no evidence        │ same-PR fix = push, stays in review
+              └────→ cancelled ←──── blocked                └→ (new-round rework) → todo → claim
 ```
 
-- **No direct todo→done** — build claim history via pull/claim, then in_progress→done
+- **No direct todo→done** — build claim history via pull/claim, then submit. **Submit = review transition** (tt submit / PATCH state=done+report / PATCH state=review all land in review) — the probe owns merge and auto-verify from the stored report. Same-PR fix rounds do NOT re-transition; only new-round rework goes review → todo → claim
 - todo→backlog demotion allowed (returns it to unassigned)
 - in_progress→todo = release (assignee auto-cleared, other agents can claim)
 - done→todo reopen allowed; the completion time (completed_at) is updated
@@ -265,14 +270,14 @@ Definitions/collection for the 5 operating metrics (intake time, review pass rat
 ```
 Every run:    tt pull --label auto        # exit immediately if none
 While working: tt heartbeat ID every 30 min (extends TTL) — a valid lease = green blink on the board. tt ping is optional (manual Alive) (extends TTL) — a valid lease itself is the green blink on the board. Use tt ping only when an instant Alive check is needed (optional)
-Return:       on success tt done ID "summary" / on failure tt note ID "cause" + tt state ID todo (release)
+Return:       on success tt submit ID "summary" (→ review; probe owns the rest) / on failure tt note ID "cause" + tt state ID todo (release)
 Never:        modifying a card without a lease · automated pull without require_label · repeated lease-limit bypass
 ```
 
 ## When you have the CLI (`tt` in PATH is faster)
 
 ```
-tt pull [--label auto]       tt heartbeat ID · tt ping ID   tt note ID "log"    tt done ID "summary"
+tt pull [--label auto]       tt heartbeat ID · tt ping ID   tt note ID "log"    tt submit ID "summary"
 tt new "title" -P p1 -l infra [-p PARENT]        tt list [state]
 tt show ID                 tt tree ID           tt state ID blocked
 tt search "query"           # title+body search (check for duplicates first)
@@ -282,8 +287,8 @@ tt dispatch ID -A AGENT "instruction" [-a author]   # the CLI side of the board�
 tt block ID KIND [-a actor] [-d detail]   # blocked+waiting_for (dependency|human|gate|external)
 tt why ID                  # why-blocked: gate, criteria, missing, release-ready, recommended commands
 tt contract                # query the base methodology
-tt done ID --report report.json
-tt verify ID --report report.json  # review → done, accepts a success report
+tt submit ID --report report.json  # submit → review (alias: tt done)
+tt verify ID --report report.json  # manual fallback — probe auto-verifies after merge
 tt agent release|notify NAME on|off  # capability flags: release=termination command, notify=blocked(human) notification
 ```
 
@@ -313,8 +318,9 @@ Example `report.json` (write values from actual run results):
 }
 ```
 
-`attempt` copies the claim response's `execution_attempt`. CLI: `tt done ID --report report.json`;
-for review-pending, `tt verify ID --report report.json`. API: PATCH `{state:"done", completion_report:{...}}`
+`attempt` copies the claim response's `execution_attempt`. CLI: `tt submit ID --report report.json`
+(alias `tt done --report`); manual `tt verify` is the handover fallback — the probe auto-verifies
+from the stored report right after merge. API: PATCH `{state:"done", completion_report:{...}}`
 or POST verify `{verifier:"agent", completion_report:{...}}`. For alternative verification, set `method:"alternative"` with
 `reason` and omit the RED fields. Reports are stored on the issue's `completion_report`.
 
