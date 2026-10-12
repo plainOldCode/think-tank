@@ -504,6 +504,26 @@ def _suppressed(i, code, scope):
     return False, latest[1]
 
 
+def _ev_open(i):
+    """⑤ 미해결 조건 — tt-server done 거부 미해소 또는 무보고 병합 미접수(JXYS R1).
+    판정(decide)과 집행(execute 재확인)이 같은 조건을 써야 독려가 실제 저장된다."""
+    cs = i.get("comments") or []
+    if any("done 증거 없음" in (c.get("body") or "") for c in cs
+           if c.get("author") == "tt-server") and _evidence_unresolved(i):
+        return True
+    if i["state"] != "review":
+        return False  # 재작업 회귀 카드 — 옛 병합 기록으로 재독려 금지
+    mc = max((c for c in cs if c.get("author") == "probe"
+              and "merged — 완료 보고 없음" in (c.get("body") or "")),
+             key=lambda c: (_comment_ts(c), c.get("id") or 0), default=None)
+    if not mc:
+        return False
+    mt, mid = _comment_ts(mc), mc.get("id") or 0
+    return not any(c.get("author") == "tt-server"
+                   and "보고 접수" in (c.get("body") or "")
+                   and (_comment_ts(c), c.get("id") or 0) > (mt, mid) for c in cs)
+
+
 def _repeat_count(i, regex, since_id=0):
     """probe 마커 코멘트 중 regex 일치 수(해제 시점 이후만) — (코드, 범위) 카운터."""
     return sum(1 for c in (i.get("comments") or [])
@@ -1285,21 +1305,7 @@ def decide(snap):
         att = i.get("execution_attempt") or 0
         emarker = f"[evidence-rejected a{att}]"
         cs = i.get("comments") or []
-        has_reject = any("done 증거 없음" in (c.get("body") or "")
-                         for c in cs if c.get("author") == "tt-server")
-        # 무보고 병합(JXYS R1) — probe의 'merged — 완료 보고 없음' 기록도 독려 트리거.
-        # 해소 = 병합 기록 이후 tt-server 보고 접수(done 거부는 접수로 보지 않음).
-        mc = max((c for c in cs if c.get("author") == "probe"
-                  and "merged — 완료 보고 없음" in (c.get("body") or "")),
-                 key=lambda c: (_comment_ts(c), c.get("id") or 0), default=None)
-        resolved_b = False
-        if mc:
-            mt, mid = _comment_ts(mc), mc.get("id") or 0
-            resolved_b = any(c.get("author") == "tt-server"
-                             and "보고 접수" in (c.get("body") or "")
-                             and (_comment_ts(c), c.get("id") or 0) > (mt, mid)
-                             for c in cs)
-        ev_open = (has_reject and _evidence_unresolved(i)) or (mc and not resolved_b)
+        ev_open = _ev_open(i)
         sup_ev, _ = _suppressed(i, "evidence_rejected", i["id"])
         if not ev_open or sup_ev:
             continue
@@ -2126,7 +2132,9 @@ def execute(url, act):
                 # 회차 액션 집행 금지 — 회차별 dedup 유지).
                 if (act.get("attempt") or 0) != (cur.get("execution_attempt") or 0):
                     return
-                if not _evidence_unresolved(cur):
+                # 판정과 같은 미해결 조건(JXYS R1 잔여) — done 거부 또는 무보고
+                # 병합 미접수. 후자는 _evidence_unresolved만으로 못 본다.
+                if not _ev_open(cur):
                     return  # 재조회 시점에 이미 해소(성공 보고 접수) — 리뷰 R5
             if any(marker in (c.get("body") or "") for c in (cur.get("comments") or [])
                    if c.get("author") == "probe"):
