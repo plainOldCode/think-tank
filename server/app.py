@@ -88,8 +88,10 @@ def create_app(db_path: str) -> FastAPI:
         stop = threading.Event()
         app.state.probe_stop = stop  # 종료 정리는 lifespan 종료 구간에서 stop.set() (TT M40MP7EX-RTZ1)
 
+        # BTRS: url 미고정(매 사이클 env 재평가) + db_path 잠금 가드(멀티워커 중복 구동 방지)
         threading.Thread(target=probe.loop, daemon=True, name="tt-probe",
-                         args=(os.environ.get("TT_URL", "http://127.0.0.1:7800"), interval, stop)).start()
+                         args=(None, interval, stop),
+                         kwargs={"db_path": db_path}).start()
 
     # 알림 전달 워커 (리뷰 R4a): 이벤트 저장(트랜잭션)과 웹훅 전송(커밋 후 락 밖) 분리.
     # TT_NOTIFY_WORKER=0로 끈다(테스트 격리용). 전달 실패는 로그만 — 저장을 되돌리지 않는다.

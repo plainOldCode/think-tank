@@ -2289,14 +2289,49 @@ def run_once(url, dry=False):
     return acts
 
 
-def loop(url, interval, stop=None, dry=None):
-    """주기 실행 루프. stop 이벤트(선택)로 즉시 종료. 서버 장애 시 지수 백오프(≤300s)."""
+def _acquire_probe_lock(db_path):
+    """내장 probe 단일 구동 가드(BTRS) — DB 파일 옆 잠금파일 non-blocking flock.
+
+    uvicorn --workers>1이면 워커당 probe가 중복 구동된다. 같은 머신·같은 DB라
+    파일 잠금이면 충분한 리더 선출: 선점 실패 시 None — 호출부는 파킹 후 재시도
+    (리더 프로세스가 죽으면 OS가 잠금을 즉시 해제해 자연 인수계).
+    """
+    import fcntl
+    if not db_path:
+        return None
+    lock_path = db_path + ".probe.lock"
+    try:
+        fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        os.write(fd, str(os.getpid()).encode())
+        return fd
+    except OSError:
+        return None
+
+
+def loop(url=None, interval=30, stop=None, dry=None, db_path=None):
+    """주기 실행 루프. stop 이벤트(선택)로 즉시 종료. 서버 장애 시 지수 백오프(≤300s).
+
+    BTRS(하드닝): ①url=None이면 매 사이클 TT_URL을 재평가한다 — 내장 스레드가
+    부팅 시 고정한 URL이라 멀티워커·URL 변경마다 재시작이 필요했던 것 제거
+    (standalone과 동일 계약). ②db_path가 주어지면 파일 잠금 단일 구동 가드 —
+    멀티워커에서 워커당 중복 구동 방지(선점 실패 시 파킹, 리더 종료 시 인수계).
+    """
     if dry is None:
         dry = os.getenv("TT_DISPATCH_DRYRUN") == "1"
+    if db_path and _acquire_probe_lock(db_path) is None:
+        print(time.strftime("%F %T"), "probe: 다른 워커가 구동 중 — 파킹(인수계 대기)",
+              flush=True)
+        while _sleep(min(max(interval, 5), 30), stop):
+            if _acquire_probe_lock(db_path) is not None:
+                break  # 리더 종료 — 인수계
+        else:
+            return  # stop 요청
     fails = 0
     while not (stop is not None and stop.is_set()):
+        cur = url or os.environ.get("TT_URL", "http://127.0.0.1:7800")
         try:
-            run_once(url, dry=dry)
+            run_once(cur, dry=dry)
             fails = 0
         except Exception as e:  # 서버 장애 — 백오프. 쓰기가 없으면 lease는 TTL로 자연 해금.
             fails += 1
@@ -2309,8 +2344,7 @@ def loop(url, interval, stop=None, dry=None):
 
 
 def main():
-    loop(os.getenv("TT_URL", "http://127.0.0.1:7800"),
-         int(os.getenv("TT_DISPATCH_INTERVAL", "30")))
+    loop(None, int(os.getenv("TT_DISPATCH_INTERVAL", "30")))
 
 
 if __name__ == "__main__":
