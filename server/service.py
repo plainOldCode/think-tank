@@ -66,7 +66,24 @@ def bump(c, issue_id, fields, expected_version=None):
                    "fields": sorted(fields)})
     if res.rowcount != 1:
         raise HTTPException(409, "concurrent update, retry")
+    finish_issue_dispatches(c, issue_id)
     c.commit()
+
+
+def finish_issue_dispatches(c, issue_id):
+    """Close active projections in the caller's issue transaction; no hook required."""
+    ph = ",".join("?" * len(config.ACTIVE_RUN_STATES))
+    rows = c.execute(
+        f"SELECT id FROM dispatches WHERE issue_id=? AND run_state IN ({ph}) "
+        "AND EXISTS (SELECT 1 FROM issues i WHERE i.id=dispatches.issue_id "
+        "AND (i.state IN ('done','cancelled') OR i.archived=1))",
+        (issue_id, *config.ACTIVE_RUN_STATES)).fetchall()
+    ts = dbmod.now()
+    for row in rows:
+        c.execute("UPDATE dispatches SET run_state='finished', ended_at=? WHERE id=?",
+                  (ts, row["id"]))
+        log_event(c, "dispatch.updated", "dispatch", row["id"],
+                  {"run_state": "finished", "via": "issue-terminal"})
 
 
 def reset_evidence(c, issue_id):

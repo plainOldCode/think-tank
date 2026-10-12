@@ -372,6 +372,7 @@ def dispatch_progress(issue_id: str, dispatch_id: int, p: DispatchProgress, requ
     if p.state is not None and p.state not in config.RUN_STATES:
         raise HTTPException(422, f"state enum: {'|'.join(sorted(config.RUN_STATES))}")
     with ctx.con() as c:
+        c.execute("BEGIN IMMEDIATE")
         row = c.execute("SELECT d.*, a.secret AS agent_secret FROM dispatches d "
                         "LEFT JOIN agents a ON a.name=d.agent WHERE d.id=?",
                         (dispatch_id,)).fetchone()
@@ -382,6 +383,15 @@ def dispatch_progress(issue_id: str, dispatch_id: int, p: DispatchProgress, requ
             auth = (request.headers.get("authorization") or "").replace("Bearer ", "")
             if auth != secret:
                 raise HTTPException(403, "secret 불일치")
+        issue = service.get_issue(c, issue_id)
+        closed = issue["state"] in ("done", "cancelled") or issue["archived"]
+        current_attempt = row["attempt"] is None or row["attempt"] >= issue["execution_attempt"]
+        # Closed issues may accept old physical cleanup, but historical completion
+        # comments must never be added to the current attempt's evidence.
+        accept_comment = bool(p.comment) and current_attempt
+        if closed and p.state in config.ACTIVE_RUN_STATES:
+            service.finish_issue_dispatches(c, issue_id)
+            return dict(c.execute("SELECT * FROM dispatches WHERE id=?", (dispatch_id,)).fetchone())
         fields: dict = {}
         ts = p.ts if p.ts else dbmod.now()
         if p.state is not None:
@@ -389,11 +399,18 @@ def dispatch_progress(issue_id: str, dispatch_id: int, p: DispatchProgress, requ
             # 종료 상태(finished/failed)는 비교와 갱신을 단일 조건부 UPDATE로 원자화한다
             # (R2: SELECT 후 UPDATE 사이 claim 끼워들기 창 제거) — dispatch가 생성된
             # 회차(attempt 스냅샷)보다 이슈의 현재 execution_attempt가 앞서면 갱신
-            # 자체가 이뤄지지 않고 409로 거부된다. "이전 회차가 현재 회차를 덮는" 부류가
-            # 구조적으로 사라진다. attempt 스냅샷이 없는 구형 행(NULL)은 기존 동작 유지.
+            # 자체가 이뤄지지 않고 409로 거부된다. 이미 done/cancelled/archived인
+            # 카드의 물리 종료 투영만 예외이며 구회차 코멘트는 받지 않는다.
+            # attempt 스냅샷이 없는 구형 행(NULL)은 기존 동작 유지.
             # running/stalled 등 비종료 진행은 last-write-wins 그대로(러너 stall_check
             # 소유 — 서버 재계산 금지).
             if p.state in ("finished", "failed"):
+                if not current_attempt and p.comment and p.session:
+                    receipt = c.execute(
+                        "SELECT 1 FROM dispatch_reports WHERE dispatch_id=? AND session=?",
+                        (dispatch_id, p.session)).fetchone()
+                    if receipt:
+                        return dict(row)  # previously accepted retry, projection unchanged
                 # 보고 선점 선(先)결제 (6차 리뷰 R13 — 원자성): 접수 이력 (dispatch,
                 # session) 유니크 INSERT OR IGNORE가 그 자체로 게이트다. 이력 SELECT와
                 # 투영 갱신을 분리하면 경합 창(이력 부재 판독 → 타 요청 접수 → 재개)에서
@@ -402,7 +419,7 @@ def dispatch_progress(issue_id: str, dispatch_id: int, p: DispatchProgress, requ
                 # 투영(run_state/ended_at/session) 무변경 기수락 200. 세션 없는 보고는
                 # 회차 식별 불가 — 선점 없이 기존 동작(CAS + 매 접수).
                 claimed = None
-                if p.comment and p.session:
+                if accept_comment and p.session:
                     claimed = c.execute(
                         "INSERT OR IGNORE INTO dispatch_reports (dispatch_id, session, ts) "
                         "VALUES (?,?,?)", (dispatch_id, p.session, dbmod.now()))
@@ -413,13 +430,15 @@ def dispatch_progress(issue_id: str, dispatch_id: int, p: DispatchProgress, requ
                 # TIMEOUT·release 등 코멘트 없는 종료 투영은 접수 증거가 아니므로
                 # 기록하면 _terminal_recorded가 오패정한다.
                 sets = ("run_state=?, ended_at=?, report_session=?"
-                        if (p.comment and p.session) else "run_state=?, ended_at=?")
-                args = ((p.state, ts, p.session) if (p.comment and p.session)
+                        if (accept_comment and p.session) else "run_state=?, ended_at=?")
+                args = ((p.state, ts, p.session) if (accept_comment and p.session)
                         else (p.state, ts))
                 res = c.execute(
                     "UPDATE dispatches SET %s WHERE id=? AND "
                     "(attempt IS NULL OR attempt >= "
-                    "(SELECT i.execution_attempt FROM issues i WHERE i.id=dispatches.issue_id))" % sets,
+                    "(SELECT i.execution_attempt FROM issues i WHERE i.id=dispatches.issue_id) "
+                    "OR EXISTS (SELECT 1 FROM issues i WHERE i.id=dispatches.issue_id "
+                    "AND (i.state IN ('done','cancelled') OR i.archived=1)))" % sets,
                     (*args, dispatch_id))
                 if res.rowcount == 1:
                     service.log_event(c, "dispatch.updated", "dispatch", dispatch_id,
@@ -430,7 +449,7 @@ def dispatch_progress(issue_id: str, dispatch_id: int, p: DispatchProgress, requ
                     raise HTTPException(
                         409, f"stale round report: dispatch#{dispatch_id} attempt={row['attempt']} "
                              f"< issue current execution_attempt — 이전 회차 종료 보고 거부")
-                if p.comment:
+                if accept_comment:
                     # 종료 투영과 완료 보고를 같은 트랜잭션에 접수 (R3: CAS 통과 후
                     # 별도 /comments 사이 회차 변경 창 제거 — 409면 코멘트도 없다).
                     # 접수 코어 공유로 버전 갱신·blocked 알림 부수효과 보존 (R9)
