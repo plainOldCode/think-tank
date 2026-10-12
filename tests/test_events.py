@@ -122,7 +122,7 @@ async def test_sse_stream_replays_after_cursor(client):
         client.post(f"/issues/{i['id']}/comments", json={"author": "w1", "body": "s%d" % n})
     cursor = client.get("/events?limit=1").json()["events"][0]["seq"]
     # 커서 이후 전건 — 비동기 스트림 제너레이터 직접 소비
-    from server.routers.meta import events_stream
+    from routers.meta import events_stream  # pytest.ini pythonpath=server
     gen = events_stream(after_seq=cursor, ctx=client.app.state.ctx, poll_s=0.01, max_idle=0.05)
     received = await _drain(gen, lambda ev: any(e["entity_id"] == i["id"] for e in ev))
     await gen.aclose()
@@ -139,7 +139,7 @@ async def test_sse_last_event_id_header(client):
     r = client.get("/events?limit=1")
     cursor = r.json()["events"][-1]["seq"]
     client.post(f"/issues/{i['id']}/comments", json={"author": "w1", "body": "y"})
-    from server.routers.meta import events_stream
+    from routers.meta import events_stream  # pytest.ini pythonpath=server
     gen = events_stream(after_seq=cursor, ctx=client.app.state.ctx, poll_s=0.01, max_idle=0.05)
     received = await _drain(gen, lambda ev: bool(ev))
     await gen.aclose()

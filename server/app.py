@@ -129,7 +129,7 @@ def create_app(db_path: str) -> FastAPI:
     async def static_no_cache(request, call_next):
         resp = await call_next(request)
         p = request.url.path
-        if p == "/" or p.endswith((".html", ".js", ".css")):
+        if p == "/" or p.endswith((".html", ".js", ".css", ".md")):
             resp.headers["Cache-Control"] = "no-cache"
         return resp
 
