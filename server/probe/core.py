@@ -511,7 +511,7 @@ def _ev_open(i):
     if any("done 증거 없음" in (c.get("body") or "") for c in cs
            if c.get("author") == "tt-server") and _evidence_unresolved(i):
         return True
-    if i["state"] != "review":
+    if i.get("state") != "review":
         return False  # 재작업 회귀 카드 — 옛 병합 기록으로 재독려 금지
     mc = max((c for c in cs if c.get("author") == "probe"
               and "merged — 완료 보고 없음" in (c.get("body") or "")),

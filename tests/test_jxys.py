@@ -328,17 +328,17 @@ def test_무보고_병합_실제_왕복_저장_후_승격(monkeypatch):
     a = next(a for a in probe_core.decide(snap([c]))
              if a.get("marker") == "[evidence-rejected a1]")
     probe_core.execute("u", a)
-    stored = _merged_card([MERGE_NB] + [
-        {"author": "probe", "id": x.get("id") or 20, "ts": x.get("ts") or TS_NOW,
-         "body": x.get("body") or ""} for x in rec.commented if x.get("author") == "probe"])
-    # 타이머 미경과(dry run of decide with now close) — 독려 중복 없음
+    # 저장된 카드 그대로(서버가 ts/id를 채워 주는 것을 재현) — 타이머 미경과: 중복 독려 없음
+    stored = dict(c)
+    stored["comments"] = [MERGE_NB] + [dict(x, id=20 + n, ts=TS_NOW) for n, x in
+                                       enumerate(x for x in rec.commented
+                                                 if x.get("author") == "probe")]
     snap2 = snap([stored])
     snap2["now"] = TS_NOW
     assert not [a2 for a2 in probe_core.decide(snap2)
                 if a2.get("action") == "review-note" and "재제출" in (a2.get("reason") or "")]
-    # 시간 경과(TS_NOW 기준 독려가 8.5h 전인 카드로 교체)
-    late = _merged_card([MERGE_NB, {"author": "probe", "id": 30, "ts": TS_OLD,
-                                    "body": "[evidence-rejected a1] 무보고 병합 — 재제출 요청"}])
-    nh = [a2 for a2 in probe_core.decide(snap([late]))
-          if a2.get("action") == "needs-human"]
+    # 동일 카드, snapshot now만 전진(8.5h) — 저장된 독려 시각 기준 타이머 경과 → 승격
+    snap3 = snap([stored])
+    snap3["now"] = "2026-10-12T01:00:00+0900"
+    nh = [a2 for a2 in probe_core.decide(snap3) if a2.get("action") == "needs-human"]
     assert nh and "evidence_rejected" in nh[0]["note"]
