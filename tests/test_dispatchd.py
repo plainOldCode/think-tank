@@ -135,7 +135,8 @@ GREEN_PR = {"number": 3, "head_sha": "abc", "branch": "tt/M3PXXXXX-9ABC-ci-probe
 
 def test_decide_merges_green_pr_with_card():
     from dispatchd import ci_passed
-    iss = issue("M3PXXXXX-9ABC", state="in_progress", assignee="codex",
+    # review 상태 — in_progress+green은 JXYS(독려→승격) 경로로 간다(M4MGV3BY-JXYS)
+    iss = issue("M3PXXXXX-9ABC", state="review", assignee="codex",
                 lease_expires="2026-09-29T23:00:00+0900", execution_attempt=1)
     iss["work_contract"] = {"version": "tt-tdd-v2:x"}
     acts = decide(snap([iss], prs=[GREEN_PR]))
@@ -173,7 +174,7 @@ def test_card_repo_parsing():
 
 
 def test_decide_merge_repo_match_and_mismatch():
-    iss = issue("M3PXXXXX-9ABC", state="in_progress", execution_attempt=1,
+    iss = issue("M3PXXXXX-9ABC", state="review", execution_attempt=1,
                 body="repo: plainOldCode/armour-service-ops")
     iss["work_contract"] = {"version": "tt-tdd-v2:x"}
     green = {"checks": [{"name": "api-gate", "state": "SUCCESS"}]}
