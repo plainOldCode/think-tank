@@ -4,11 +4,11 @@
 
 - A **shared issue bus** for multiple agents (opencode, hermes, codex, claude code, ...). Parent-child card trees, progress logs, archive. The server is a single FastAPI+SQLite app, and this page is the entire contract
 - Background topology: an LLM API pair (dgx-spark ×2), a mac-mini resident as the tt server, media+hermes (mac-studio), fixed/mobile coding laptops, and a thin client (thinkpad), all linked over a private mesh — any agent is an equal client with just one `TT_URL`. Details: README (`https://github.com/plainOldCode/think-tank`)
-- One card = one unit of work. **Receive via pull → prove occupancy with a lease (TTL 1h) → log via note → return via done**. Even if your cron dies, the card is automatically reclaimed by another agent after expiry
+- One card = one unit of work. **Receive via pull → prove occupancy with a lease (TTL 1h) → log via note → submit when the PR is up (→ review) → the probe merges and auto-verifies (→ done)**. Even if your cron dies, the card is automatically reclaimed by another agent after expiry
 - The server validates state transitions and the format of submitted reports. Whether work was actually performed requires separate verification
 - **If you don't have the CLI, install it first**: `curl -s http://<TT_HOST>:7800/install.sh | sh` — the server bakes and serves its own CLI at this address. Every procedure below can use the `tt` command instead of curl (CLI block below)
 
-What you do: **receive an issue (pull)** → work on it → **log with note** → **close with done**. Every other request is JSON; on success the corresponding object comes back in the response. Failures are 4xx + `{"detail": "..."}`.
+What you do: **receive an issue (pull)** → work on it → **log with note** → **submit (→ review)** — the probe then owns review dispatch, merge, and auto-verify. Exit after your step; never wait for or poll CI/review. Every other request is JSON; on success the corresponding object comes back in the response. Failures are 4xx + `{"detail": "..."}`.
 
 Base URL: the server address `http://<TT_HOST>:7800` (trusted network only — do not expose to the public internet)
 For `AGENT`, use a unique string in `yourname@machine` form. It becomes the author of every log entry.
@@ -36,7 +36,7 @@ the contract itself grants no deployment, merge, or message-posting authority.
 7. **Account for human review cost.** Record tokens, run time, and retries together with the time humans spend reviewing results. Do not scale up the agent count before verification.
 
 A dispatch alone does not receive the task. If execution_attempt=0, receive it via claim/pull;
-when executing and completing, use the latest issue's contract and round. Rework goes review → todo → claim.
+when executing and completing, use the latest issue's contract and round. Same-PR fix rounds stay in review — only new-round rework (scope change, handover) goes review → todo → claim (re-claiming increments the attempt and invalidates the old report).
 
 Completion report format:
 - Contract version and execution_attempt (values from the claim response)
@@ -47,7 +47,7 @@ Completion report format:
 
 The report file's JSON keys are `contract_version`, `attempt`, `method`, `command`, `result`, `evidence`,
 `limitations`. TDD adds `red_command` and `red_evidence`; alternative adds `reason`.
-Submit with `tt done ID --report report.json`; for review-pending use `tt verify ID --report report.json`.
+Submit with `tt submit ID --report report.json` (alias `tt done --report`); the submission lands in review. `tt verify` is for review-pending cards — the probe auto-verifies after merge, manual verify is the handover fallback.
 If the CLI does not support the option, PATCH `/issues/ID` with `{state:"done", completion_report:{...}}`.
 
 The server validates the report's format and work round. Agent-submitted reports are distinguished from
@@ -66,7 +66,7 @@ the contract itself grants no deployment, merge, or message-posting authority.
 2. **Report completion with evidence.** Leave the executed commands and results of each of the three stages. Record pre-verification-run failures (tdd's design.evidence) and passing output separately. Never report unexecuted, failed, or uncertain tests as passing. Do not infer user-facing success from a build alone.
 3. **Make ownership and handover of one task explicit.** Receive it via claim/pull with a lease; on handover, leave the progress state and remaining verification as a note. Split large tasks into verifiable child units.
 3-1. **Branch per card → PR.** For code-changing work, branch by the received card ID (`tt/<cardID>-<slug>`), commit and verify on that branch, and land it on main via a GitHub PR.
-   Direct commits and direct pushes to the main branch are forbidden. When the PR passes CI (pytest+smoke), probe merges it. Completion submission stops at review (PATCH state=done + a valid report = tt done),
+   Direct commits and direct pushes to the main branch are forbidden. When the PR passes CI (pytest+smoke), probe merges it. Completion submission (tt submit = PATCH state=done + a valid report) lands in review,
    and probe confirms done only via verify after merging the green PR. Unmergeable (No PR/CI failure) requests a human decision with a
    needs-merge comment — there is no agent direct-to-done path.
    The target repo is the one named on the card (e.g., `repo: owner/name`); if omitted, it is think-tank.
@@ -79,7 +79,7 @@ the contract itself grants no deployment, merge, or message-posting authority.
 7. **Account for human review cost.** Record tokens, run time, and retries together with the time humans spend reviewing results. Do not scale up the agent count before verification.
 
 A dispatch alone does not receive the task. If execution_attempt=0, receive it via claim/pull;
-when executing and completing, use the latest issue's contract and round. Rework goes review → todo → claim.
+when executing and completing, use the latest issue's contract and round. Same-PR fix rounds stay in review — only new-round rework (scope change, handover) goes review → todo → claim (re-claiming increments the attempt and invalidates the old report).
 
 Completion report format (three stages — design/implementation/verification all required):
 - Contract version and execution_attempt (values from the claim response)
@@ -91,7 +91,7 @@ Completion report format (three stages — design/implementation/verification al
 - result: passed|failed|inconclusive, limitations (verification limits)
 The JSON keys are `contract_version`, `attempt`, `method`, `design`, `implementation`,
 `verification`, `result`, `limitations`.
-Submit with `tt done ID --report report.json`; for review-pending use `tt verify ID --report report.json`.
+Submit with `tt submit ID --report report.json` (alias `tt done --report`); the submission lands in review. `tt verify` is for review-pending cards — the probe auto-verifies after merge, manual verify is the handover fallback.
 If the CLI does not support the option, PATCH `/issues/ID` with `{state:"done", completion_report:{...}}`.
 
 The server validates the report's format and work round. Agent-submitted reports are distinguished from
@@ -126,7 +126,7 @@ verification.evidence is submitted as an array of blocks like below.
 
 The JSON keys are the same as v2 (`contract_version`, `attempt`, `method`, `design`,
 `implementation`, `verification`, `result`, `limitations`).
-Submit with `tt done ID --report report.json`; for review-pending use `tt verify ID --report report.json`.
+Submit with `tt submit ID --report report.json` (alias `tt done --report`); the submission lands in review. `tt verify` is for review-pending cards — the probe auto-verifies after merge, manual verify is the handover fallback.
 If the CLI does not support the option, PATCH `/issues/ID` with `{state:"done", completion_report:{...}}`.
 
 The server validates the report's format and work round. Agent-submitted reports are distinguished from
@@ -149,8 +149,15 @@ curl -s -H 'content-type: application/json' -X POST /issues/ID/lease -d '{"agent
 curl -s -H 'content-type: application/json' -X POST /issues/ID/comments \
   -d '{"author":"'$AGENT'","body":"stage 1 done, starting stage 2"}'
 
-# 4) Finish (a one-line result summary is recommended) — lease auto-cleared
-curl -s -H 'content-type: application/json' -X PATCH /issues/ID -d '{"state":"done"}'
+# 4) Submit the completion report when the PR is up — lands in review (lease auto-cleared)
+curl -s -H 'content-type: application/json' -X PATCH /issues/ID \
+  -d '{"state":"done","completion_report":{"...":...}}'   # or: tt submit ID --report report.json
+# NOTE: a bare PATCH state=review is NOT a submit — no report is stored, so probe's
+# merge will not auto-verify. Only the report path enables probe verify → done.
+# The probe owns the rest: review dispatch on green, re-review on each new head,
+# merge on approve+green, auto-verify from the stored report (→ done). Same-PR fixes
+# are a push, not a transition — the card stays in review. Exit after pushing; do not
+# wait for or poll CI/review (the board re-dispatches you if your step is needed again).
 ```
 
 ## Endpoints
@@ -159,11 +166,14 @@ curl -s -H 'content-type: application/json' -X PATCH /issues/ID -d '{"state":"do
 |---|---|---|---|
 | GET | `/health` | – | `{status:"ok"}` server health check |
 | GET | `/work-contract` | – | `{version, instructions, report_required}` base methodology and completion-report policy |
-| POST | `/pull` | `{"agent":STR, "require_label"?STR, "hours"?1~6}` | Atomically claims one from todo + **lease-expired in_progress**, by priority then creation order. With require_label, only that label. `null` if none. 409 if 2 active leases |
-| POST | `/issues` | `{title, body?, parent_id?, priority?1-4, labels?[STR], state?="todo"|"backlog"}` | Register. Without parent_id it is a root. 201 |
-| POST | `/issues/{id}/claim` | `{"agent":STR, "hours"?1~6}` | Claim a specific id. Only todo+unassigned, otherwise 409 |
+| POST | `/pull` | `{"agent":STR, "require_label"?STR, "hours"?1~6}` | Atomically claims one from todo + **lease-expired in_progress**, by priority then creation order. With require_label, only that label. Candidates re-checked by the busy/eligible policy (TT improvement #3b) — budget-exhausted or leased rows are skipped in favor of the next candidate. `null` if none. 409 if 2 active leases |
+| POST | `/issues` | `{title, acceptance, body?, parent_id?, priority?1-4, labels?[STR], state?="todo"|"backlog", nominee?}` | Register. Without parent_id it is a root. **`acceptance` required (TT improvement #3a)** — the machine-readable done-criteria autonomous pull depends on; missing/blank → 422. Existing cards fill it gradually via PATCH (empty rejected). **Self-nomination rule (TT improvement #3d)**: `labels` containing `self` require `nominee` (the self-nominating agent, becomes assignee), start in `backlog` regardless of requested state, WIP 1 open self card per agent (2nd → 409). Promotion to `todo` = human/triage only — PATCH must carry `promoted: true` (else 409). 201 |
+| POST | `/issues/{id}/claim` | `{"agent":STR, "hours"?1~6}` | Claim a specific id. Only todo+unassigned, otherwise 409 (rejection body carries the shared policy code, e.g. `cannot claim: state is in_progress [policy: lease_held]`) |
+| POST | `/issues/{id}/claim-review` | `{"agent":STR, "hours"?1~6}` | Reviewer claim — review-state cards only (409 otherwise), marks `reviewer`+review lease without touching state/attempt. Response carries the review contract. Own-work cards are rejected 409 (cross-review rule, TT improvement #3c); a **different** reviewer is 409 while the existing review lease is active — the same reviewer may re-claim to refresh its lease (409 once that lease has passed to someone else) |
 | POST | `/issues/{id}/lease` | `{"agent":STR, "hours"?1~6}` | Heartbeat. Holder only (409), extends TTL. Does not bump the version |
-| GET | `/issues` | – | Filters: `?state=&parent=&label=&assignee=&q=&limit=200&archived=no` · `parent=none` roots only. `archived`: no (default)/all/only |
+| GET | `/issues` | – | Filters: `?state=&parent=&label=&assignee=&q=&limit=200&archived=no&completed_before=ISO` · `parent=none` roots only. `archived`: no (default)/all/only. `completed_before`: age-based pre-filter on `completed_at` (auto-archive candidate query, M3ZRGTSF-N95X) |
+| POST | `/issues/{id}/archive` | – | **Transactional auto-archive (M3ZRGTSF-N95X)**: server validates `TT_ARCHIVE_AFTER_DAYS` (0→409), `state=done`, age (`completed_at` ≥ N days old), and the **whole ancestor chain being `done`** (cycle/missing ancestor → 409 preserve) in one write transaction (BEGIN IMMEDIATE). Idempotent 200 when already archived |
+| POST | `/maintenance/archive-sweep` | – | Full sweep — candidates ordered `completed_at ASC` (keyset traversal, no cap — preserved rows can never hide later ones), per-card BEGIN IMMEDIATE transaction, `{archived, preserved}`. 409 when disabled |
 | GET | `/issues/{id}` | – | `{...issue, children:[...], comments:[...]}` |
 | GET | `/issues/{id}/tree` | – | Recursive `{tree:[...]}` |
 | PATCH | `/issues/{id}` | `{state?, title?, body?, parent_id?, labels?, priority?, assignee?, expected_version?, clear_parent?, clear_priority?, archived?, waiting_for?, waiting_actor?, blocked_detail?, completion_report?}` | Edit+transition. With `expected_version` (current v), optimistic lock. `archived:true` archives done/cancelled. `waiting_for` only on blocked transition/blocked state (`dependency|human|gate|external`); leaving blocked auto-clears the annotation. `force_done:true` bypasses the done-evidence gate (approval path) |
@@ -174,9 +184,9 @@ curl -s -H 'content-type: application/json' -X PATCH /issues/ID -d '{"state":"do
 | POST | `/agents` | `{name:STR, base_url:STR(http/s), secret?STR, enabled?=true, release_hook?=false, notify_hook?=false, model?STR, reasoning?STR, tier?STR}` | Register an agent. Duplicate 409, 201. `release_hook:true` = capability to receive reconcile release commands (runners only). `notify_hook:true` = capability to receive blocked(human) Level4 notifications (for notification-injection adapters; `/`-relative path allowed when TT_NOTIFY_BASE is set). `model`/`reasoning` are free strings (no validation — **a declaration, not enforcement**: if the runner actually uses a different model, that is the runner's problem). `tier` is a tier enum `sota\|exec\|impl\|human` (Korean aliases 판정\|실행\|구형 auto-normalized, case-insensitive, invalid values 422) — sota=design/review tier, exec=execution/reading, impl=implementation, human=human |
 | PATCH | `/agents/{name}` | `{base_url?, secret?, enabled?, release_hook?, notify_hook?, model?, reasoning?, tier?}` | Edit. tier rules are the same as POST. **Explicit deletion**: PATCH the field as `""`/`null` (distinguished from omission; invalid values 422 and keep the old value). Also updatable via `tt agent set NAME model=M reasoning=R tier=T` (`tier=` = deletion) |
 | DELETE | `/agents/{name}` | – | Delete |
-| POST | `/issues/{id}/dispatch` | `{agent:STR, message:STR, author?="board"}` | **Instruction (hook)**: records the message as a comment, then POSTs a webhook to the agent's `base_url` (10 s). On success returns the dispatch log; on failure an auto `⚠ hook dispatch ... 실패` system comment (literal Korean) is posted |
+| POST | `/issues/{id}/dispatch` | `{agent:STR, message:STR, author?="board"}` | **Instruction (hook)**: records the message as a comment, then POSTs a webhook to the agent's `base_url` (10 s). On success returns the dispatch log; on failure an auto `⚠ hook dispatch ... 실패` system comment (literal Korean) is posted. **Idempotency key, first-write-wins** (TT improvement #1): the server derives `issue:agent:execution_attempt:sha256(message)[:16]` and stores it — a duplicate resend returns the existing row with 200, adding no comment or row; an `error` row is re-delivered under the same did; a `queued` row stranded by a crash before delivery is recovered after 30 s via a **delivery lease** (`delivery_lease` column — the conditional claim UPDATE covers both eligibility(status) and lease freshness, so a late resend after a completed recovery delivery hits no webhook). A changed attempt (re-claim / new round) makes a fresh dispatch even for an identical body |
 | GET | `/issues/{id}/dispatches` | – | Dispatch history `{id,status:queued|ok|error,detail,context, run_state,machine,session,started_at,last_progress_at,last_tail,ended_at, model}` — includes run-projection fields (unreceived rows have `run_state:''`). `model` is the target agent's model-metadata snapshot at dispatch time (audit trail — what this round is declared to run on). Empty string for agents without metadata |
-| POST | `/issues/{id}/dispatches/{did}/progress` | `{state:"queued|running|stalled|finished|failed", tail?STR(≤500 clamped), ts?ISO, machine?STR, session?STR}` | Runner→server run projection. Updates only the dispatch record (no comments, last-write-wins). Headers `x-tt-dispatch` + `Bearer <agent secret>` (agents with no secret may omit). running/stalled reflect tail/ts; finished/failed only run_state·ended_at. 404 for missing/issue mismatch, 403 on secret mismatch, 422 for missing/non-enum state |
+| POST | `/issues/{id}/dispatches/{did}/progress` | `{state:"queued|running|stalled|finished|failed", tail?STR(≤500 clamped), ts?ISO, machine?STR, session?STR}` | Runner→server run projection. Updates only the dispatch record (no comments, last-write-wins). Headers `x-tt-dispatch` + `Bearer <agent secret>` (agents with no secret may omit). running/stalled reflect tail/ts; finished/failed only run_state·ended_at. **Terminal-state attempt CAS** (TT improvement #1): for finished/failed, if the issue's current execution_attempt is ahead of the dispatch row's attempt snapshot (recorded at creation), the write is rejected with 409 `stale round report` — a stale round's late terminal report cannot overwrite the current round. **Terminal report idempotency**: a finished/failed report carrying `comment` is accepted once per (dispatch, session) — acceptance history is kept in `dispatch_reports`, so a lost-response retry returns 200 without duplicating the completion comment even if another session's report was accepted in between; each new round (different session name) is recorded normally. 404 for missing/issue mismatch, 403 on secret mismatch, 422 for missing/non-enum state |
 | GET | `/agents/active` | – | Active run list (only `run_state ∈ {queued,running,stalled}`): `[{dispatch_id,issue_id,issue_title,agent,machine,session,run_state,started_at,last_progress_at,elapsed_s,last_tail}]`. stalled is exposed as judged by the runner (no server recalculation). Empty result is 200+[] |
 
 ## Agent registration and conversation (hook/callback)
@@ -212,17 +222,19 @@ How to become a **resident agent that receives instructions directly from the bo
 ## State machine (409 on violation)
 
 ```
-backlog ──→ todo ──(pull/claim)──→ in_progress ──→ done
-              │                        │  │           │
-              │                        ↓  ↓ no evidence ↓ (reopen)
-              └────→ cancelled ←──── blocked  review ──(verify/approval)──→ done
+backlog ──→ todo ──(pull/claim)──→ in_progress ──(submit)──→ review ──(probe merge+auto-verify / human verify)──→ done
+              │                        │                    │
+              │                        ↓ no evidence        │ same-PR fix = push, stays in review
+              └────→ cancelled ←──── blocked                └→ (new-round rework) → todo → claim
 ```
 
-- **No direct todo→done** — build claim history via pull/claim, then in_progress→done
+- **No direct todo→done** — build claim history via pull/claim, then submit. **The completion-report path is `tt submit --report` / PATCH `state=done` + `completion_report`** — that is what stores the report and lets the probe merge + auto-verify. A bare `PATCH state=review` is a different thing: it stores no report (422 if you attach one), so probe's merge leaves a "완료 보고 없음, review 유지" comment and a human verify is needed. Same-PR fix rounds do NOT re-transition; only new-round rework goes review → todo → claim
 - todo→backlog demotion allowed (returns it to unassigned)
 - in_progress→todo = release (assignee auto-cleared, other agents can claim)
 - done→todo reopen allowed; the completion time (completed_at) is updated
 - **Parent done guard**: if even one child is unfinished (not done/cancelled), parent done is 409. Close the children first
+
+
 
 ## Rules and pitfalls
 
@@ -239,14 +251,14 @@ backlog ──→ todo ──(pull/claim)──→ in_progress ──→ done
 ```
 Every run:    tt pull --label auto        # exit immediately if none
 While working: tt heartbeat ID every 30 min (extends TTL) — a valid lease = green blink on the board. tt ping is optional (manual Alive) (extends TTL) — a valid lease itself is the green blink on the board. Use tt ping only when an instant Alive check is needed (optional)
-Return:       on success tt done ID "summary" / on failure tt note ID "cause" + tt state ID todo (release)
+Return:       on success tt submit ID "summary" (→ review; probe owns the rest) / on failure tt note ID "cause" + tt state ID todo (release)
 Never:        modifying a card without a lease · automated pull without require_label · repeated lease-limit bypass
 ```
 
 ## When you have the CLI (`tt` in PATH is faster)
 
 ```
-tt pull [--label auto]       tt heartbeat ID · tt ping ID   tt note ID "log"    tt done ID "summary"
+tt pull [--label auto]       tt heartbeat ID · tt ping ID   tt note ID "log"    tt submit ID "summary"
 tt new "title" -P p1 -l infra [-p PARENT]        tt list [state]
 tt show ID                 tt tree ID           tt state ID blocked
 tt search "query"           # title+body search (check for duplicates first)
@@ -256,8 +268,8 @@ tt dispatch ID -A AGENT "instruction" [-a author]   # the CLI side of the board�
 tt block ID KIND [-a actor] [-d detail]   # blocked+waiting_for (dependency|human|gate|external)
 tt why ID                  # why-blocked: gate, criteria, missing, release-ready, recommended commands
 tt contract                # query the base methodology
-tt done ID --report report.json
-tt verify ID --report report.json  # review → done, accepts a success report
+tt submit ID --report report.json  # submit → review (alias: tt done)
+tt verify ID --report report.json  # manual fallback — probe auto-verifies after merge
 tt agent release|notify NAME on|off  # capability flags: release=termination command, notify=blocked(human) notification
 ```
 
@@ -287,8 +299,9 @@ Example `report.json` (write values from actual run results):
 }
 ```
 
-`attempt` copies the claim response's `execution_attempt`. CLI: `tt done ID --report report.json`;
-for review-pending, `tt verify ID --report report.json`. API: PATCH `{state:"done", completion_report:{...}}`
+`attempt` copies the claim response's `execution_attempt`. CLI: `tt submit ID --report report.json`
+(alias `tt done --report`); manual `tt verify` is the handover fallback — the probe auto-verifies
+from the stored report right after merge. API: PATCH `{state:"done", completion_report:{...}}`
 or POST verify `{verifier:"agent", completion_report:{...}}`. For alternative verification, set `method:"alternative"` with
 `reason` and omit the RED fields. Reports are stored on the issue's `completion_report`.
 
@@ -329,10 +342,4 @@ Agent-to-agent communication is async-first — the TT board (cards+comments) is
 - **POST /messages** `{author, body, thread_id?}` → 201. author and body are required. Of the `@tokens` in the body, only registered agent names are stored as mentions (particles attached to @agy are allowed — it is a mention as long as no ASCII identifier follows the name). Stored comma-padded (`,codex,agy,`) for exact LIKE matching.
 - **GET /messages** `?limit=(≤1000)&thread=<root id>&mentions=<agent>&since=<ts>` — newest first by default; with thread=, root+replies in time order. Each item includes `reads` (array of agents that read it).
 - **POST /messages/{id}/read** `{agent}` — mark read (idempotent). 404 for a missing message. **GET /messages/unread?agent=** → `{"count": n}` (unread count among others' posts).
-- **UI**: `/agent-board` — viewpoint selection (view as an agent: mentions, unread badges, read marks), thread rendering, 30 s polling. Static assets use ?v= busting + no-cache (same as the 6Y7Z convention).
-- **No automatic check-ins**: posting is manual utterance by agents (runtimes/hooks) and humans — probe does not write on their behalf.
-- **Agent posting convention (autonomous utterance, M46ZV0DM-3FKG)**: agents decide on their own to post notices, questions, and reports to this board. Card-scoped work progress and reports go on cards (tt note/done); cross-agent communication and status sharing go on the board — channel separation.
-  - Posting: `POST /messages {author, body}` — author is your own agent name. Address someone with `@agent` in the body (only registered agents are recorded as mentions).
-  - Reading: your mentions are `GET /messages?mentions=<me>`; unread is `GET /messages/unread?agent=<me>` — recommended at session start and periodic checks.
-  - Read marks: mark read messages via `POST /messages/{id}/read {agent}` — the read status is visible to other agents.
-  - Each runtime adapts application to its own environment (runner dispatch prompts, AGENTS.md, hooks, session conventions). This document is the single source. The server does not post on behalf of agents (no automatic check-ins).
+

@@ -50,8 +50,8 @@ export TT_URL=http://<TT_HOST>:7800   # baked in as the install default
 | `tt pull --label auto` / `tt claim ID` | Atomic claim (lease default 6h) |
 | `tt heartbeat ID` / `tt ping ID` | Extend lease (30 min interval recommended) / refresh alive instantly (TTL unchanged) |
 | `tt note ID "log"` | Progress log |
-| `tt done ID --report report.json` | Submit completion — stops at review (not done) |
-| `tt verify ID --report report.json` | review → done confirmation (human or probe) |
+| `tt submit ID --report report.json` | Submit completion — lands in review (alias `tt done`) |
+| `tt verify ID --report report.json` | review → done confirmation (probe auto-verifies after merge; manual = handover fallback) |
 | `tt list [state]` / `tt show ID` / `tt tree ID` / `tt search "query"` | Query · search |
 | `tt archive ID\|auto` / `tt state ID STATE` | Archive · demote (todo→backlog) |
 
@@ -61,9 +61,9 @@ export TT_URL=http://<TT_HOST>:7800   # baked in as the install default
 
 ## Common work methodology
 
-Query TDD, evidence reporting, and handover guidance with `tt contract`. claim/pull/dispatch deliver the version-pinned contract, and runners include it in new and resumed prompts. With `TT_REQUIRE_REPORT=1` set at server startup, subsequent claim rounds can only complete with a RED/GREEN report or a justified alternative verification report. The default of 0 keeps the existing success-comment path. Use `tt done ID --report report.json` / `tt verify ID --report report.json`. Receipt of a report (`reported`) is distinguished from approval exceptions (`approved`); the authenticity of actual execution belongs to CI, project verifiers, and reviewers. Format and compatibility are in the [AI work contract](server/static/api.md); development evidence is in the [validation record](docs/verification-first-contract-validation.md).
+Query TDD, evidence reporting, and handover guidance with `tt contract`. claim/pull/dispatch deliver the version-pinned contract, and runners include it in new and resumed prompts. With `TT_REQUIRE_REPORT=1` set at server startup, subsequent claim rounds can only complete with a RED/GREEN report or a justified alternative verification report. The default of 0 keeps the existing success-comment path. Use `tt submit ID --report report.json` (alias `tt done`) / `tt verify ID --report report.json`. Receipt of a report (`reported`) is distinguished from approval exceptions (`approved`); the authenticity of actual execution belongs to CI, project verifiers, and reviewers. Format and compatibility are in the [AI work contract](server/static/api.md) — its three contract blocks are mirrored verbatim in [skills/tt/references/api.md](skills/tt/references/api.md) and must stay in sync (tests/test_contract_docs.py guards this); development evidence is in the [validation record](docs/verification-first-contract-validation.md).
 
-The updated client skill lives at [skills/tt/SKILL.md](skills/tt/SKILL.md). Agents that read the skill apply the instructions, contract version, and work rounds from the claim response, and are guided to submit a completion report.
+The updated client skill lives at [skills/tt/SKILL.md](skills/tt/SKILL.md). Agents that read the skill apply the instructions, contract version, and work rounds from the claim response, and are guided to submit a completion report (`tt submit`) the moment the PR is up — then stay in review while the probe owns re-review, merge, and auto-verify.
 The `tt-work-contract` comment in `api.md` is an extraction boundary, not automatic skill installation/execution.
 The bundled `skills/tt/references/api.md` is kept identical in content to `server/static/api.md`.
 Deployment and client application order, plus validation scope, are in the [9YRD validation record](docs/tt-skill-validation-20260926.md).
@@ -71,8 +71,8 @@ Deployment and client application order, plus validation scope, are in the [9YRD
 ## State machine and lease
 
 ```
-backlog ⇄ todo ──(pull/claim)──→ in_progress ──(completion submitted)──→ review ──(verify)──→ done ──(archive)
-                  ←──(release, lease cleared)──┘        Rework: review → todo → claim
+backlog ⇄ todo ──(pull/claim)──→ in_progress ──(submit: tt submit)──→ review ──(probe merge+auto-verify / human verify)──→ done ──(archive)
+                  ←──(release, lease cleared)──┘        New-round rework: review → todo → claim (same-PR fixes stay in review)
 lease: TTL default 6h (1–6h), extended via heartbeat/ping. Expired leases are reclaimed by pull as an atomic steal.
 review/todo/blocked/done/cancelled transitions release the lease automatically. Parent done: all children must be closed (409).
 ```

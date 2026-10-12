@@ -97,8 +97,9 @@ yields a false "no PR" verdict (measured 2026-10-06). Contract details are in
 - The report's `contract_version` and `attempt` are the issue's pinned contract and the current round's values.
   TDD adds `red_command` and `red_evidence`; `alternative` adds the alternative reason `reason`.
   Both record the actual `command`, `result`, `evidence`, and the verification limits `limitations`.
-- While in progress use `tt done ID --report report.json --json`; while in review use
-  `tt verify ID --report report.json --json`. Resolve unfinished children first.
+- To submit the completion report use `tt submit ID --report report.json --json`
+  (alias `tt done`); manual `tt verify ID --report report.json --json` is only the
+  review-state fallback (probe auto-verifies after merge). Resolve unfinished children first.
 - Read the response's `state`, `verification_status`, and the stored `completion_report` to confirm whether it actually closed.
   Do not declare done from a successful request alone. Failed and inconclusive reports stay in review.
 - On 409 (contract/round conflict), re-read the latest issue and verify after the change. Do not just stamp a new

@@ -114,16 +114,16 @@ def build_dispatch_body(p, issue, did, board, task_hint=None):
         quote = directive  # 원문 라인 전체 보존 (리뷰 R3 — 조건·금지·복수 마커 보존)
         boundary = (
             "- **상태 지시 우선 (dispatch 지시 — 이 카드 한정)**: 이 카드의 상태 지시는 "
-            "「%s」이다. 이 지시는 위 독립 규약과 완료 단계(규약 2의 tt done/verify 제출)보다 "
-            "우선한다 — done/verify를 요구하면 카드 완료 후 TT 보고(`tt note %s` + `tt done %s "
+            "「%s」이다. 이 지시는 위 독립 규약과 완료 단계(규약 2의 tt submit/verify 제출)보다 "
+            "우선한다 — done/verify를 요구하면 카드 완료 후 TT 보고(`tt note %s` + `tt submit %s "
             "--report report.json --json` 또는 verify)까지 수행하고, done 금지·반납만이면 "
-            "tt done/verify 없이 결과 코멘트로 종결한다. TT 본문과의 충돌은 TT 코멘트로 기록한다."
+            "tt submit/verify 없이 결과 코멘트로 종결한다. TT 본문과의 충돌은 TT 코멘트로 기록한다."
             % (quote, tid, tid))
         rule2 = (
             "2. 완료 시 ① TT에 결과 코멘트(`tt note %s \"...\"`, 카드 코멘트의 종합 내용 포함) "
-            "② **상태 지시(아래 실행 경계)가 tt done/verify를 요구할 때만** `tt done %s --report report.json --json` "
+            "② **상태 지시(아래 실행 경계)가 tt submit/verify를 요구할 때만** `tt submit %s --report report.json --json` "
             "— report의 contract_version/attempt는 claim 응답 원본 복사, result는 passed/failed/inconclusive enum"
-            "(서술은 evidence에), method tdd면 red_* 필수. 지시가 done 금지·반납만이면 tt done/verify 없이 "
+            "(서술은 evidence에), method tdd면 red_* 필수. 지시가 done 금지·반납만이면 tt submit/verify 없이 "
             "결과 코멘트로 종결한다(지시상 미제출 — 게이트 우회 아님). 실패/불확실 보고는 review에 남는다."
             % (tid, tid))
     else:
@@ -132,7 +132,7 @@ def build_dispatch_body(p, issue, did, board, task_hint=None):
                     "TT 코멘트에 충돌 사실을 남긴다.")
         rule2 = (
             "2. 완료 시 ① TT에 결과 코멘트(`tt note %s \"...\"`, 카드 코멘트의 종합 내용 포함) "
-            "② `tt done %s --report report.json --json` — report의 contract_version/attempt는 claim 응답 원본 복사, "
+            "② `tt submit %s --report report.json --json` — report의 contract_version/attempt는 claim 응답 원본 복사, "
             "result는 passed/failed/inconclusive enum(서술은 evidence에), method tdd면 red_* 필수, 대체면 reason. "
             "실패/불확실 보고는 review에 남는다." % (tid, tid))
     parts = [

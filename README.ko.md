@@ -50,8 +50,8 @@ export TT_URL=http://<TT_HOST>:7800   # 설치 기본값으로 구워짐
 | `tt pull --label auto` / `tt claim ID` | 원자적 수령 (lease 기본 6h) |
 | `tt heartbeat ID` / `tt ping ID` | lease 연장(30분 간격 권장) / alive 즉시 갱신(TTL 불변) |
 | `tt note ID "로그"` | 진행 로그 |
-| `tt done ID --report report.json` | 완료 **제출** — review에 정지(done 아님) |
-| `tt verify ID --report report.json` | review → done 확정(사람 또는 probe) |
+| `tt submit ID --report report.json` | 완료 **제출** — review로 (별칭 `tt done`) |
+| `tt verify ID --report report.json` | review → done 확정(병합 후 probe 자동 — 수동은 인수계 폴백) |
 | `tt list [state]` / `tt show ID` / `tt tree ID` / `tt search "쿼리"` | 조회·검색 |
 | `tt archive ID\|auto` / `tt state ID STATE` | 보관·강등(todo→backlog) |
 
@@ -64,9 +64,9 @@ export TT_URL=http://<TT_HOST>:7800   # 설치 기본값으로 구워짐
 `tt contract`로 TDD·증거 보고·인수인계 지침을 조회한다. claim/pull/dispatch가 버전 고정 계약을 전달하고,
 러너는 신규·재개 프롬프트에 포함한다. 서버 시작 시 `TT_REQUIRE_REPORT=1`을 설정하면 이후 수령 회차는
 RED/GREEN 또는 사유를 갖춘 대체 검증 보고가 있어야 완료된다. 기본값 0은 기존 성공 코멘트 경로를 유지한다.
-`tt done ID --report report.json` / `tt verify ID --report report.json`을 사용한다.
+`tt submit ID --report report.json`(별칭 `tt done`) / `tt verify ID --report report.json`을 사용한다.
 보고 접수(`reported`)와 승인 예외(`approved`)를 구분하며, 실제 실행의 진위는 CI·프로젝트 검증기·검토자 영역이다.
-형식과 호환성은 [AI 작업 계약서](server/static/api.md), 개발 증거는 [검증 기록](docs/verification-first-contract-validation.md)에 있다.
+형식과 호환성은 [AI 작업 계약서](server/static/api.md), 개발 증거는 [검증 기록](docs/verification-first-contract-validation.md)에 있다. 3개 계약 블록은 [skills/tt/references/api.md](skills/tt/references/api.md)에 복제되며 동기화 유지 필수(tests/test_contract_docs.py 검증).
 
 클라이언트 스킬 갱신본은 [skills/tt/SKILL.md](skills/tt/SKILL.md)에 있다. 스킬을 읽은 에이전트가
 수령 응답의 지침·계약 버전·작업 회차를 적용하고 완료 보고를 제출하도록 안내한다.
@@ -77,8 +77,8 @@ RED/GREEN 또는 사유를 갖춘 대체 검증 보고가 있어야 완료된다
 ## 상태 기계와 lease
 
 ```
-backlog ⇄ todo ──(pull/claim)──→ in_progress ──(완료 제출)──→ review ──(verify)──→ done ──(archive)
-                  ←──(release, lease 소거)──┘        재작업: review → todo → claim
+backlog ⇄ todo ──(pull/claim)──→ in_progress ──(제출: tt submit)──→ review ──(probe 병합+자동 verify / 사람 verify)──→ done ──(archive)
+                  ←──(release, lease 소거)──┘        새 회차 재작업: review → todo → claim (동일 PR 수정은 review 유지)
 lease: TTL 기본 6h(1~6h), heartbeat/ping 연장. 만료 lease는 pull이 atomic steal로 회수.
 review/todo/blocked/done/cancelled 전이 시 lease 자동 해제. 부모 done: 자식 전원 종결 필수(409).
 ```

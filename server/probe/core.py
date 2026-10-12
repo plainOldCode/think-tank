@@ -904,7 +904,7 @@ def decide(snap):
                                     "att": att_ip, "pr": p["number"], "repo": pr_repo,
                                     "head_sha": p.get("head_sha", ""),
                                     "reason": f"PR#{p['number']} CI green — 완료 보고 제출"
-                                              "(tt done)이 review 진입"})
+                                              "(tt submit --report)이 review 진입"})
                     continue
                 sc = next((c for c in (i.get("comments") or [])
                            if c.get("author") == "probe"
@@ -1320,7 +1320,7 @@ def decide(snap):
                             "marker": emarker, "attempt": att, "cycle_id": snap.get("cycle_id"),
                             "reason": f"done 거부(증거 없음/실패) 또는 무보고 병합 — "
                                       f"assignee 재제출 요청(계약 v2 3단계 보고, "
-                                      f"tt done {i['id']} --report)"})
+                                      f"tt submit {i['id']} --report)"})
             continue
         # 독려 후 무반응 — 수신 방식별 타이머(hook 1h/relay 6h) 경과+활동 없음 →
         # needs-human 1회(§6 마커 dedup). 카운터가 아니라 시각 기반(JXYS R1):
@@ -1832,7 +1832,7 @@ def execute(url, act):
         api(url, f"/issues/{act['issue']}/comments", "POST",
             {"author": "probe",
              "body": f"{marker} @{who} PR#{act['pr']} CI green — 완료 보고 제출"
-                     "(tt done --report)이 review 진입. 무반응 시 타이머 경과 후 "
+                     "(tt submit --report)이 review 진입. 무반응 시 타이머 경과 후 "
                      "자동 승격됩니다(점진 push는 head 변경으로 타이머 리셋)."})
         agents = [a for a in api(url, "/agents") or []]
         if _relay_timer_s(who, agents) >= 6 * 3600:
@@ -1840,7 +1840,7 @@ def execute(url, act):
                 {"author": "probe",
                  "body": (f"@{who} " if who else "")
                          + f"[submit-remind] 카드 {act['issue']} PR#{act['pr']} — "
-                           "CI green 완료 보고 제출 요망(독려: 자동 승격 예정)"})
+                           "CI green 완료 보고 제출 요망 — tt submit --report(독려: 자동 승격 예정)"})
         return
     if kind == "submission-adopt":
         # JXYS 3 — 무반응 승격: in_progress → review. 완료(done)는 보고 의존 유지.

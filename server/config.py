@@ -17,7 +17,7 @@ STATE_ENUM = sorted(dbmod.STATES)
 # warn(경고 댓글만, done 허용) | off. TT_NOTIFY_BASE: notify agent base_url 접두어 —
 # 상대경로(/hook)를 실 Telegram 알림 주입 경로(Hermes 어댑터)로 해석할 때 쓴다.
 DONE_GATE_MSG = ("done 증거 없음 또는 실패/미확정 보고 — 현재 회차의 성공 결과가 필요합니다. "
-                 "tt done {iid} --report report.json 또는 tt verify {iid} --report report.json. "
+                 "tt submit {iid} --report report.json(별칭 tt done) 또는 tt verify {iid} --report report.json. "
                  "재작업: tt edit {iid} --state todo 후 claim. force_done/close는 승인 예외입니다.")
 
 ISSUE_ID_RE = re.compile(r"\b[0-9A-HJKMNP-TV-Z]{8}-[0-9A-HJKMNP-TV-Z]{4}\b")
