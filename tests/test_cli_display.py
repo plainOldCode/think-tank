@@ -35,9 +35,12 @@ def cli(tmp_path, monkeypatch):
     url = f"http://127.0.0.1:{sock.getsockname()[1]}"
     env = {**os.environ, "TT_URL": url, "TT_AGENT": "cli-test"}
 
-    def run(*args):
+    def run(*args, agent="cli-test"):
+        # agent=로 신원을 갈라 claim/verify를 다른 주체로 흉내낸다 — 자기승인
+        # 금지(M4S94AS4-8QY8) 이후 구현자 신원으로는 verify를 못 하므로
+        # 종결 경로 테스트는 신원을 분리해야 실제 동선을 검증한다.
         import subprocess
-        return subprocess.run(["bash", str(CLI), *args], env=env,
+        return subprocess.run(["bash", str(CLI), *args], env={**env, "TT_AGENT": agent},
                               capture_output=True, text=True, timeout=15)
 
     def api(path, method="GET", body=None):
@@ -73,7 +76,7 @@ def _done_reported(run, api, iid):
     api(f"/issues/{iid}", "PATCH", {"state": "done",
                                     "completion_report": {**REPORT, "contract_version": ver,
                                                           "attempt": 1}})
-    api(f"/issues/{iid}/verify", "POST", {"verifier": "cli-test",
+    api(f"/issues/{iid}/verify", "POST", {"verifier": "probe",
                                           "completion_report": {**REPORT, "contract_version": ver,
                                                                 "attempt": 1}})
 

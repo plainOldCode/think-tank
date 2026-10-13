@@ -38,8 +38,9 @@ def cli(tmp_path, monkeypatch):
     assert server.started
     env = {**os.environ, "TT_URL": f"http://127.0.0.1:{sock.getsockname()[1]}", "TT_AGENT": "cli-test"}
 
-    def run(*args):
-        return subprocess.run(["bash", str(CLI), *args], env=env, capture_output=True, text=True, timeout=15)
+    def run(*args, agent="cli-test"):
+        return subprocess.run(["bash", str(CLI), *args], env={**env, "TT_AGENT": agent},
+                              capture_output=True, text=True, timeout=15)
 
     try:
         yield run, writes
@@ -111,13 +112,14 @@ def test_report_file_roundtrip(cli, tmp_path, via_verify):
     path.write_text(json.dumps(proof))
     if via_verify:
         run("done", iid)
-    result = run("verify" if via_verify else "done", iid, "--report", str(path), "--json")
+    result = run("verify" if via_verify else "done", iid, "--report", str(path), "--json",
+                 agent="probe")
     assert result.returncode == 0, result.stderr
     data = json.loads(result.stdout)
     if not via_verify:
         # M3R7M0ZR-YF99: done 제출은 review 정지 — CLI 왕복은 verify로 done까지
         assert data["state"] == "review" and data["verification_status"] == "reported"
-        result = run("verify", iid, "--report", str(path), "--json")
+        result = run("verify", iid, "--report", str(path), "--json", agent="probe")
         assert result.returncode == 0, result.stderr
         data = json.loads(result.stdout)
     assert data["state"] == "done" and data["verification_status"] == "reported"

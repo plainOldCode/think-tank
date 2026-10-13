@@ -1067,6 +1067,31 @@ def test_verify_endpoint_review_to_done(client):
                        json={"verifier": "u", "evidence": "x"}).status_code == 409
 
 
+def test_verify는_본인_작업_카드의_자기승인을_차단한다(client):
+    """자기리뷰 대칭 — claim-review와 같은 409 (M4S94AS4-8QY8).
+
+    종결 경로에서 assignee가 자기 카드를 직접 done으로 미는 구멍을 막는다.
+    human 경로(감사 선언)는 예외로 유지한다.
+    """
+    i = mk(client, title="자기승인 차단")
+    client.post(f"/issues/{i['id']}/claim", json={"agent": "w@t"})
+    client.patch(f"/issues/{i['id']}", json={"state": "review"})
+    # assignee 본인이 verify → 409 (자기 승인 금지)
+    r = client.post(f"/issues/{i['id']}/verify",
+                    json={"verifier": "w@t", "evidence": "pytest 33 passed"})
+    assert r.status_code == 409 and "cross-review" in r.json()["detail"]
+    # 무한정 카드(assignee 없음)는 자기승인 개념이 없어 통과시킨다
+    j = mk(client, title="무수령 review 카드")
+    client.patch(f"/issues/{j['id']}", json={"state": "in_progress"})
+    client.patch(f"/issues/{j['id']}", json={"state": "review"})
+    assert client.post(f"/issues/{j['id']}/verify",
+                       json={"verifier": "w@t", "evidence": "pytest 33 passed"}).status_code == 200
+    # 타 에이전트 verify는 그대로 통과
+    v = client.post(f"/issues/{i['id']}/verify",
+                    json={"verifier": "probe", "evidence": "pytest 33 passed"})
+    assert v.status_code == 200 and v.json()["state"] == "done" and v.json()["verified"] == 1
+
+
 def test_warn_mode_allows_done_with_comment(client, tmp_path):
     import importlib
     import os

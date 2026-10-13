@@ -97,7 +97,7 @@ def test_verify_페이로드는_계약_스키마와_정합(cli):
     # done → review(보고 접수) → verify → done(독립 검증)
     p1 = run("done", iid, "--report", str(f))
     assert api(f"/issues/{iid}")["state"] == "review", p1.stderr + p1.stdout
-    p = run("verify", iid, "--report", str(f))
+    p = run("verify", iid, "--report", str(f), agent="probe")
     got = api(f"/issues/{iid}")
     assert got["state"] == "done" and got["verified"], p.stderr + p.stdout
 

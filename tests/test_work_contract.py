@@ -84,7 +84,7 @@ def test_non_results_do_not_become_verified(client, body):
 def test_verify_rejects_arbitrary_text(client):
     issue = start(client)
     client.patch(f"/issues/{issue['id']}", json={"state": "done"})
-    response = client.post(f"/issues/{issue['id']}/verify", json={"verifier": "worker", "evidence": "x"})
+    response = client.post(f"/issues/{issue['id']}/verify", json={"verifier": "probe", "evidence": "x"})
     assert response.status_code == 422
     assert client.get(f"/issues/{issue['id']}").json()["state"] == "review"
 
@@ -192,7 +192,7 @@ def test_unsuccessful_report_cannot_close_issue(client, result):
     data = client.patch(path, json={"state": "done", "completion_report": proof}).json()
     assert data["state"] == "review" and data["verified"] == 0
     assert data["completion_report"]["result"] == result
-    assert client.post(path + "/verify", json={"verifier": "worker", "completion_report": proof}).status_code == 422
+    assert client.post(path + "/verify", json={"verifier": "probe", "completion_report": proof}).status_code == 422
 
 
 def test_stale_report_is_rejected_after_a_new_claim(client):
@@ -266,7 +266,7 @@ def test_failed_report_cannot_reuse_old_pass_comment(client):
     client.post(path + "/comments", json={"author": "worker", "body": "pytest 5 passed"})
     client.patch(path, json={"state": "done", "completion_report": report(issue, result="failed")})
     assert client.patch(path, json={"state": "done"}).json()["state"] == "review"
-    assert client.post(path + "/verify", json={"verifier": "worker"}).status_code == 422
+    assert client.post(path + "/verify", json={"verifier": "probe"}).status_code == 422
 
 
 def test_zero_failures_does_not_invalidate_pass(client):
@@ -284,8 +284,8 @@ def test_required_report_policy_closes_legacy_completion_paths(tmp_path, monkeyp
     assert issue["work_contract"]["report_required"] is True
     strict.post(path + "/comments", json={"author": "worker", "body": "pytest 5 passed"})
     assert strict.patch(path, json={"state": "done"}).json()["state"] == "review"
-    assert strict.post(path + "/verify", json={"verifier": "worker", "evidence": "pytest 5 passed"}).status_code == 422
-    result = strict.post(path + "/verify", json={"verifier": "worker", "completion_report": report(issue)})
+    assert strict.post(path + "/verify", json={"verifier": "probe", "evidence": "pytest 5 passed"}).status_code == 422
+    result = strict.post(path + "/verify", json={"verifier": "probe", "completion_report": report(issue)})
     assert result.status_code == 200 and result.json()["verification_status"] == "reported"
 
 
@@ -338,7 +338,7 @@ def test_policy_is_pinned_until_next_claim(tmp_path, monkeypatch):
     current = restarted.get(f"/issues/{issue['id']}").json()
     assert current["work_contract"] == issue["work_contract"]
     assert restarted.patch(f"/issues/{issue['id']}", json={"state": "done"}).json()["state"] == "review"
-    result = restarted.post(f"/issues/{issue['id']}/verify", json={"verifier": "worker", "completion_report": report(issue)})
+    result = restarted.post(f"/issues/{issue['id']}/verify", json={"verifier": "probe", "completion_report": report(issue)})
     assert result.status_code == 200
     restarted.patch(f"/issues/{issue['id']}", json={"state": "todo"})
     new = restarted.post(f"/issues/{issue['id']}/claim", json={"agent": "worker"}).json()
@@ -362,7 +362,9 @@ def test_upgrade_keeps_unpinned_work_compatible_until_next_claim(tmp_path, monke
     assert old["work_contract"] is None and old["execution_attempt"] == 0
     strict.post(f"/issues/{iid}/comments", json={"author": "legacy-worker", "body": "pytest 5 passed"})
     if existing_state == "review":
-        done = strict.post(f"/issues/{iid}/verify", json={"verifier": "legacy-worker"})
+        # 자기승인 금지는 계약 핀닝과 무관하다(M4S94AS4-8QY8) — 레거시 카드도
+        # 본인이 아니라 다른 주체(여기선 probe)가 verify해야 종결된다.
+        done = strict.post(f"/issues/{iid}/verify", json={"verifier": "probe"})
     else:
         done = strict.patch(f"/issues/{iid}", json={"state": "done"})
     assert done.status_code == 200 and done.json()["state"] == "done", done.text
@@ -373,7 +375,7 @@ def test_upgrade_keeps_unpinned_work_compatible_until_next_claim(tmp_path, monke
     assert claimed["work_contract"]["report_required"] is True
     strict.post(f"/issues/{iid}/comments", json={"author": "worker", "body": "pytest 5 passed"})
     assert strict.patch(f"/issues/{iid}", json={"state": "done"}).json()["state"] == "review"
-    result = strict.post(f"/issues/{iid}/verify", json={"verifier": "worker", "completion_report": report(claimed)})
+    result = strict.post(f"/issues/{iid}/verify", json={"verifier": "probe", "completion_report": report(claimed)})
     assert result.status_code == 200 and result.json()["state"] == "done"
 
 
@@ -490,7 +492,7 @@ def test_human_verify_노트_없으면_거부(client):
 def test_human_자가승인은_허용하되_이름_나란히_기록(client):
     issue = start(client)  # assignee=worker
     r = client.post(f"/issues/{issue['id']}/verify",
-                    json={"verifier": "worker", "evidence": "직접 확인", "human": True})
+                    json={"verifier": "probe", "evidence": "직접 확인", "human": True})
     assert r.status_code == 200
     comments = client.get(f"/issues/{issue['id']}").json()["comments"]
     body = next(c["body"] for c in comments if "사람 승인" in c["body"])
