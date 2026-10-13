@@ -362,7 +362,8 @@ def resolve_profile(payload):
 
 CODEX_PERM_ARGS = {
     "read": ["-s", "read-only"],
-    "auto": ["-s", "workspace-write", "--approve-for-me"],
+    # codex>=0.159: --approve-for-me가 workspace-write 샌드박스를 내포 → -s와 병용 불가 (충돌 exit=2)
+    "auto": ["--approve-for-me"],
     "all": ["-s", "danger-full-access", "--dangerously-bypass-approvals-and-sandbox"],
 }
 

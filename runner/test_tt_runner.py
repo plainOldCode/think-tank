@@ -108,6 +108,22 @@ class TestPureLogic(unittest.TestCase):
         self.assertEqual(argv[argv.index("exec") + 1], "-")
         self.assertNotIn("실제 작업 요청 본문", joined)
 
+    def test_build_argv_codex_auto_no_sandbox_flag_conflict(self):
+        """T83Z — codex>=0.159: --approve-for-me는 workspace-write 샌드박스를 내포하므로
+        -s와 병용하면 충돌 exit=2. auto 프리셋은 둘을 함께 만들지 않는다."""
+        auto_argv = R.build_argv({"driver": "codex", "binary": "codex",
+                                  "permission_mode": "auto"}, {}, None)
+        self.assertIn("--approve-for-me", auto_argv)
+        self.assertFalse("-s" in auto_argv and "--approve-for-me" in auto_argv)
+        # 기존 read/all 동작 불변
+        read_argv = R.build_argv({"driver": "codex", "binary": "codex",
+                                  "permission_mode": "read"}, {}, None)
+        self.assertEqual(read_argv[read_argv.index("-s") + 1], "read-only")
+        all_argv = R.build_argv({"driver": "codex", "binary": "codex",
+                                 "permission_mode": "all"}, {}, None)
+        self.assertEqual(all_argv[all_argv.index("-s") + 1], "danger-full-access")
+        self.assertIn("--dangerously-bypass-approvals-and-sandbox", all_argv)
+
 
 class TestWatchUpgrade(unittest.TestCase):
     """M3BZS1G3-VNQH 4범위: BLOCKED 판정 / stall / workspace 불변식 / credential 격리."""
