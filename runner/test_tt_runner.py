@@ -1693,5 +1693,32 @@ class TestReviewEdgeRegressions(unittest.TestCase):
             R.pane_fingerprint = orig_fp
 
 
+class BinaryPaneDecodeTest(unittest.TestCase):
+    def test_binary_output_does_not_raise_and_keeps_text(self):
+        key = "BIN#9"
+        os.makedirs(R.RUNTIME_DIR, exist_ok=True)
+        path = os.path.join(R.RUNTIME_DIR, "BIN_9.out")
+        with open(path, "wb") as f:
+            f.write(b"\x8fstep ok\n")
+        tail = R.progress_tail(key, "no-session")
+        self.assertIn("step ok", tail)
+        self.assertNotIn("\x8f", tail)
+
+        def fake_tmux(*args, **kw):
+            if kw.get("text") and kw.get("errors") != "replace":
+                raise UnicodeDecodeError("utf-8", b"\x8f", 0, 1, "invalid start byte")
+            return subprocess.CompletedProcess(args, 0, stdout="\ufffdok")
+
+        orig = R.tmux_run
+        R.tmux_run = fake_tmux
+        try:
+            self.assertIn("ok", R.session_tail("sess"))
+            self.assertIsNotNone(R.pane_fingerprint("sess"))
+            summary = R._run_summary(key)
+        finally:
+            R.tmux_run = orig
+        self.assertIn("step ok", summary)
+
+
 if __name__ == "__main__":
     unittest.main()
