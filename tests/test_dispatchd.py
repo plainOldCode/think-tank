@@ -87,6 +87,59 @@ def test_pool_only_auto_label_priority_order():
     assert decide(snap([a, b, c])) == [act("P1", "work", "pool")]
 
 
+# ---------- 1KFE: [auto-classified] 마커 → 동점자 랭킹 보정 ----------
+
+def _daemon_marked(iid, label, **kw):
+    i = issue(iid, labels=["auto"], **kw)
+    i["comments"] = [{"author": "tt-embedding-daemon",
+                      "body": f"[auto-classified] label={label} gap=0.12 refs=M1,M2"}]
+    return i
+
+
+def test_auto_classified_동점자_사이에서_성적순_보정():
+    # 동일 priority 2 — 성적 좋은 라벨(전부 done, att 1) 마커 카드가 먼저 배정
+    marked = _daemon_marked("Z9", "security", priority=2)
+    plain = issue("A1", labels=["auto"], priority=2)
+    priors = [issue("S1", state="done", labels=["security"], execution_attempt=1)]
+    assert decide(snap([plain, marked] + priors)) == [act("Z9", "work", "pool")]
+
+
+def test_auto_classified_나쁜성적_라벨은_뒤로():
+    # 전부 needs-human + 회차 3 — 마커 카드가 동점 id순을 깨지 못하고 뒤로
+    marked = _daemon_marked("A1", "risk:weird")
+    plain = issue("Z9", labels=["auto"])
+    priors = [issue(f"W{i}", state="blocked", waiting_for="human",
+                    labels=["risk:weird"], execution_attempt=3) for i in range(3)]
+    assert decide(snap([plain, marked] + priors)) == [act("Z9", "work", "pool")]
+
+
+def test_마커없는_카드는_기존_순위_유지():
+    # 동점 + 마커 없음 → id순(기존). 선행 카드 존재와 무관
+    a = issue("A1", labels=["auto"])
+    b = issue("Z9", labels=["auto"])
+    priors = [issue("S1", state="done", labels=["security"], execution_attempt=1)]
+    assert decide(snap([a, b] + priors)) == [act("A1", "work", "pool")]
+
+
+def test_미매칭_라벨은_기존_순위_유지():
+    # 마커 라벨이 선행 카드에 없음 → 보정 없음(라벨 의미 선언 없이 동작)
+    marked = _daemon_marked("Z9", "never-seen")
+    plain = issue("A1", labels=["auto"])
+    assert decide(snap([plain, marked])) == [act("A1", "work", "pool")]
+
+
+def test_auto_classified_라벨_필드_불변과_로그(capsys):
+    marked = _daemon_marked("Z9", "security")
+    priors = [issue("S1", state="done", labels=["security"], execution_attempt=1)]
+    s = snap([marked] + priors)
+    decide(s)
+    after = {x["id"]: list(x["labels"]) for x in s["issues"]}
+    assert after["Z9"] == ["auto"]  # 라벨 필드 불변 — 데몬 참표 오염 방지
+    assert after["S1"] == ["security"]
+    out = capsys.readouterr().out
+    assert "[auto-classified]" in out and "Z9" in out  # 로그 1줄 근거
+
+
 def test_two_dispatch_tries_becomes_needs_human_not_work():
     t = issue("T1", labels=["auto"], dispatches=2)
     assert decide(snap([t])) == [act("T1", "needs-human", "budget:dispatch-tries>=2")]

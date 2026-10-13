@@ -36,6 +36,39 @@ def _auto_todo(issues, exclude=()):
             and "auto" in (i.get("labels") or []) and i["id"] not in exclude]
 
 
+DAEMON_AUTHOR = "tt-embedding-daemon"
+_AUTO_CLASSIFIED_RE = re.compile(r"^\[auto-classified\]\s+label=(\S+)", re.MULTILINE)
+AC_PRIO_WEIGHT = 0.5  # score→우선순위 보정 상한(±0.5) — 사람이 지정한 priority를 넘지 않게
+
+
+def _auto_classified_label(i):
+    """카드의 [auto-classified] 마커 라벨(데몬 코멘트만). 없으면 None(1KFE)."""
+    for c in (i.get("comments") or []):
+        if (c.get("author") or "") != DAEMON_AUTHOR:
+            continue
+        m = _AUTO_CLASSIFIED_RE.search(c.get("body") or "")
+        if m:
+            return m.group(1)
+    return None
+
+
+def _label_track(issues, label, exclude_id):
+    """동일 라벨 선행 카드 성적(1KFE) — 라벨 '필드' 기준(마커 아님, 오염 방지).
+    score = done비율 − needs-human비율 − min(.5, max(0, 평균 attempt−1)×.1) ∈ [−1.5, 1].
+    선행 카드가 없으면 None — 미매칭 라벨은 무시(기존 순위 유지)."""
+    priors = [x for x in issues
+              if x["id"] != exclude_id and label.lower() in policy._labels(x)]
+    if not priors:
+        return None
+    n = len(priors)
+    done_r = sum(1 for x in priors if x["state"] == "done") / n
+    nh_r = sum(1 for x in priors if x.get("waiting_for") == "human") / n
+    atts = [float(x.get("execution_attempt") or 0) for x in priors]
+    avg_att = sum(atts) / n
+    score = done_r - nh_r - min(0.5, max(0.0, avg_att - 1) * 0.1)
+    return {"n": n, "done_r": done_r, "nh_r": nh_r, "avg_att": avg_att, "score": score}
+
+
 def _budget_blocked(i):
     # TT 개선#3b: 예산 판정은 policy 단일 모듈로 — reason code도 policy 것을 씀
     return policy.budget_reason(i)
@@ -778,10 +811,30 @@ def decide(snap):
         return not any(i["state"] == "in_progress" and i.get("assignee") == name
                        and (i.get("lease_expires") or "9999") > now for i in issues)
 
+    ac_logged = set()  # [auto-classified] 보정 로그 — 카드당 1줄(1KFE 수용기준 1)
+
     def pick(cands):
         """가장 낮은 우선순위의 배정 가능 후보(동률 id순). 없으면 None.
-        TT 개선#3b: 기각 시 policy reason code를 probe_skips에 남긴다."""
-        for i in sorted(cands, key=_prio):
+        TT 개선#3b: 기각 시 policy reason code를 probe_skips에 남긴다.
+        1KFE: [auto-classified] 마커 카드는 동일 라벨 선행 카드 성적 score로
+        우선순위를 ±AC_PRIO_WEIGHT 보정한다. 마커 없음·미매칭 라벨은 기존 _prio."""
+        def key(i):
+            p_none, p, iid = _prio(i)
+            lab = _auto_classified_label(i)
+            if lab is None:
+                return (p_none, p, iid)
+            tr = _label_track(issues, lab, i["id"])
+            if tr is None:
+                return (p_none, p, iid)
+            if i["id"] not in ac_logged:
+                ac_logged.add(i["id"])
+                print(time.strftime("%F %T"),
+                      f"[auto-classified] {i['id']} label={lab} 선행 {tr['n']}건 "
+                      f"(done {tr['done_r']:.0%}, nh {tr['nh_r']:.0%}, "
+                      f"att {tr['avg_att']:.1f}) score {tr['score']:+.2f} "
+                      f"→ prio 보정 {-tr['score'] * AC_PRIO_WEIGHT:+.2f}", flush=True)
+            return (p_none, p - tr["score"] * AC_PRIO_WEIGHT, iid)
+        for i in sorted(cands, key=key):
             ok, code = policy.eligible(i, now=now, auto=True)
             if ok:
                 return i
