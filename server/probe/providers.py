@@ -68,3 +68,30 @@ def observe_linked(issues, open_prs, query):
                 cache[key] = {"repo": repo, "number": int(number), "state": state}
             observations.setdefault(issue["id"], []).append(cache[key])
     return observations
+
+
+def inspect_delivery(spec, query):
+    """Observe the exact selected delivery target; errors are never local mode."""
+    unknown = {**spec, "state": "UNKNOWN", "checks": None}
+    if spec.get("provider") != "github" or os.getenv("TT_PR_PROVIDER", "github") != "github":
+        return unknown
+    try:
+        info = query("pr", "view", spec["number"], "--repo", spec["repo"], "--json",
+                     "state,headRefOid,baseRefName,isDraft,mergedAt,mergeCommit") or {}
+        checks = query("pr", "checks", spec["number"], "--repo", spec["repo"],
+                       "--json", "name,state")
+        return {**spec, "state": "MERGED" if info.get("mergedAt") else info.get("state", "UNKNOWN"),
+                "head_sha": info.get("headRefOid"), "base": info.get("baseRefName"),
+                "isDraft": info.get("isDraft", True), "checks": checks,
+                "merge_commit": (info.get("mergeCommit") or {}).get("oid"),
+                "merged_at": info.get("mergedAt")}
+    except Exception:
+        return unknown
+
+
+def merge_delivery(spec, run):
+    """Provider's atomic head guard closes the query→push race; no force/admin."""
+    if spec.get("provider") != "github" or os.getenv("TT_PR_PROVIDER", "github") != "github":
+        raise ValueError("selected PR provider cannot merge automatically")
+    return run("pr", "merge", spec["number"], "--repo", spec["repo"],
+               "--squash", "--delete-branch", "--match-head-commit", spec["head_sha"])

@@ -6,7 +6,54 @@ not a reason to reject a valid TT submission.
 
 ## Flow and identity
 
-`claim → implementation → tt submit → review → independent approve → probe verify → done`
+`claim → implementation → tt submit → review → independent approve → delivery → verify → done`
+
+## Delivery correction (3PMH / PR#124 regression)
+
+Q614 incorrectly skipped the PR merge path for every valid report. An approved
+TT card became done while its selected PR remained open. Optional PRs must not
+mean abandoning a PR chosen as the delivery method.
+
+New reports should declare `delivery` alongside the three stage blocks:
+
+```json
+"delivery": {"mode": "local"}
+```
+
+For PR integration use the exact target and full reviewed commit:
+
+```json
+"delivery": {
+  "mode": "pr", "provider": "github", "repo": "owner/repo",
+  "number": 124, "head_sha": "0123456789012345678901234567890123456789",
+  "base": "main"
+}
+```
+
+The delivery selection is part of `review_subject`. A push that changes head
+requires a new report and review. A reviewer must not approve an old subject
+while describing a different commit in prose.
+
+- **local**: independent TT approval → verify. Informational PR references are
+  allowed when local delivery is explicitly selected.
+- **pr**: verify target/head/base + CI → TT approval → head-guarded merge →
+  re-read confirmed merge → verify. Pending/failed/unknown CI, draft/closed PR,
+  unsupported provider and mismatched head/base keep review. Confirmed zero
+  checks may use independent approval as in the legacy merge policy.
+- Already-merged PRs can finish after the same identity/approval checks without
+  a second merge. Failed or queued merges do not count as delivered.
+- Legacy reports without delivery remain compatible only for unlinked local
+  work. A PR link in the report/card/comments or a discovered linked PR causes
+  a resubmission notice, not implicit local completion. Existing done cards
+  are not automatically reopened or merged.
+- PR verification carries `delivery_receipt` (provider/repo/number/head_sha/base,
+  merge_commit, merged_at). The server checks target equality and stores the
+  receipt in the card, in the same transaction as completion. The probe obtains
+  this evidence from the provider; this does not add actor authentication.
+- GitHub uses `--match-head-commit` without force/admin. Gitea PR mode is held
+  until an observation/merge adapter is available; it is never silently local.
+- A live failed CI check on the unchanged selected head uses existing CI-fix
+  delegation. After the fix, report the new head and resubmit before re-review.
 
 `submit` is a command, not a stored state. Every accepted report increments
 `submission_revision`, including identical re-submissions within one attempt.
@@ -71,11 +118,10 @@ reports and pinned contracts are not rewritten. Report-less/legacy cards keep
 the existing explicit fallback behavior; submit a valid report to adopt this
 path. Known merged/closed PRs are supplemental observations, not verdicts.
 
-TT completion does **not** claim that a PR merged, CI passed or a deployment
-occurred. If any is required by acceptance, the report must contain that
-evidence and the reviewer must check it before approving. TT approval does not
-grant merge or deployment permission. Automatic PR merge remains a legacy
-adapter behavior, not a prerequisite or side effect of TT-submission verify.
+TT completion confirms the selected delivery: local artifacts or a matching
+PR merge receipt. Deployment remains a separate acceptance requirement if
+requested. The adapter follows existing repository merge permissions; approval
+does not grant force/admin or deployment authority.
 
 The three methodology blocks and their bundled copy are updated together.
 New claims receive a new contract hash; in-flight claims retain their pinned

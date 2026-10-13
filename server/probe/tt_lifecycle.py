@@ -1,8 +1,11 @@
 """TT owns submission/review/verification; providers supply optional context."""
 from datetime import datetime
+import hashlib
 
 from review_subject import subject, verdict
 from verification import CompletionReport
+from delivery import requirement, readiness, TARGET_KEYS
+from . import providers
 
 
 def eligible(issue):
@@ -29,18 +32,42 @@ def marked(issue, key):
                for c in issue.get("comments") or [])
 
 
-def plan(core, issue, agents, busy, now):
+def plan(core, issue, agents, busy, now, delivery_context=None, linked=False):
     """No gh dependency. Only the stored submission and its TT verdict authorize done."""
     token = subject(issue)
     common = {"issue": issue["id"], "subject": token, "agent": "probe"}
     decision = verdict(issue)
+    target = requirement(issue, linked)
+    delivery_problem = readiness(target, delivery_context)
+    if delivery_problem:
+        # Keep the existing CI-fix delegation for a bound, unchanged open PR.
+        # A failed check is repairable work, not permission to finish locally.
+        observed = delivery_context or {}
+        if (target["mode"] == "pr" and observed.get("state") == "OPEN"
+                and not observed.get("isDraft") and not issue.get("busy_agents")
+                and all(target.get(k) == observed.get(k) for k in TARGET_KEYS)
+                and any(c.get("state") == "FAILURE" for c in observed.get("checks") or [])
+                and core.os.getenv("TT_CI_FIX_AGENT", "kanban-adapter")):
+            key = marker(issue, "tt-ci-fix")
+            if not marked(issue, key):
+                return [{**common, "action": "ci-fix", "pr": target["number"],
+                         "repo": target["repo"], "head_sha": target["head_sha"],
+                         "marker": key, "delivery": target,
+                         "checks_failed": [c.get("name") or "?" for c in observed["checks"]
+                                           if c.get("state") == "FAILURE"]}]
+        tag = hashlib.sha256(delivery_problem.encode()).hexdigest()[:12]
+        key = marker(issue, f"tt-delivery-hold-{tag}")
+        if marked(issue, key):
+            return []
+        return [{**common, "action": "tt-delivery-note", "marker": key, "reason": delivery_problem}]
     # Same-family exclusion also applies to manually claimed TT reviews.
     reviewer = issue.get("reviewer")
     if reviewer and core._impl_family(issue.get("assignee")) and \
             core.agent_family(reviewer) == core._impl_family(issue.get("assignee")):
         return []
     if decision == "approve":
-        return [{**common, "action": "tt-verify", "reason": "current TT submission approved"}]
+        return [{**common, "action": "tt-deliver" if target["mode"] == "pr" else "tt-verify",
+                 "reason": "current TT submission approved"}]
     if issue.get("busy_agents"):
         return []
     if decision == "request-changes":
@@ -84,21 +111,56 @@ def execute(core, url, act):
         return
     decision = verdict(cur)
     kind = act["action"]
+    if kind == "tt-delivery-note":
+        if not marked(cur, act["marker"]):
+            core.api(url, f"/issues/{iid}/comments", "POST", {
+                "author": "probe", "body": f"{act['marker']} {act['reason']}",
+            })
+        return
     if kind == "tt-review-stalled":
         if decision is None and not marked(cur, act["marker"]):
             core.api(url, f"/issues/{iid}/comments", "POST", {
                 "author": "probe", "body": f"{act['marker']} 리뷰 재시도 후 무판정 — 리뷰어 인수계 필요",
             })
         return
-    if kind == "tt-verify":
+    if kind in ("tt-verify", "tt-deliver"):
         if decision != "approve":
+            return
+        target = requirement(cur)
+        receipt = None
+        if kind == "tt-deliver":
+            if target["mode"] != "pr":
+                return
+            observed = providers.inspect_delivery(target, core.gh_json)
+            if readiness(target, observed):
+                return
+            # Fresh TT approval before the external write, then provider head CAS.
+            fresh = core.api(url, f"/issues/{iid}")
+            if not eligible(fresh) or subject(fresh) != act["subject"] or verdict(fresh) != "approve":
+                return
+            if observed["state"] == "OPEN":
+                providers.merge_delivery(target, core.gh_exec)
+                observed = providers.inspect_delivery(target, core.gh_json)
+            if observed.get("state") != "MERGED" or readiness(target, observed):
+                return  # queued/failed merge is not delivery evidence
+            receipt = {k: observed[k] for k in (*TARGET_KEYS, "merge_commit", "merged_at")}
+            cur = core.api(url, f"/issues/{iid}")
+            if not eligible(cur) or subject(cur) != act["subject"] or verdict(cur) != "approve":
+                return
+        elif target["mode"] != "local":
             return
         core.api(url, f"/issues/{iid}/verify", "POST", {
             "verifier": "probe", "completion_report": cur["completion_report"],
             "review_subject": act["subject"], "expected_version": cur["version"],
+            **({"delivery_receipt": receipt} if receipt else {}),
         })
         return
     if kind == "tt-review" and decision is not None:
+        return
+    target_spec = requirement(cur)
+    if target_spec["mode"] == "unbound-pr":
+        return
+    if target_spec["mode"] == "pr" and readiness(target_spec, providers.inspect_delivery(target_spec, core.gh_json)):
         return
     if kind == "tt-review":
         previous = [c for c in cur.get("comments") or [] if c.get("author") == "probe"
@@ -122,6 +184,8 @@ def execute(core, url, act):
             f"리뷰어 점유 완료(agent={target}). GET /issues/{iid}의 completion_report와 "
             "acceptance를 읽고 보고가 가리키는 커밋/문서/로컬 산출물 및 실행 증거를 독립 검증하라. "
             "GitHub/Gitea PR은 있으면 보조 자료로 사용한다. 자료 접근 불가를 승인으로 간주하지 말라. "
+            "delivery.mode=pr이면 보고의 head_sha와 실제 PR head가 같아야 한다. "
+            "다른 head를 검사했다면 승인 대신 보고 재제출을 요구하라. 승인 후 probe가 병합을 확인한다. "
             "구현 코드는 수정하지 않는다. 판정 정본은 TT 카드 코멘트이며 PR 코멘트는 선택적 미러다. "
             f"author={target}, 첫 줄 'review: approve' 또는 'review: request-changes', "
             f"둘째 줄은 정확히 '{act['subject']}'. 근거와 검증 한계를 덧붙이고 종료하라."
