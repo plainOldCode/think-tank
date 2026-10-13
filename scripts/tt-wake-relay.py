@@ -7,10 +7,17 @@ GET $TT_URL/events/stream 을 구독해, 내 카드(assignee=$TT_AGENT)의 리�
 시작할 수 있다. TUI 미기동 시 조용히 스킵 — 15분 cron 원샷 워커가 폴백이다.
 
 필터:
-  ① comment.added + entity=issue + assignee==나 + author!=나 +
-     preview에 "review: approve" | "verify → done" | "merge=" 포함
+  ① comment.added + entity=issue + assignee==나 + author!=나(system 제외) +
+     preview에 줄 시작 신호: "review: approve|request-changes", "verify → done", "merge="
+     (줄 시작 앵커 — 본문 중간 언급은 신호가 아니다. tt-server 접수 코멘트 제외)
   ② issue.updated + entity=issue + assignee==나 + payload.state ∈ {done, blocked}
+     + fields에 "state" 존재(실제 상태 전환만 — bump 노이즈 무시)
+  같은 이슈는 120s 내 재-wake하지 않는다(verify 코멘트+issue.updated 중복 흡수).
+  콜드 스타트 시 /events last_seq부터 시작한다(전체 이력 재생 방지).
   멘션(message.posted)은 의도적으로 제외 — 기존 cron 원샷 워커가 소유(중복 응답 방지).
+
+제한: append-prompt는 TUI 입력 초안이 있으면 그 뒤에 붙는다 — 사용자가 입력 중이면
+  초안이 오염될 수 있다(submit 전 입력 중지 전제).
 
 설치 (에이전트 머신):
   cp scripts/tt-wake-relay.py ~/.local/bin/
@@ -54,10 +61,16 @@ CURSOR_PATH = os.path.join(STATE_DIR, "seq")
 DRY_RUN = os.environ.get("TT_WAKE_DRY_RUN") == "1"
 DEBUG = os.environ.get("TT_WAKE_DEBUG") == "1"
 
-SIGNAL_RE = re.compile(r"review: approve|verify → done|merge=", re.IGNORECASE)
+SIGNAL_RE = re.compile(
+    r"^(?:review:\s*(?:approve|request-changes)|verify → done|merge=)",
+    re.MULTILINE | re.IGNORECASE)
+# 시스템 발신자 접수 코멘트(보고 접수 안내에 "verify → done" 문구 포함)는 신호가 아니다.
+SYSTEM_AUTHORS = {"tt-server"}
 WAKE_STATES = {"done", "blocked"}
+STATE_CHANGED_KEY = "state"  # service.bump()가 항상 state를 실어 보내므로 fields로 변경 여부 판정
 ISSUE_TTL_S = 60.0
 RECONNECT_S = 5.0
+DEDUP_WINDOW_S = 120.0  # 같은 이슈 연속 wake 흡수(verify 코멘트 + issue.updated 중복)
 IDLE_TIMEOUT_S = 60  # 소켓 읽기 타임아웃 — ': ping'이 15s마다 오므로 평소 미도달
 
 
@@ -147,7 +160,7 @@ def handle_event(row, me=TT_AGENT, cache=None):
         return None
     if kind == "comment.added":
         author = payload.get("author") or ""
-        if author == me:
+        if author == me or author in SYSTEM_AUTHORS:
             return None
         preview = payload.get("preview") or ""
         if SIGNAL_RE.search(preview):
@@ -155,10 +168,31 @@ def handle_event(row, me=TT_AGENT, cache=None):
         return None
     if kind == "issue.updated":
         state = payload.get("state")
-        if state in WAKE_STATES:
+        # service.bump()는 모든 갱신에 현재 state를 실어 보낸다 — state가 실제로
+        # 바뀐 갱신(fields에 state 존재)에서만 깨운다.
+        if state in WAKE_STATES and STATE_CHANGED_KEY in (payload.get("fields") or []):
             return signal_prompt(issue_id, "카드 상태 → %s" % state,
                                  json.dumps(payload.get("fields", []), ensure_ascii=False))
     return None
+
+
+def resolve_start_seq(cursor, fetch_last_seq=None):
+    """콜드 스타트(cursor 없음) 시 전체 이력 재생을 막는다 — /events last_seq부터."""
+    if cursor > 0:
+        return cursor
+    fetch = fetch_last_seq or _fetch_last_seq
+    return fetch()
+
+
+def _fetch_last_seq():
+    with urllib.request.urlopen("%s/events?after_seq=0&limit=1" % TT_URL,
+                                timeout=10) as r:
+        return int(json.load(r).get("last_seq") or 0)
+
+
+def dedup_ok(recent, issue_id, now, window=DEDUP_WINDOW_S):
+    """같은 이슈를 window 안에 또 깨우지 않는다 (verify 코멘트+issue.updated 중복 흡수)."""
+    return now - recent.get(issue_id, float("-inf")) > window
 
 
 # ---------- TUI 주입 ----------
@@ -221,9 +255,13 @@ def run(cache=None, inject_fn=None, dry_run=DRY_RUN):
         sys.exit(2)
     cache = cache or IssueCache()
     inject_fn = inject_fn or inject
-    seq = read_cursor()
+    seq = resolve_start_seq(read_cursor())
+    if seq > 0 and read_cursor() <= 0:
+        write_cursor(seq)
+        log("첫 기동: last_seq=%d 이후부터 (전체 이력 재생 방지)" % seq)
     log("시작: TT_URL=%s agent=%s tui=%s cursor=%d dry_run=%s"
         % (TT_URL, TT_AGENT, TUI_URL, seq, dry_run))
+    recent = {}  # issue_id → 마지막 wake 시각 (dedup)
     while True:
         try:
             resp = open_stream(seq)
@@ -239,6 +277,11 @@ def run(cache=None, inject_fn=None, dry_run=DRY_RUN):
                 if prompt is None:
                     continue
                 issue_id = row.get("entity_id")
+                now = time.monotonic()
+                if not dedup_ok(recent, issue_id, now):
+                    log("dedup 스킵: %s (window 내 재신호)" % issue_id)
+                    continue
+                recent[issue_id] = now
                 if dry_run:
                     log("[DRY-RUN] wake %s:\n%s" % (issue_id, prompt))
                     continue

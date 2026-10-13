@@ -73,9 +73,30 @@ def test_comment_signal_on_my_card_wakes():
     assert prompt is not None and "I-1" in prompt and "review: approve" in prompt
 
 
-def test_comment_merge_hash_wakes():
-    row = _row(payload={"author": "claude", "preview": "PR delivery: ... merge=fb9c5675"})
+def test_comment_request_changes_wakes():
+    row = _row(payload={"author": "reviewer@host",
+                        "preview": "review: request-changes\n필수 수정 1) ..."})
     assert R.handle_event(row, cache=_cache()) is not None
+
+
+def test_comment_merge_hash_wakes():
+    row = _row(payload={"author": "claude",
+                        "preview": "PR delivery: github:x#113 head=aa base=main\nmerge=fb9c5675"})
+    assert R.handle_event(row, cache=_cache()) is not None
+
+
+def test_signal_mid_sentence_ignored():
+    """판정 필수 1 — 접수 안내 문구 본문 중간의 신호어는 매칭하지 않는다."""
+    row = _row(payload={"author": "some-agent",
+                        "preview": "보고 접수. 이후 verify → done 흐름으로 종결됩니다"})
+    assert R.handle_event(row, cache=_cache()) is None
+
+
+def test_tt_server_receipt_comment_never_wakes():
+    """판정 필수 1 — tt-server 접수 코멘트는 신호어가 줄 시작에 와도 무시한다."""
+    row = _row(payload={"author": "tt-server",
+                        "preview": "접수됨: verify → done 흐름 안내\nreview: approve 대기"})
+    assert R.handle_event(row, cache=_cache()) is None
 
 
 def test_self_comment_never_wakes():
@@ -98,18 +119,54 @@ def test_dispatch_entity_ignores_without_issue_fetch():
 def test_issue_updated_done_and_blocked_wake():
     done = _row(kind="issue.updated", payload={"state": "done", "fields": ["state"]})
     assert R.handle_event(done, cache=_cache()) is not None
-    blocked = _row(kind="issue.updated", payload={"state": "blocked"})
+    blocked = _row(kind="issue.updated",
+                   payload={"state": "blocked", "fields": ["state"]})
     assert R.handle_event(blocked, cache=_cache()) is not None
 
 
+def test_issue_updated_without_state_change_no_wake():
+    """판정 필수 2 — service.bump() 노이즈: state가 fields에 없으면 무시."""
+    row = _row(kind="issue.updated",
+               payload={"state": "done", "fields": ["updated_at", "blocked_detail"]})
+    assert R.handle_event(row, cache=_cache()) is None
+
+
+def test_issue_updated_state_missing_fields_no_wake():
+    row = _row(kind="issue.updated", payload={"state": "done"})  # fields 없음 → 보수적 무시
+    assert R.handle_event(row, cache=_cache()) is None
+
+
 def test_issue_updated_in_progress_no_wake():
-    row = _row(kind="issue.updated", payload={"state": "in_progress"})
+    row = _row(kind="issue.updated",
+               payload={"state": "in_progress", "fields": ["state"]})
     assert R.handle_event(row, cache=_cache()) is None
 
 
 def test_comment_without_signal_no_wake():
     row = _row(payload={"author": "agy", "preview": "진행 중입니다"})
     assert R.handle_event(row, cache=_cache()) is None
+
+
+# ---------- 콜드 스타트 ----------
+
+def test_resolve_start_seq_warm_cursor_wins():
+    assert R.resolve_start_seq(41, fetch_last_seq=lambda: 9999) == 41
+
+
+def test_resolve_start_seq_cold_uses_last_seq():
+    """판정 필수 3 — cursor 0이면 전체 재생 대신 last_seq부터."""
+    assert R.resolve_start_seq(0, fetch_last_seq=lambda: 3260) == 3260
+
+
+# ---------- dedup ----------
+
+def test_dedup_ok_window():
+    recent = {}
+    assert R.dedup_ok(recent, "I-1", now=100.0)
+    recent["I-1"] = 100.0
+    assert not R.dedup_ok(recent, "I-1", now=110.0)  # 10s 후 — 차단
+    assert R.dedup_ok(recent, "I-1", now=100.0 + R.DEDUP_WINDOW_S + 1)  # 창 경과 — 허용
+    assert R.dedup_ok(recent, "I-2", now=110.0)  # 다른 이슈 — 허용
 
 
 # ---------- 프롬프트 빌드 ----------
