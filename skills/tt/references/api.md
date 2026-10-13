@@ -27,7 +27,8 @@ the contract itself grants no deployment, merge, or message-posting authority.
    Submit artifact locations (commit/digest/document path), verification evidence and limits to the TT card.
    GitHub/Gitea PRs are optional references; local-only work uses the same TT lifecycle.
    Reviewers post to TT, quoting the current `review_subject`; PR comments are optional mirrors.
-   After current independent approval, probe verifies the stored report. TT done does not itself mean merged/deployed.
+   Declare report `delivery`: local, or pr with provider/repo/number/full head_sha/base.
+   After approval, local work verifies directly; selected PR work requires matching head/base/CI and confirmed merge receipt before verify. A changed head requires resubmission. Deployment is separate.
 4. **Parallelize starting from verifiable units.** After confirming one unit's reproduce→implement→verify loop, parallelize independent work. Do not modify the same workspace concurrently.
 5. **Stop recurring mistakes with structure.** For repeated corrections, identify the cause and move it into types, checks, CI, or execution guards. For things that are hard to judge automatically, leave failure examples and judgment criteria as guidance.
 6. **Evaluate skill and prompt changes too.** Verify contract delivery and output format in an isolated environment, and verify actual agent behavior change with a separate comparative evaluation. Do not report that TDD compliance is proven by delivery tests alone.
@@ -67,7 +68,8 @@ the contract itself grants no deployment, merge, or message-posting authority.
    Submit artifact locations (commit/digest/document path), verification evidence and limits to the TT card.
    GitHub/Gitea PRs are optional references; local-only work uses the same TT lifecycle.
    Reviewers post to TT, quoting the current `review_subject`; PR comments are optional mirrors.
-   After current independent approval, probe verifies the stored report. TT done does not itself mean merged/deployed.
+   Declare report `delivery`: local, or pr with provider/repo/number/full head_sha/base.
+   After approval, local work verifies directly; selected PR work requires matching head/base/CI and confirmed merge receipt before verify. A changed head requires resubmission. Deployment is separate.
 4. **Parallelize starting from verifiable units.** After confirming one unit's reproduce→implement→verify loop, parallelize independent work. Do not modify the same workspace concurrently.
 5. **Stop recurring mistakes with structure.** For repeated corrections, identify the cause and move it into types, checks, CI, or execution guards. For things that are hard to judge automatically, leave failure examples and judgment criteria as guidance.
 6. **Evaluate skill and prompt changes too.** Verify contract delivery and output format in an isolated environment, and verify actual agent behavior change with a separate comparative evaluation. Do not report that TDD compliance is proven by delivery tests alone.
@@ -100,6 +102,9 @@ are confirmed by project verifiers, CI, and reviewers.
 Follow all rules of contract v2 (three-stage design/implementation/verification for TDD or planned, completion stops at review,
 and if alternative verification is needed, substitute a reproducible method in design.verification).
 What v2.1 adds is structuring of completion evidence.
+
+Declare report `delivery`: `{"mode":"local"}`, or `{"mode":"pr","provider":"github","repo":"owner/repo","number":124,"head_sha":"<full commit SHA>","base":"main"}`.
+PRs are optional, but a selected PR must match the reviewed head/base and be confirmed merged before probe verify. Head changes require report resubmission and fresh TT approval. Provider failure never implies local completion. Legacy PR-linked reports without this selection require resubmission.
 
 verification.evidence is submitted as an array of blocks like below.
 
@@ -225,7 +230,7 @@ backlog ──→ todo ──(pull/claim)──→ in_progress ──(submit)─
 
 - **No direct todo→done** — claim, then `tt submit --report` / PATCH `state=done` + `completion_report`. A bare PATCH `state=review` stores no report (422 if attached) and cannot enter report-based auto-verification. Fixes resubmit while staying in review; new-round rework goes review → todo → claim.
 - **TT verdict identity**: GET exposes `review_subject` (`TT#ID@aN/hash`). The assigned reviewer posts `review: approve` or `review: request-changes` on line 1, the exact subject on line 2, to the TT card. PR comments are optional mirrors. Every resubmission changes the subject; old approvals cannot authorize it. Probe sends the subject and stored report to `/verify`, which atomically checks current approval and report equality.
-- **Optional hosting**: `TT_PR_PROVIDER=none` disables GitHub observation; GitHub/Gitea/local submissions still receive TT review. TT done does not imply merged/deployed. Required integration evidence belongs in the card acceptance/report and must be checked by the reviewer.
+- **Selected delivery**: `TT_PR_PROVIDER=none` disables GitHub observation, not PR delivery requirements. Local work may finish without PRs; selected PR work waits for matching head/base/CI and a confirmed merge. Unsupported Gitea PR integration waits for an adapter/manual handover. `delivery_receipt` is stored at verify; deployment remains separate.
 - todo→backlog demotion allowed (returns it to unassigned)
 - in_progress→todo = release (assignee auto-cleared, other agents can claim)
 - done→todo reopen allowed; the completion time (completed_at) is updated

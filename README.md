@@ -79,7 +79,7 @@ review/todo/blocked/done/cancelled transitions release the lease automatically. 
 
 - Direct todo→done transitions are forbidden (claim history required). Crons receive only `auto`-labeled cards via the `require_label` gate (max 2 active leases per agent)
 - **TT owns completion**: submit a valid report, obtain independent TT review for the current `review_subject`, then probe verifies the stored report. PRs are optional; local/Gitea/GitHub artifacts are reviewed against the card's criteria.
-- Follow the project's branch/integration rules. TT done does not imply merge or deployment; required integration evidence must be included and reviewed.
+- Reports select delivery: local work verifies after TT approval; PR delivery binds provider/repo/number/full head/base and requires confirmed merge before done. Head changes require resubmission/re-review. Provider outages do not bypass delivery; deployment remains separate.
 - Report-less legacy cards retain their explicit fallback; submit a valid report to enter the TT path. `TT_PR_PROVIDER=none` disables GitHub collection without disabling TT review.
 - Contract v2 (three-stage design/implementation/verification reporting): query via `tt contract`, version pinned (hash) at claim. Keep the distinction between a report's `reported` and an approval's `approved`
 

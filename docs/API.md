@@ -15,6 +15,14 @@ approval and an identical `completion_report` (409 on any mismatch). Probe uses
 this bound path with `expected_version`. Existing manual/human handovers remain
 available without the optional subject field.
 
+3PMH: completion reports may declare `delivery` (`mode=local`, or
+`mode=pr` + provider/repo/number/full head_sha/base). For selected PR work,
+non-human verify additionally requires a matching `delivery_receipt` with
+merge_commit/merged_at. It is stored in the issue and cleared on resubmission
+or new work rounds. Provider observation and actual merge are probe duties;
+receipt validation does not replace those external checks. Unbound legacy
+PR-linked reports are held for resubmission on the automatic TT path.
+
 backlog → todo → in_progress → blocked/review/done. review → todo/blocked/done/cancelled. Direct todo→done is forbidden (claim required). todo→backlog demotion allowed. done→todo reopen. cancelled→todo.
 `in_progress→todo` release (assignee cleared).
 

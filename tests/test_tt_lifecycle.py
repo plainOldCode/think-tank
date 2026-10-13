@@ -115,7 +115,10 @@ def test_merged_pr_does_not_create_false_no_pr_notice(client):
     issue = approve(client, submitted(client))
     pr = {"number": 108, "repo": "example/project", "title": issue["id"],
           "state": "MERGED", "head_sha": "a" * 40, "checks": []}
-    assert [a["action"] for a in core.decide(snap(issue, [pr]))] == ["tt-verify"]
+    # PR completion needs an explicitly reviewed head even if hosting says MERGED.
+    acts = core.decide(snap(issue, [pr]))
+    assert [a["action"] for a in acts] == ["tt-delivery-note"]
+    assert "PR 없음" not in acts[0]["reason"]
 
 
 def test_pending_submission_cannot_reuse_pr_only_verdict(client):

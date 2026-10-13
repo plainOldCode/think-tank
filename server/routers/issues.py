@@ -447,6 +447,7 @@ def patch_issue(issue_id: str, p: IssuePatch, ctx: Ctx = Depends(get_ctx)):
                 if proof:
                     fields["completion_report"] = proof.model_dump_json()
                     fields["submission_revision"] = row["submission_revision"] + 1
+                    fields["delivery_receipt"] = ""
                     fields["reviewer"] = None
                     if proof.result == "passed":
                         fields.update(service.reported_fields(proof.evidence))
@@ -599,7 +600,10 @@ def verify_issue(issue_id: str, p: VerifyIn, ctx: Ctx = Depends(get_ctx)):
                 raise HTTPException(409, "stale review subject: re-read the current submission")
             if verdict(current) != "approve":
                 raise HTTPException(409, "current TT submission requires independent review: approve")
-            if not p.completion_report or json.loads(p.completion_report.model_dump_json()) != current["completion_report"]:
+            from verification import CompletionReport
+            saved = CompletionReport.model_validate(current["completion_report"])
+            if not p.completion_report or (json.loads(p.completion_report.model_dump_json(exclude_none=True)) !=
+                                           json.loads(saved.model_dump_json(exclude_none=True))):
                 raise HTTPException(409, "verification report differs from reviewed submission")
         if p.human and row["state"] not in ("in_progress", "review"):
             raise HTTPException(409, f"state is {row['state']} — human verify는 in_progress/review에서만")
@@ -640,6 +644,24 @@ def verify_issue(issue_id: str, p: VerifyIn, ctx: Ctx = Depends(get_ctx)):
             row2 = service.get_issue(c, issue_id)
             return dbmod.to_dict(row2)
         proof = p.completion_report
+        from delivery import requirement, TARGET_KEYS
+        current = dbmod.to_dict(row)
+        current["comments"] = dbmod.comments_of(c, issue_id)
+        target = requirement(current)
+        if proof:
+            submitted_target = requirement({**current, "completion_report": json.loads(proof.model_dump_json())})
+            if target["mode"] == "pr" and submitted_target != target:
+                raise HTTPException(409, "verification cannot change selected PR delivery")
+            if submitted_target["mode"] == "pr":
+                target = submitted_target
+        if target["mode"] == "unbound-pr" and p.review_subject is not None:
+            raise HTTPException(409, "PR delivery must be bound in a resubmitted report")
+        if target["mode"] == "pr":
+            receipt = p.delivery_receipt
+            if receipt is None or any(getattr(receipt, k) != target[k] for k in TARGET_KEYS):
+                raise HTTPException(409, "PR delivery requires matching merged head/base receipt")
+        elif p.delivery_receipt is not None:
+            raise HTTPException(409, "unexpected delivery receipt without selected PR")
         if service.requires_report(row) and not proof:
             raise HTTPException(422, "completion_report required by this attempt's work contract")
         if proof:
@@ -659,13 +681,20 @@ def verify_issue(issue_id: str, p: VerifyIn, ctx: Ctx = Depends(get_ctx)):
             raise HTTPException(409, "version conflict")
         verify_body = (f"verify → done (reported). evidence: {ev[:300]}"
                        + ("" if (proof is None or isinstance(proof.verification.evidence, str))
-                          else f" [구조화 증거 {len(proof.verification.evidence)}블록]"))
+                           else f" [구조화 증거 {len(proof.verification.evidence)}블록]"))
+        if p.delivery_receipt:
+            receipt = p.delivery_receipt
+            verify_body += (f"\nPR delivery: {receipt.provider}:{receipt.repo}#{receipt.number} "
+                            f"head={receipt.head_sha} base={receipt.base} "
+                            f"merge={receipt.merge_commit} merged_at={receipt.merged_at.isoformat()}")
         c.execute("INSERT INTO comments (issue_id, author, body, ts) VALUES (?,?,?,?)",
                   (issue_id, p.verifier, verify_body, dbmod.now()))
         service.log_event(c, "comment.added", "issue", issue_id,
                           {"author": p.verifier, "preview": verify_body[:120]})
         fields = {**service.reported_fields(ev), "state": "done", "completed_at": dbmod.now(),
-                  "completion_report": proof.model_dump_json() if proof else "",
+                  "delivery_receipt": p.delivery_receipt.model_dump_json() if p.delivery_receipt else "",
+                  "completion_report": (row["completion_report"] if p.review_subject is not None
+                                        else proof.model_dump_json() if proof else ""),
                   "lease_by": "", "lease_expires": None, "waiting_for": "", "waiting_actor": "",
                   "blocked_detail": "", "blocked_notified_at": None}
         service.bump(c, issue_id, fields, row["version"])

@@ -837,7 +837,9 @@ def decide(snap):
     for i in issues:
         if i["id"] in tt_cards:
             tt_actions = tt_lifecycle.plan(sys.modules[__name__], i, agents,
-                                           busy_agents | claimed, now)
+                                           busy_agents | claimed, now,
+                                           delivery_context=(snap.get("delivery_context") or {}).get(i["id"]),
+                                           linked=any(pr_card_id(p) == i["id"] for p in snap.get("prs") or []))
             actions.extend(tt_actions)
             claimed.update(a["agent"] for a in tt_actions if a["agent"] != "probe")
     gated = set(tt_cards)  # TT-submitted cards do not require PR discovery or merge
@@ -1550,7 +1552,7 @@ def _parse_iso(s):
 
 def execute(url, act):
     kind = act["action"]
-    if kind in {"tt-review", "tt-review-fix", "tt-verify", "tt-review-stalled"}:
+    if kind in {"tt-review", "tt-review-fix", "tt-verify", "tt-review-stalled", "tt-deliver", "tt-delivery-note"}:
         from . import tt_lifecycle
         try:
             tt_lifecycle.execute(sys.modules[__name__], url, act)
@@ -1668,6 +1670,17 @@ def execute(url, act):
         return
     if kind == "ci-fix":
         cur = api(url, f"/issues/{act['issue']}")
+        if act.get("subject"):
+            from review_subject import subject
+            from delivery import TARGET_KEYS
+            from .providers import inspect_delivery
+            if cur.get("state") != "review" or subject(cur) != act["subject"]:
+                return
+            observed = inspect_delivery(act["delivery"], gh_json)
+            if (observed.get("state") != "OPEN" or observed.get("isDraft")
+                    or any(act["delivery"].get(k) != observed.get(k) for k in TARGET_KEYS)
+                    or not any(c.get("state") == "FAILURE" for c in observed.get("checks") or [])):
+                return
         att = cur.get("execution_attempt") or 0
         sha8 = (act.get("head_sha") or "")[:8]
         # decide가 액션에 동봉한 마커 우선 — ip 변형([ci-fix-ip a{n} …])도
@@ -1697,7 +1710,11 @@ def execute(url, act):
                f" — 단순 review 금지, 목적은 CI red 해소. 브랜치 {act.get('branch','')} 위에서 커밋 계속, "
                f"범위는 CI 실패 수정만(리팩·스킵·assertion 약화 금지). push 후 즉시 종료 — "
                f"CI 재판정·병합은 probe가 자동 진행하니 CI·리뷰를 기다리거나 폴링하지 말 것"
-               f"(다음 단계 필요 시 보드가 재호출). 인수: {target} 담당.{_s1_txt}")
+                f"(다음 단계 필요 시 보드가 재호출). 인수: {target} 담당.{_s1_txt}")
+        if act.get("subject"):
+            msg += (" 수정 push 후 delivery.head_sha를 새 전체 SHA로 갱신하고 "
+                    "tt submit --report로 같은 회차 보고를 재제출해야 재리뷰·병합된다. "
+                    "PR 제목/브랜치와 변경 산출물을 보고에 명시하라.")
         try:
             api(url, f"/issues/{act['issue']}/dispatch", "POST", {"agent": agent, "message": msg})
         except Exception as e:
@@ -2285,6 +2302,13 @@ def run_once(url, dry=False):
     hydrate_reviews(url, snap)
     from .providers import observe_linked
     snap["pr_context"] = observe_linked(snap.get("issues") or [], snap["prs"], gh_json)
+    from .providers import inspect_delivery
+    from delivery import requirement
+    snap["delivery_context"] = {
+        i["id"]: inspect_delivery(requirement(i), gh_json)
+        for i in snap.get("issues") or []
+        if i.get("state") == "review" and requirement(i)["mode"] == "pr"
+    }
     snap["cycle_id"] = uuid.uuid4().hex  # §8.1 판단 로그 사이클 식별자(리뷰 R4)
     acts = decide(snap)
     for a in acts:

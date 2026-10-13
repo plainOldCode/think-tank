@@ -65,16 +65,21 @@ commits/documents are artifact references, not prerequisites for a TT lifecycle.
 1. `tt claim` → implement → verify against the card's criteria. Follow the project's branch,
    integration and deployment rules; TT itself grants none of those permissions.
 2. `tt submit ID --report report.json` stores the report and enters review. Include immutable
-   commit/artifact references and accessible evidence; no PR is required.
+   commit/artifact references and accessible evidence. Declare `delivery: {"mode":"local"}`
+   for local work, or `delivery: {"mode":"pr","provider":"github","repo":"owner/repo",
+   "number":N,"head_sha":"<full SHA>","base":"main"}` for PR integration. No PR is required
+   for local work; choosing PR delivery makes its matching merge a completion condition.
 3. Read `review_subject` from `tt show ID --json`. The reviewer posts to the **TT card**:
    line 1 `review: approve` or `review: request-changes`, line 2 the exact `review_subject`.
    PR comments are optional mirrors. Inspect actual artifacts, not just the pass claim.
 4. Fixes stay in review and **resubmit the report**. Every submission changes the subject,
    even with the same attempt/report; old approvals are not reused. Artifact changes require
    resubmission. A new work round still uses review → todo → claim.
-5. With a current independent approval and valid passed report, probe calls verify and closes
-   the TT card. This does not assert a PR was merged or deployment occurred. If integration
-   is an acceptance criterion, the report and reviewer must verify it before approval.
+5. With current independent approval, probe confirms the selected delivery then calls verify.
+   PR mode rechecks head/base/CI, merges with an atomic head guard, re-reads the merge and
+   stores a matching receipt. A changed head requires report resubmission and fresh approval.
+   Legacy PR-linked reports missing delivery fields must be resubmitted; they are not local.
+   Deployment remains a separate acceptance requirement when requested.
    Manual `tt verify` remains an explicit handover fallback; implementer self-verify is blocked.
 
 Do not hand-roll `[auto review]`/`[re-review]` dispatches for a review-state card — probe owns review

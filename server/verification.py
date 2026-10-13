@@ -3,6 +3,7 @@ import re
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+from delivery import Delivery
 
 
 class _V2Stage(BaseModel):
@@ -52,6 +53,7 @@ class CompletionReport(BaseModel):
     result: Literal["passed", "failed", "inconclusive"]
     evidence: str = ""
     limitations: str = ""
+    delivery: Delivery | None = None
     design: DesignStage | None = None
     implementation: ImplementationStage | None = None
     verification: VerificationStage | None = None

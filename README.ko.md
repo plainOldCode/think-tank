@@ -85,7 +85,7 @@ review/todo/blocked/done/cancelled 전이 시 lease 자동 해제. 부모 done: 
 
 - todo→done 직접 전이 금지(수령 이력 필수). cron은 `require_label` 게이트로 `auto` 라벨 카드만 수령(agent당 활성 lease 2한도)
 - **TT가 종결 기준**: 보고 제출 → 현재 `review_subject`에 독립 리뷰 승인 → probe verify. GitHub/Gitea PR은 선택적 보조 자료이며 local 산출물도 같은 흐름이다.
-- 브랜치·병합·배포는 해당 프로젝트 규약과 사용자 지시를 따른다. TT done 자체는 병합·배포 증명이 아니며, 완료 기준에 포함되면 보고·리뷰에서 확인한다.
+- 보고서에서 delivery를 선택한다: local은 TT 승인 후 검증, pr은 provider/repo/number/전체 head/base를 연결하고 병합 확인 후 done. head 변경 시 재제출·재리뷰가 필요하며 provider 장애는 완료 우회가 아니다. 배포는 별도 완료 기준을 따른다.
 - 보고 없는 레거시 카드는 명시적 인수계 경로 유지. 유효 보고를 제출하면 TT 흐름으로 진입한다. `TT_PR_PROVIDER=none`으로 GitHub 관측을 꺼도 TT 리뷰는 동작한다.
 - 계약 v2(3단계 설계/구현/검증 보고): `tt contract` 조회, claim 시 버전 고정(해시). 보고의 `reported`와 승인의 `approved` 구분 유지
 

@@ -34,6 +34,8 @@ REVIEW_CONTRACT = {
                     "첫 줄 'review: approve' 또는 'review: request-changes', 둘째 줄은 "
                     "GET /issues/ID의 review_subject(TT#ID@aN/hash)를 그대로 쓴다. "
                     "현재 보고와 완료 기준 및 산출물 위치를 확인하고 접근 불가·미검증을 승인하지 않는다. "
+                    "delivery.mode=pr이면 보고의 전체 head_sha와 PR 최신 head가 일치해야 승인한다. "
+                    "head가 달라졌으면 수정 보고 재제출을 요구한다. PR 선택 작업은 승인 후 병합 확인이 종결 조건이다. "
                     "PR 없는 local/Gitea 작업도 동일하다. 레거시 PR 전용 요청만 PR#<n>@<sha8>를 쓴다. "
                     "TT 코멘트 author는 자기 에이전트명.",
 }
@@ -94,7 +96,7 @@ def reset_evidence(c, issue_id):
     cursor = c.execute("SELECT COALESCE(MAX(id),0) FROM comments WHERE issue_id=?", (issue_id,)).fetchone()[0]
     return {"verified": 0, "verified_at": None, "verified_evidence": "",
             "verification_status": "unverified", "completion_report": "", "completed_at": None,
-            "evidence_after_comment_id": cursor}
+            "evidence_after_comment_id": cursor, "delivery_receipt": ""}
 
 
 def log_event(c, kind: str, entity: str, entity_id, payload=None):
