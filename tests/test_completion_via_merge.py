@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 
 import app as appmod
 import dispatchd
+import policy
 import probe.core
 
 
@@ -334,6 +335,75 @@ def test_ci_fix_assignee없으면_wake줄_생략(monkeypatch):
     bodies = [c["body"] for c in rec.commented if "body" in c]
     assert "[CI:fail]" not in bodies[0] and "@None" not in bodies[0]
     assert "[ci-fix a1 #9/bbbbbbbb]" in bodies[0]
+
+
+# ---------- FHH8: LABEL_SEMANTICS — 고위험(risk:*) 병합 휴면 ----------
+
+def _labeled(state, labels, **kw):
+    i = _issue(state, **kw)
+    i["labels"] = list(labels)
+    return i
+
+
+def test_label_semantics_표_계약():
+    assert policy.LOW_RISK_LABELS == policy.LABEL_SEMANTICS["low_risk"]["exact"]
+    assert policy.is_high_risk({"labels": ["Risk:Security"]})  # 대소문자 무시
+    assert not policy.is_high_risk({"labels": ["security"]})   # 접두어 아님 — 미선언 무시
+    for vocab in ("auto", "self", "close", "needs-human"):
+        assert policy.LABEL_SEMANTICS[vocab]["exact"] == (vocab,)  # 선언 전용 항목
+
+
+def test_고위험라벨은_probe_자동병합_휴면():
+    i = _labeled("review", ["risk:security"], updated="2026-10-01T08:00:00+0900")
+    acts = dispatchd.decide(_snap([i], _pr([{"state": "SUCCESS"}])))
+    assert not [a for a in acts if a["action"] == "merge"]
+    holds = [a for a in acts if a["action"] == "review-note"]
+    assert len(holds) == 1 and "high-risk-hold" in holds[0]["marker"]
+
+
+def test_고위험_PR_라벨도_병합_휴면():
+    # 저위험의 PR 라벨 검사와 대칭 — PR 라벨 risk:*도 병합 휴면
+    i = _issue("review", updated="2026-10-01T08:00:00+0900")
+    pr = _pr([{"state": "SUCCESS"}])[0]
+    pr["labels"] = ["risk:data-loss"]
+    acts = dispatchd.decide(_snap([i], [pr]))
+    assert not [a for a in acts if a["action"] == "merge"]
+
+
+def test_고위험은_저위험_동시라벨에_안_집힌다(monkeypatch):
+    # docs + risk:security 동시 — 고위험이 이긴다(문서 라벨로 보안 변경 납치 방지).
+    # 리뷰어 승인 판정이 있어야 병합 직전까지 가므로 승인 코멘트로 재현.
+    monkeypatch.setenv("TT_REVIEW_AGENT", "agy")
+    i = _labeled("review", ["docs", "risk:security"], updated="2026-10-01T08:00:00+0900")
+    i["reviewer"] = "agy"
+    i["version"] = 4
+    i["comments"] = [{"author": "agy", "body": "review: approve\nPR#9@bbbbbbbb"}]
+    acts = dispatchd.decide(_snap([i], _pr([{"state": "SUCCESS"}])))
+    assert not [a for a in acts if a["action"] == "merge"]
+    assert [a for a in acts if a["action"] == "review-note"
+            and "high-risk-hold" in a["marker"]]
+
+
+def test_고위험_마커있으면_재노트_안한다():
+    i = _labeled("review", ["risk:security"], updated="2026-10-01T08:00:00+0900")
+    i["comments"] = [{"author": "probe", "body": "[high-risk-hold a1 #9/bbbbbbbb] 대기"}]
+    acts = dispatchd.decide(_snap([i], _pr([{"state": "SUCCESS"}])))
+    assert not [a for a in acts if a["action"] in ("merge", "review-note")]
+
+
+def test_미선언_라벨은_기존_병합_유지():
+    # 표에 없는 라벨은 무시 — 기존 동작 불변(수용 기준 2)
+    i = _labeled("review", ["security"], updated="2026-10-01T08:00:00+0900")
+    acts = dispatchd.decide(_snap([i], _pr([{"state": "SUCCESS"}])))
+    assert [a for a in acts if a["action"] == "merge"]
+
+
+def test_고위험_무계약은_병합후보_아님_기존게이트():
+    # v2.1 보고 강제 — 고위험은 계약 없으면 병합 후보 자체가 아님(저위험 면제 안 됨)
+    i = _labeled("review", ["risk:security"], updated="2026-10-01T08:00:00+0900")
+    i["work_contract"] = None
+    acts = dispatchd.decide(_snap([i], _pr([{"state": "SUCCESS"}])))
+    assert not [a for a in acts if a["action"] in ("merge", "review-note")]
 
 
 def test_needs_merge_회차_dedup():

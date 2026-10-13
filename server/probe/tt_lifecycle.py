@@ -139,6 +139,16 @@ def execute(core, url, act):
             if not eligible(fresh) or subject(fresh) != act["subject"] or verdict(fresh) != "approve":
                 return
             if observed["state"] == "OPEN":
+                if core.policy.is_high_risk(fresh):
+                    # FHH8 — 고위험 카드 probe 병합 휴면. 사람이 GitHub에서 직접 병합하면
+                    # 다음 사이클의 MERGED 관측으로 완결된다.
+                    key = marker(fresh, "tt-high-risk-hold")
+                    if not marked(fresh, key):
+                        core.api(url, f"/issues/{iid}/comments", "POST", {
+                            "author": "probe",
+                            "body": f"{key} 고위험(risk:*) 라벨 — probe 자동병합 휴면, "
+                                    "사람 병합 승인 대기"})
+                    return
                 providers.merge_delivery(target, core.gh_exec)
                 observed = providers.inspect_delivery(target, core.gh_json)
             if observed.get("state") != "MERGED" or readiness(target, observed):
