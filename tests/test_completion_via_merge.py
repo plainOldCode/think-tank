@@ -295,6 +295,47 @@ def test_ci_fix_집행은_dispatch와_marker(monkeypatch):
     assert disp
 
 
+def test_ci_fix_코멘트는_assignee를_CI_fail로_wake한다(monkeypatch):
+    # 7FQH: preview는 120자로 잘리므로 [CI:fail]이 첫 줄에 있어야 relay가 본다.
+    rec = Recorder({"id": "X-9", "state": "review", "version": 1, "execution_attempt": 1,
+                    "assignee": "w@t", "comments": []})
+    calls = []
+
+    def api(url, path, method="GET", body=None):
+        calls.append((method, path))
+        if method == "GET":
+            return dict(rec.card)
+        return rec(url, path, method, body)
+
+    monkeypatch.setattr(probe.core, "api", api)
+    dispatchd.execute("u", {"agent": "dispatchd", "issue": "X-9", "action": "ci-fix",
+                            "pr": 9, "repo": "o/r", "branch": "tt/X-9-x",
+                            "head_sha": "b" * 40, "checks_failed": ["tests", "lint"]})
+    bodies = [c["body"] for c in rec.commented if "body" in c]
+    assert bodies[0].startswith("[CI:fail] @w@t #9 — tests, lint 확인하라\n")
+    assert "[ci-fix a1 #9/bbbbbbbb]" in bodies[0]  # 마커 dedup 호환 유지
+
+
+def test_ci_fix_assignee없으면_wake줄_생략(monkeypatch):
+    rec = Recorder({"id": "X-9", "state": "review", "version": 1, "execution_attempt": 1,
+                    "comments": []})
+    calls = []
+
+    def api(url, path, method="GET", body=None):
+        calls.append((method, path))
+        if method == "GET":
+            return dict(rec.card)
+        return rec(url, path, method, body)
+
+    monkeypatch.setattr(probe.core, "api", api)
+    dispatchd.execute("u", {"agent": "dispatchd", "issue": "X-9", "action": "ci-fix",
+                            "pr": 9, "repo": "o/r", "branch": "tt/X-9-x",
+                            "head_sha": "b" * 40, "checks_failed": ["tests"]})
+    bodies = [c["body"] for c in rec.commented if "body" in c]
+    assert "[CI:fail]" not in bodies[0] and "@None" not in bodies[0]
+    assert "[ci-fix a1 #9/bbbbbbbb]" in bodies[0]
+
+
 def test_needs_merge_회차_dedup():
     prior = [{"author": "probe", "body": "[needs-merge a1] PR 없음"}]
     acts = dispatchd.decide(_snap([_issue("review", comments=prior)]))

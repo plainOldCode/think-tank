@@ -8,7 +8,8 @@ GET $TT_URL/events/stream 을 구독해, 내 카드(assignee=$TT_AGENT)의 리�
 
 필터:
   ① comment.added + entity=issue + assignee==나 + author!=나(system 제외) +
-     preview에 줄 시작 신호: "review: approve|request-changes", "verify → done", "merge="
+     preview에 줄 시작 신호: "review: approve|request-changes", "verify → done",
+     "merge=", "[CI:fail]"(probe ci-fix 위임 코멘트)
      (줄 시작 앵커 — 본문 중간 언급은 신호가 아니다. tt-server 접수 코멘트 제외)
   ② issue.updated + entity=issue + assignee==나 + payload.state ∈ {done, blocked}
      + fields에 "state" 존재(실제 상태 전환만 — bump 노이즈 무시)
@@ -62,7 +63,7 @@ DRY_RUN = os.environ.get("TT_WAKE_DRY_RUN") == "1"
 DEBUG = os.environ.get("TT_WAKE_DEBUG") == "1"
 
 SIGNAL_RE = re.compile(
-    r"^(?:review:\s*(?:approve|request-changes)|verify → done|merge=)",
+    r"^(?:review:\s*(?:approve|request-changes)|verify → done|merge=|\[CI:fail\])",
     re.MULTILINE | re.IGNORECASE)
 # 시스템 발신자 접수 코멘트(보고 접수 안내에 "verify → done" 문구 포함)는 신호가 아니다.
 SYSTEM_AUTHORS = {"tt-server"}
