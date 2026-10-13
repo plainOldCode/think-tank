@@ -12,7 +12,7 @@ GET $TT_URL/events/stream 을 구독해, 내 카드(assignee=$TT_AGENT)의 리�
   ② issue.updated + entity=issue + assignee==나 + payload.state ∈ {done, blocked}
   멘션(message.posted)은 의도적으로 제외 — 기존 cron 원샷 워커가 소유(중복 응답 방지).
 
-설치 (tp-13):
+설치 (에이전트 머신):
   cp scripts/tt-wake-relay.py ~/.local/bin/
   # ~/.config/systemd/user/tt-wake-relay.service:
   #   [Unit]
@@ -22,8 +22,8 @@ GET $TT_URL/events/stream 을 구독해, 내 카드(assignee=$TT_AGENT)의 리�
   #   ExecStart=/usr/bin/python3 %h/.local/bin/tt-wake-relay.py
   #   Restart=on-failure
   #   RestartSec=5
-  #   Environment=TT_URL=http://100.122.96.16:7800
-  #   Environment=TT_AGENT=skshim@tp-13
+  #   Environment=TT_URL=<TT 서버 주소>
+  #   Environment=TT_AGENT=<자기 에이전트 ID>
   #   Environment=OPENCODE_TUI_URL=http://127.0.0.1:4096
   #
   #   [Install]
@@ -32,7 +32,7 @@ GET $TT_URL/events/stream 을 구독해, 내 카드(assignee=$TT_AGENT)의 리�
   # TUI는 고정 포트로 기동돼야 한다: opencode --port 4096
 
 
-환경변수: TT_URL(기본 mini), TT_AGENT(기본 skshim@tp-13),
+환경변수: TT_URL(필수 — TT 서버 주소), TT_AGENT(필수 — 자기 에이전트 ID),
   OPENCODE_TUI_URL(기본 http://127.0.0.1:4096), TT_WAKE_STATE_DIR(커서 저장),
   TT_WAKE_DRY_RUN=1(주입 대신 로그), TT_WAKE_DEBUG=1(모든 이벤트 로그)
 """
@@ -45,8 +45,8 @@ import tempfile
 import time
 import urllib.request
 
-TT_URL = os.environ.get("TT_URL", "http://100.122.96.16:7800").rstrip("/")
-TT_AGENT = os.environ.get("TT_AGENT", "skshim@tp-13")
+TT_URL = os.environ.get("TT_URL", "").rstrip("/")
+TT_AGENT = os.environ.get("TT_AGENT", "")
 TUI_URL = os.environ.get("OPENCODE_TUI_URL", "http://127.0.0.1:4096").rstrip("/")
 STATE_DIR = os.environ.get("TT_WAKE_STATE_DIR",
                            os.path.expanduser("~/.local/state/tt-wake"))
@@ -216,6 +216,9 @@ def open_stream(after_seq):
 
 
 def run(cache=None, inject_fn=None, dry_run=DRY_RUN):
+    if not TT_URL or not TT_AGENT:
+        log("TT_URL·TT_AGENT 환경변수가 필요하다 (systemd unit Environment 참고)")
+        sys.exit(2)
     cache = cache or IssueCache()
     inject_fn = inject_fn or inject
     seq = read_cursor()

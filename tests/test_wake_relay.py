@@ -12,6 +12,10 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
 
+# 모듈이 임포트 시 env를 읽으므로 기본값을 먼저 고정한다 (기기별 env 영향 제거).
+os.environ.setdefault("TT_URL", "http://tt.test:1")
+os.environ.setdefault("TT_AGENT", "tester@ci")
+
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _spec = _ilu.spec_from_file_location(
     "tt_wake_relay", os.path.join(_HERE, "..", "scripts", "tt-wake-relay.py"))
@@ -26,8 +30,10 @@ def _row(kind="comment.added", entity="issue", entity_id="I-1",
             "ts": "2026-10-13T00:00:00", "notified": 1}
 
 
-def _cache(assignee="skshim@tp-13"):
+def _cache(assignee=None):
     """항상 같은 이슈를 돌려주는 고정 캐시."""
+    assignee = assignee or R.TT_AGENT
+
     class Fixed:
         def __init__(self, a):
             self.a = a
@@ -73,14 +79,14 @@ def test_comment_merge_hash_wakes():
 
 
 def test_self_comment_never_wakes():
-    row = _row(payload={"author": "skshim@tp-13",
+    row = _row(payload={"author": R.TT_AGENT,
                         "preview": "merge=abc 내 보고"})
     assert R.handle_event(row, cache=_cache()) is None
 
 
 def test_other_assignee_card_ignores():
     row = _row(payload={"author": "agy", "preview": "review: approve"})
-    assert R.handle_event(row, cache=_cache(assignee="codex@m2max")) is None
+    assert R.handle_event(row, cache=_cache(assignee="other@host")) is None
 
 
 def test_dispatch_entity_ignores_without_issue_fetch():
