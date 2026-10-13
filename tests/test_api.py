@@ -1,6 +1,6 @@
 import pytest
 
-from conftest import mk, Hook  # noqa: F401 — 하위 호환 재노출
+from conftest import human_done, mk, Hook  # noqa: F401 — 하위 호환 재노출
 
 
 def test_create_get(client):
@@ -224,11 +224,11 @@ def test_parent_done_requires_children_closed(client):
     client.post(f"/issues/{p}/claim", json={"agent": "g@test"})
     client.post(f"/issues/{c1}/claim", json={"agent": "g1@test"})
     assert client.patch(f"/issues/{p}", json={"state": "done"}).status_code == 409
-    client.patch(f"/issues/{c1}", json={"state": "done", "force_done": True})
+    human_done(client, c1)
     assert client.patch(f"/issues/{p}", json={"state": "done"}).status_code == 409
     client.post(f"/issues/{c2}/claim", json={"agent": "g2@test"})
-    client.patch(f"/issues/{c2}", json={"state": "done", "force_done": True})
-    assert client.patch(f"/issues/{p}", json={"state": "done", "force_done": True}).status_code == 200
+    human_done(client, c2)
+    assert human_done(client, p).status_code == 200
 
 
 def test_claim_self_assigned(client):
@@ -791,7 +791,7 @@ def test_why_blocked_projection(client):
     w2 = client.get(f"/issues/{j['id']}/why-blocked").json()
     assert w2["waiting_for"] == "human" and w2["waiting_for_source"] == "comment"
     client.patch(f"/issues/{dep['id']}", json={"state": "in_progress", "assignee": "z@t"})
-    client.patch(f"/issues/{dep['id']}", json={"state": "done", "force_done": True})
+    human_done(client, dep["id"])
     w3 = client.get(f"/issues/{i['id']}/why-blocked").json()
     assert w3["release_ready"] is True and w3["missing"] == []
 
@@ -804,7 +804,7 @@ def test_list_and_detail_expose_release_ready(client):
     assert any(x["id"] == i["id"] and x["release_ready"] is False
                for x in client.get("/issues?state=blocked").json())
     client.patch(f"/issues/{dep['id']}", json={"state": "in_progress", "assignee": "z@t"})
-    client.patch(f"/issues/{dep['id']}", json={"state": "done", "force_done": True})
+    human_done(client, dep["id"])
     got = client.get(f"/issues/{i['id']}").json()
     assert got["release_ready"] is True
     # ④ 의존 종료 시 '해제 가능' 시스템 댓글, 중복 없음, 자동 상태 변경 없음
@@ -824,7 +824,7 @@ def test_reconcile_release_command(client, hook_server):
     did = Hook.received[0][1]["dispatch_id"]
     client.post(f"/issues/{i['id']}/claim", json={"agent": "runner-x"})
     Hook.received.clear()
-    r = client.patch(f"/issues/{i['id']}", json={"state": "done", "force_done": True})
+    r = human_done(client, i["id"])
     assert r.status_code == 200, r.text
     headers, body = Hook.received[-1]
     assert headers.get("x-tt-command") == "release"
@@ -1031,13 +1031,11 @@ def test_done_gate_demotes_without_evidence(client):
     assert client.post("/pull", json={"agent": "other"}).json() is None
 
 
-def test_close_label_bypasses_done_gate(client):
-    # bridge 규약: close 라벨(사람 승인 마감)은 기존 done 경로 유지 — 충돌 금지
+def test_close_label_cannot_bypass_done_gate(client):
     i = mk(client, title="close 라벨 마감", labels=["close"])
     client.post(f"/issues/{i['id']}/claim", json={"agent": "w@t"})
     r = client.patch(f"/issues/{i['id']}", json={"state": "done"})
-    assert r.status_code == 200 and r.json()["state"] == "done"
-    assert r.json()["verified"] == 1 and "승인 경로" in r.json()["verified_evidence"]
+    assert r.status_code == 422 and client.get(f"/issues/{i['id']}").json()["state"] == "in_progress"
 
 
 def test_verify_endpoint_review_to_done(client):
@@ -1048,7 +1046,7 @@ def test_verify_endpoint_review_to_done(client):
     client.post(f"/issues/{dep['id']}/claim", json={"agent": "c@t"})
     # 부모 done 가드는 게이트보다 먼저: child 미완료면 409 (기존 동작 유지)
     assert client.patch(f"/issues/{p['id']}", json={"state": "done"}).status_code == 409
-    client.patch(f"/issues/{dep['id']}", json={"state": "done", "force_done": True})
+    human_done(client, dep["id"])
     demoted = client.patch(f"/issues/{p['id']}", json={"state": "done"})
     assert demoted.json()["state"] == "review"
     # review인데 child 재오픈 → verify도 부모 가드 409
@@ -1056,7 +1054,7 @@ def test_verify_endpoint_review_to_done(client):
     client.post(f"/issues/{dep['id']}/claim", json={"agent": "c@t"})
     assert client.post(f"/issues/{p['id']}/verify",
                        json={"verifier": "user", "evidence": "abc1234"}).status_code == 409
-    client.patch(f"/issues/{dep['id']}", json={"state": "done", "force_done": True})
+    human_done(client, dep["id"])
     # done은 verified evidence 필수 — 코멘트에 (agent) 증거 없으면 422 (시스템 댓글은 근거 불인정)
     assert client.post(f"/issues/{p['id']}/verify", json={"verifier": "user"}).status_code == 422
     v = client.post(f"/issues/{p['id']}/verify", json={"verifier": "user@mini", "evidence": "pytest 33 passed"})

@@ -39,7 +39,7 @@ backlog → todo → in_progress → blocked/review/done. review → todo/blocke
 | `POST /maintenance/archive-sweep` | – | 전수 스윕 — completed_at ASC 나이순 + keyset 전수 순회(상한 없음, 보존 행이 뒤를 가리지 못함), 카드당 독립 트랜잭션, `{archived, preserved}` 반환. 비활성 시 409 |
 | `POST /issues/{id}/claim-review` | `{agent, hours?}` — reviewer claim, review-state cards only (409 otherwise); marks `reviewer`+review lease without touching state/attempt; response carries the review contract. Own-work cards 409 (cross-review rule, TT improvement #3c); a different reviewer 409 while an active review lease is held — the same reviewer may re-claim to refresh |
 | `POST /pull` | `{agent, require_label?, hours?}` — atomically claims one by priority (p1..p4) then creation order; candidates re-checked by the busy/eligible policy (TT improvement #3b) so budget-exhausted/leased rows are skipped; `null` if none |
-| `PATCH /issues/{id}` | transition guards + `expected_version` optimistic lock, `clear_parent`/`clear_priority`, `archived:true/false`, `waiting_for` (blocked-only: dependency|human|gate|external) + `waiting_actor`/`blocked_detail`, `force_done` (approval exception), `completion_report` (structured completion report) |
+| `PATCH /issues/{id}` | transition guards + `expected_version` optimistic lock, `clear_parent`/`clear_priority`, `archived:true/false`, `waiting_for` (blocked-only: dependency|human|gate|external) + `waiting_actor`/`blocked_detail`, `force_done` (rejected, 422; use human verify), `completion_report` (structured completion report) |
 | `POST /issues/{id}/verify` | `{verifier, evidence?, completion_report?, expected_version?}` — review→done report receipt. Non-review/round conflict 409, report errors 422 |
 | `POST /issues/{id}/comments` | `{author, body}` |
 | `GET /issues/{id}/why-blocked` | blocked-reason projection: gate, criteria, dependencies, missing, release_ready, evidence, next_commands. 409 if not blocked |
@@ -65,7 +65,7 @@ Metric definitions (intake time, review pass rate, rework rate, stall recovery, 
 For common guidance and JSON examples, follow the base-methodology and completion-report sections of the [AI work contract](../server/static/api.md).
 `TT_REQUIRE_REPORT=1` makes structured TDD/alternative-verification reports mandatory for new claim rounds (default 0: comment compatibility).
 `work_contract` is a snapshot of version, instructions, and report policy, linked to the completion report together with `execution_attempt`.
-`verification_status=reported` means a report was received; `approved` is the force_done/close approval exception. Neither implies independently verified execution.
+`verification_status=reported` means a report was received; `approved` is human verify. Neither implies independently verified execution. `force_done` and the `close` label no longer complete a card.
 Reopen, new claim, and scope changes invalidate previous evidence. Existing DBs are preserved via column additions; past completions are marked `legacy`.
 CLI: `tt contract`, `tt submit ID --report FILE` (alias `tt done`), `tt verify ID --report FILE`. Old CLI/runner builds are not auto-updated.
 

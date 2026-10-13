@@ -65,10 +65,11 @@ commits/documents are artifact references, not prerequisites for a TT lifecycle.
 1. `tt claim` → implement → verify against the card's criteria. Follow the project's branch,
    integration and deployment rules; TT itself grants none of those permissions.
 2. `tt submit ID --report report.json` stores the report and enters review. Include immutable
-   commit/artifact references and accessible evidence. Declare `delivery: {"mode":"local"}`
-   for local work, or `delivery: {"mode":"pr","provider":"github","repo":"owner/repo",
+   commit/artifact references and accessible evidence. Declare `delivery: {"mode":"report"}`
+   when the reviewed report is the deliverable, or `delivery: {"mode":"pr","provider":"github","repo":"owner/repo",
    "number":N,"head_sha":"<full SHA>","base":"main"}` for PR integration. No PR is required
-   for local work; choosing PR delivery makes its matching merge a completion condition.
+   for report delivery; choosing PR delivery makes its matching merge a completion condition.
+   Stored `mode:local` is a compatible alias and is not rewritten.
 3. Read `review_subject` from `tt show ID --json`. The reviewer posts to the **TT card**:
    line 1 `review: approve` or `review: request-changes`, line 2 the exact `review_subject`.
    PR comments are optional mirrors. Inspect actual artifacts, not just the pass claim.
@@ -78,7 +79,7 @@ commits/documents are artifact references, not prerequisites for a TT lifecycle.
 5. With current independent approval, probe confirms the selected delivery then calls verify.
    PR mode rechecks head/base/CI, merges with an atomic head guard, re-reads the merge and
    stores a matching receipt. A changed head requires report resubmission and fresh approval.
-   Legacy PR-linked reports missing delivery fields must be resubmitted; they are not local.
+   Legacy PR-linked reports missing delivery fields must be resubmitted; they are not report delivery.
    Deployment remains a separate acceptance requirement when requested.
    Manual `tt verify` remains an explicit handover fallback; implementer self-verify is blocked.
 
@@ -118,7 +119,7 @@ The legacy adapter's limitations are documented in
   an array is rejected with string_type 422.
   For independent verification commands, check the tool's usage first and read stdout together — a wrong flag also exits 2,
   so the exit code alone cannot distinguish an expected failure from an argument error.
-  Do not bypass report errors with `force_done`/`close`. Explicit approval exceptions are distinguished as `approved`.
+  Do not bypass report errors with `force_done`/`close`; those completion paths return 422. Human approval is `tt verify --human` and is recorded as `approved`.
 - Rework is review → todo → claim — **except a same-PR fix round** (Lifecycle §3): when the probe
   relays a review-fix for the same PR, stay in review and just push. The todo transition clears
   assignee and completion_report, and re-claiming increments the attempt — the old report would
