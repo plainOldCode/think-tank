@@ -65,11 +65,12 @@ commits/documents are artifact references, not prerequisites for a TT lifecycle.
 1. `tt claim` → implement → verify against the card's criteria. Follow the project's branch,
    integration and deployment rules; TT itself grants none of those permissions.
 2. `tt submit ID --report report.json` stores the report and enters review. Include immutable
-   commit/artifact references and accessible evidence. Declare `delivery: {"mode":"report"}`
-   when the reviewed report is the deliverable, or `delivery: {"mode":"pr","provider":"github","repo":"owner/repo",
-   "number":N,"head_sha":"<full SHA>","base":"main"}` for PR integration. No PR is required
-   for report delivery; choosing PR delivery makes its matching merge a completion condition.
-   Stored `mode:local` is a compatible alias and is not rewritten.
+   commit/artifact references and accessible evidence. The CLI fills `delivery` before sending:
+   `--delivery report` when the reviewed report is the deliverable, or
+   `--pr owner/repo#N --head <full SHA> --base main` for GitHub PR integration.
+   A PR link in the report, card, comment, or submit text without one of those is rejected
+   locally. No PR is required for report delivery; choosing PR delivery makes its matching
+   merge a completion condition. Stored `mode:local` is a compatible alias and is not rewritten.
 3. Read `review_subject` from `tt show ID --json`. The reviewer posts to the **TT card**:
    line 1 `review: approve` or `review: request-changes`, line 2 the exact `review_subject`.
    PR comments are optional mirrors. Inspect actual artifacts, not just the pass claim.

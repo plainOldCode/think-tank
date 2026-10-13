@@ -125,3 +125,86 @@ def test_report_file_roundtrip(cli, tmp_path, via_verify):
     assert data["state"] == "done" and data["verification_status"] == "reported"
     ev = data["completion_report"]["verification"]["evidence"]
     assert isinstance(ev, list) and ev[0]["command"] == "bash -n cli/tt"
+
+
+def proof(issue, **extra):
+    data = {"contract_version": issue["work_contract"]["version"], "attempt": issue["execution_attempt"],
+            "method": "planned",
+            "design": {"criteria": "cli delivery", "verification": "제출 전 거부", "evidence": "없음"},
+            "implementation": {"summary": "cli delivery", "commands": "edit cli/tt"},
+            "verification": {"commands": "pytest tests/test_contract_cli.py -q",
+                             "evidence": [{"command": "pytest tests/test_contract_cli.py -q", "exit_code": 0,
+                                           "output_snippet": "pending"}]},
+            "result": "passed", "limitations": ""}
+    data.update(extra)
+    return data
+
+
+def claimed_report(run, tmp_path, name="r.json", **extra):
+    iid = new(run)
+    issue = json.loads(run("claim", iid, "--json").stdout)
+    path = tmp_path / name
+    path.write_text(json.dumps(proof(issue, **extra)))
+    return iid, path
+
+
+def test_usage_shows_delivery_flags_before_submit(cli):
+    run, _ = cli
+    response = run("help")
+    assert response.returncode == 0
+    assert "--delivery report" in response.stdout
+    assert "--pr owner/repo#N" in response.stdout
+
+
+def test_pr_mention_is_rejected_before_submit(cli, tmp_path):
+    run, writes = cli
+    iid, path = claimed_report(run, tmp_path, limitations="see PR #126")
+    response = run("submit", iid, "--report", str(path))
+    assert response.returncode != 0
+    assert "delivery" in response.stderr
+    assert writes == []
+
+
+def test_comment_pr_link_is_rejected_before_submit(cli, tmp_path):
+    run, writes = cli
+    iid, path = claimed_report(run, tmp_path)
+    assert run("note", iid, "https://github.com/plainOldCode/armour-service-ops/pull/126").returncode == 0
+    response = run("submit", iid, "--report", str(path))
+    assert response.returncode != 0
+    assert writes == []
+
+
+def test_explicit_report_delivery_allows_pr_mention(cli, tmp_path):
+    run, _ = cli
+    iid, path = claimed_report(run, tmp_path, limitations="see PR #126")
+    response = run("submit", iid, "--report", str(path), "--delivery", "report", "--json")
+    assert response.returncode == 0, response.stderr
+    assert json.loads(response.stdout)["completion_report"]["delivery"]["mode"] == "report"
+
+
+def test_pr_flags_fill_delivery(cli, tmp_path):
+    run, _ = cli
+    iid, path = claimed_report(run, tmp_path)
+    head = "a" * 40
+    response = run("submit", iid, "--report", str(path), "--pr", "plainOldCode/think-tank#111",
+                   "--head", head, "--base", "main", "--json")
+    assert response.returncode == 0, response.stderr
+    delivery = json.loads(response.stdout)["completion_report"]["delivery"]
+    assert delivery == {"mode": "pr", "provider": "github", "repo": "plainOldCode/think-tank",
+                        "number": 111, "head_sha": head, "base": "main"}
+
+
+def test_absent_delivery_without_pr_becomes_report(cli, tmp_path):
+    run, _ = cli
+    iid, path = claimed_report(run, tmp_path)
+    response = run("submit", iid, "--report", str(path), "--json")
+    assert response.returncode == 0, response.stderr
+    assert json.loads(response.stdout)["completion_report"]["delivery"]["mode"] == "report"
+
+
+def test_stored_local_delivery_is_not_rewritten(cli, tmp_path):
+    run, _ = cli
+    iid, path = claimed_report(run, tmp_path, delivery={"mode": "local"})
+    response = run("submit", iid, "--report", str(path), "--json")
+    assert response.returncode == 0, response.stderr
+    assert json.loads(response.stdout)["completion_report"]["delivery"]["mode"] == "local"
