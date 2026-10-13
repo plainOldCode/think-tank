@@ -179,6 +179,7 @@ def connect(path):
                 "evidence_after_comment_id INTEGER NOT NULL DEFAULT 0",
                 "verification_status TEXT NOT NULL DEFAULT 'unverified'",
                 "completion_report TEXT NOT NULL DEFAULT ''",
+                "submission_revision INTEGER NOT NULL DEFAULT 0",
                 # SRM1: 지연 표기 — todo 진입 시각(기존 todo 행은 created_at 백필)
                 "todo_since TEXT",
                 # M42KC1XR-2DD1: 리뷰어 점유 — review 카드에서 판정자 표기(assignee는 작업자 유지)
@@ -277,6 +278,8 @@ def to_dict(row):
     d["labels"] = [s for s in d["labels"].split(",") if s]
     d["work_contract"] = json.loads(d["work_contract"]) if d.get("work_contract") else None
     d["completion_report"] = json.loads(d["completion_report"]) if d.get("completion_report") else None
+    from review_subject import subject
+    d["review_subject"] = subject(d)
     if d.get("verified") and d["verification_status"] == "unverified":
         d["verification_status"] = "legacy"
     return d

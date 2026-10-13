@@ -259,7 +259,7 @@ def test_미연결_행은_review_기준선에_추가_액션을_만들지_않는�
         acts = dispatchd.decide(_snap([_i(comments=comments)], [], []))
         kinds = [a["action"] for a in acts]
         assert kinds == ["review-note"], kinds  # no_pr 노트 외 추가 액션 없음
-        assert "PR 없음" in acts[0]["reason"]
+        assert "PR 미확인" in acts[0]["reason"]
 
 
 def test_행별_입력_to_대응_매핑_문서():

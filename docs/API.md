@@ -4,6 +4,17 @@ Server: resident machine `http://<TT_HOST>:7800` (trusted-network address/localh
 DB: `~/think-tank/data/tt.db` (SQLite WAL) — periodic backups recommended (`VACUUM INTO` snapshot)
 
 ## State machine
+Q614: **TT is authoritative; PRs are optional.** A valid report enters review,
+an independent TT-card verdict binds to `review_subject`, and probe verifies the
+stored report. Local/Gitea/GitHub work shares this lifecycle. See
+[submission review](tt-submission-review.md) for identity, migration and adapter details.
+
+`POST /issues/{id}/verify` additionally accepts `review_subject`. When supplied,
+the server atomically requires that exact current subject, its independent TT
+approval and an identical `completion_report` (409 on any mismatch). Probe uses
+this bound path with `expected_version`. Existing manual/human handovers remain
+available without the optional subject field.
+
 backlog → todo → in_progress → blocked/review/done. review → todo/blocked/done/cancelled. Direct todo→done is forbidden (claim required). todo→backlog demotion allowed. done→todo reopen. cancelled→todo.
 `in_progress→todo` release (assignee cleared).
 
@@ -13,7 +24,7 @@ backlog → todo → in_progress → blocked/review/done. review → todo/blocke
 | `GET /work-contract` | `{version, instructions, report_required}` — also delivered on claim/pull/dispatch |
 | `POST /issues` | `{title, acceptance, body?, parent_id?, priority?(1-4), labels?[], state?=todo|backlog, nominee?}` — **`acceptance` required (TT improvement #3a)**: machine-readable done-criteria, missing/blank → 422; existing cards fill gradually via PATCH (empty rejected). **Self-nomination (TT improvement #3d)**: labels containing `self` require `nominee` (becomes assignee), force `backlog` start, WIP 1 open self card per nominee (2nd → 409); todo promotion is human/triage only — PATCH must carry `promoted: true` |
 | `GET /issues?state=&parent=&label=&assignee=&q=&limit=&archived=` | parent=none → roots only. archived: `no` (default, hidden) `all` `only` |
-| `GET /issues/{id}` | + children, comments |
+| `GET /issues/{id}` | + children, comments, `submission_revision`, `review_subject` (TT#ID@aN/hash; null without report) |
 | `GET /issues/{id}/tree` | recursive tree |
 | `POST /issues/{id}/claim` | `{agent}` — todo+unassigned only, 409 otherwise. Non-todo rejections are annotated with the shared policy code when one applies (e.g. `cannot claim: state is in_progress [policy: lease_held]`) — probe and `/pull` enforce eligibility; direct `/claim` only annotates and does not block budget-exhausted cards |
 | `POST /issues/{id}/archive` | – | 서버 트랜잭션 검증형 자동 아카이브(M3ZRGTSF-N95X) — TT_ARCHIVE_AFTER_DAYS(0=409), done, 나이(completed_at+N일), **모든 조상 done**(사이클·유실 409 보존). BEGIN IMMEDIATE 원자 검증. 이미 archived면 멱등 200 |

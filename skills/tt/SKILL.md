@@ -48,7 +48,7 @@ Only when an agent discovers, selects, and reads this `SKILL.md` do the client p
 Agents running **staged delegation** (ci-fix, review-fix, or any push-and-continue flow) must **exit
 immediately after their own step**. Do not wait for, poll, or watch CI results, review verdicts, or merges:
 
-- The probe owns all subsequent transitions — re-review dispatch on new head, merge on green,
+- The probe owns subsequent TT transitions — re-review dispatch on a new submission,
   completion reminders, and reassignment timers.
 - Waiting invites the failure modes the board already detects: silent panes get STALL-killed by the
   runner (600s silence → notify → kill) and long watches hit the runner session TIMEOUT.
@@ -57,35 +57,38 @@ immediately after their own step**. Do not wait for, poll, or watch CI results, 
 - If you genuinely cannot proceed without a human decision, use `tt block ID human` (waiting_for=human)
   instead of idling in a live session.
 
-## Lifecycle — report at PR, stay in review
+## Lifecycle — TT is authoritative; PRs are optional
 
-For contracted cards the **probe owns the PR lifecycle**. Executor steps:
+The TT card owns acceptance, evidence and review decisions. GitHub/Gitea PRs and local
+commits/documents are artifact references, not prerequisites for a TT lifecycle.
 
-1. `tt claim` (in_progress) → implement → push the PR branch.
-2. **Submit the completion report as soon as the PR is up** — `tt submit ID --report report.json`
-   (alias of `tt done --report`) moves the card to review. Do not keep the card in in_progress "until merge": in_progress+PR is
-   a safety-net state (JXYS ⓪c — CI-failure relay, submit reminders, adoption), where the probe
-   can neither dispatch reviews nor merge.
-3. **Stay in review through fix rounds.** After a request-changes, fix and push the same branch —
-   no state transition. The probe auto-dispatches the first review on green, review-fix to the
-   executor, re-review on each new head, and merges on approve+green.
-4. After merge the **probe auto-verifies** with the stored report (`POST /issues/ID/verify`,
-   verifier=probe) and moves the card to done — a manual executor verify afterwards would 409
-   (review-only guard). Manual `tt verify` is only a fallback for cards still in review after a
-   merge that were handed over separately.
+1. `tt claim` → implement → verify against the card's criteria. Follow the project's branch,
+   integration and deployment rules; TT itself grants none of those permissions.
+2. `tt submit ID --report report.json` stores the report and enters review. Include immutable
+   commit/artifact references and accessible evidence; no PR is required.
+3. Read `review_subject` from `tt show ID --json`. The reviewer posts to the **TT card**:
+   line 1 `review: approve` or `review: request-changes`, line 2 the exact `review_subject`.
+   PR comments are optional mirrors. Inspect actual artifacts, not just the pass claim.
+4. Fixes stay in review and **resubmit the report**. Every submission changes the subject,
+   even with the same attempt/report; old approvals are not reused. Artifact changes require
+   resubmission. A new work round still uses review → todo → claim.
+5. With a current independent approval and valid passed report, probe calls verify and closes
+   the TT card. This does not assert a PR was merged or deployment occurred. If integration
+   is an acceptance criterion, the report and reviewer must verify it before approval.
+   Manual `tt verify` remains an explicit handover fallback; implementer self-verify is blocked.
 
-Do not hand-roll `[auto review]`/`[re-review]` dispatches or merges for a review-state card — that
-is the probe's job. Manual push+dispatch chains are where wrong-SHA pushes and duplicate dispatches
+Do not hand-roll `[auto review]`/`[re-review]` dispatches for a review-state card — probe owns review
+assignment. Manual push+dispatch chains are where wrong-SHA pushes and duplicate dispatches
 come from (2026-10-12 PR#100 incident: a fix push that resolved HEAD on the deploy host force-pushed
 main onto the PR branch, emptying the diff and auto-closing the PR; GitHub refuses reopen when the
 closed head is an ancestor of base — re-register the branch as a new PR instead).
 
-## Card-creation PR-linking contract
+## Optional PR linking
 
-Code-work cards follow a **1 card = 1 PR** principle. Put a `repo: owner/name` marker on the card body's first line
-(only auto/todo/blocked/review cards contribute to the probe pool) and put `(TT <cardID>)` in the PR **title**.
-PR URLs or tt# IDs in the body/comments alone are not matched by probe. Bundling multiple repos into one card
-yields a false "no PR" verdict (measured 2026-10-06). Contract details are in
+One card represents one verifiable unit, not necessarily one PR. If using the legacy GitHub
+adapter, a `repo: owner/name` marker and `(TT <cardID>)` in the PR title improve discovery.
+Provider failures or absent PRs do not turn a valid TT submission into "PR missing" work.
+The legacy adapter's limitations are documented in
 [references/probe-pr-linking.md](references/probe-pr-linking.md).
 
 ## Completion reporting
@@ -99,7 +102,7 @@ yields a false "no PR" verdict (measured 2026-10-06). Contract details are in
   Both record the actual `command`, `result`, `evidence`, and the verification limits `limitations`.
 - To submit the completion report use `tt submit ID --report report.json --json`
   (alias `tt done`); manual `tt verify ID --report report.json --json` is only the
-  review-state fallback (probe auto-verifies after merge). Resolve unfinished children first.
+  review-state fallback (probe auto-verifies after current TT approval). Resolve unfinished children first.
 - Read the response's `state`, `verification_status`, and the stored `completion_report` to confirm whether it actually closed.
   Do not declare done from a successful request alone. Failed and inconclusive reports stay in review.
 - On 409 (contract/round conflict), re-read the latest issue and verify after the change. Do not just stamp a new

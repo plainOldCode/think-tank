@@ -146,7 +146,7 @@ def build_dispatch_body(p, issue, did, board, task_hint=None):
         "",
         "## 실행 경계",
         boundary,
-        "- 코드 변경 산출물은 브랜치 push까지가 아니라 **push + PR 생성(`gh pr create --base main --head <브랜치>`, 본문에 tt#ID/카드 id 출처 사슬 고정)까지가 완료**다(TT 규약 확장 2026-09-30 — t_9d8875d4 PR 누락 교훈). merge/push-to-main은 여전히 사용자 결정.",
+        "- TT 카드의 완료 기준·제출 보고·리뷰 판정이 정본이다. GitHub/Gitea PR은 선택적 보조 수단이며 local 작업도 TT 제출로 리뷰한다. 산출물 위치와 검증 증거를 보고에 포함하고, 수정 후에는 재제출해 새 review_subject로 리뷰받는다. merge/push-to-main·배포는 사용자 결정.",
         "",
         "## TT 이슈 원문 (출처: think-tank %s, state=%s, labels=%s)" % (tid, state, labels),
         tt_body or "(TT 본문 없음)",

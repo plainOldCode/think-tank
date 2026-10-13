@@ -9,6 +9,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import time
 import urllib.error
 import urllib.parse
@@ -831,11 +832,21 @@ def decide(snap):
     by_id = {i["id"]: i for i in issues}
     reviewer = os.environ.get("TT_REVIEW_AGENT", "").strip()
     rmap = effective_review_map()  # 카운터파트 라우팅(M4JTJ970-WS3C) — env override 포함
-    gated = set()  # 리뷰 진행 중 카드 — ⓪b needs-merge 소음 제외
+    from . import tt_lifecycle
+    tt_cards = {i["id"] for i in issues if tt_lifecycle.eligible(i)}
+    for i in issues:
+        if i["id"] in tt_cards:
+            tt_actions = tt_lifecycle.plan(sys.modules[__name__], i, agents,
+                                           busy_agents | claimed, now)
+            actions.extend(tt_actions)
+            claimed.update(a["agent"] for a in tt_actions if a["agent"] != "probe")
+    gated = set(tt_cards)  # TT-submitted cards do not require PR discovery or merge
     for p in snap.get("prs") or []:
         iid = pr_card_id(p)
         i = by_id.get(iid) if iid else None
         if not iid or i is None or i["state"] in ("done", "cancelled"):
+            continue
+        if iid in tt_cards:
             continue
         # 저위험 클래스(M4DEK6WC-MQYS): docs/i18n 라벨 PR — 계약·회차 없어도 제출
         # (review) 상태면 독립 리뷰+CI green 후 무인 병합 대상. server/runner 경로는
@@ -1044,6 +1055,16 @@ def decide(snap):
             continue
         att = i.get("execution_attempt") or 0
         prs_for = [p for p in snap.get("prs") or [] if pr_card_id(p) == i["id"]]
+        context = (snap.get("pr_context") or {}).get(i["id"], [])
+        if not prs_for and context:
+            states = {p.get("state") for p in context}
+            if states <= {"MERGED", "CLOSED"}:
+                label = "병합 확인" if states == {"MERGED"} else "PR 닫힘(병합 여부 혼합 포함)"
+                key = f"[tt-artifact-status a{att} {'-'.join(sorted(states))}]"
+                if not _probe_marker(i, key):
+                    actions.append({"agent": "probe", "issue": i["id"], "action": "review-note",
+                                    "marker": key, "reason": f"{label} — 유효 TT 보고 재제출 필요"})
+                continue
         # 코멘트 PR URL 역기입(HG5S) — needs-merge 마커와 독립 판정(codex P1: 마커가
         # 채택·재시도를 차단해서는 안 된다). 본문 변경 없이 collect_repos가 풀에 편입.
         if not prs_for and not card_repo(i):
@@ -1160,7 +1181,7 @@ def decide(snap):
             sa = _stale_act(i, att, snap.get("now") or "")
             if sa:
                 actions.append(sa)
-            reason = "PR 없음"
+            reason = "PR 미확인(미생성·provider 미지원·조회 실패 가능) — 유효 TT 보고 제출 필요"
         # C2(gate-failure-rules.md §5.2) — 라벨·repo 마커로 분류 불가(둘 다 없음/
         # 충돌)일 때만 판단기 rank 제안(shadow — 동작 불변, 로그만). 규칙 우선.
         _c2_labeled = bool({x.strip().lower() for x in (i.get("labels") or [])
@@ -1185,6 +1206,8 @@ def decide(snap):
         iid = pr_card_id(p)
         i = by_id.get(iid) if iid else None
         if not iid or i is None or i["state"] in ("done", "cancelled"):
+            continue
+        if iid in tt_cards:
             continue
         pr_no, sha8 = p["number"], (p.get("head_sha") or "")[:8]
         pr_repo = p.get("repo") or REPO_CARDS.get("think-tank", "")
@@ -1446,39 +1469,9 @@ def gh_exec(*args):
 
 
 def collect_prs(repos=None):
-    """open PR + checks — repo 단위·PR 단위 실패는 그 PR만 체크 없음으로 취급.
-    repo 목록: TT_REPO_SLUG(쉼표) 기본 + auto/todo/blocked 카드의 card_repo 표기(동적).
-
-    실측(t_501e6ec3, 2026-09-29): gh pr list --head 는 exact prefix 필터 —
-    'tt/' 같은 접두어는 []를 돌려 후보 0건(probe 실명)이 된다. 전체 open 목록을
-    받고 브랜치 역참조는 decide에서. checks 없는 PR(실 PR#3 'no checks
-    reported' 예외)은 [] 격리 후 ci_passed(빈 checks)=False 가 자연 차단.
-    """
-    out = []
-    pool = list(repos) if repos else _repos_default()
-    for repo in dict.fromkeys(pool):
-        try:
-            prs = gh_json("pr", "list", "--repo", repo, "--state", "open",
-                          "--json", "number,headRefName,headRefOid,title,isDraft,labels") or []
-        except Exception:
-            continue
-        for p in prs:
-            try:
-                checks = gh_json("pr", "checks", p["number"], "--repo", repo, "--json", "name,state")
-                if checks is None:
-                    checks = []  # 정상 응답에 check-run 부재 = 확인된 0건
-                else:
-                    checks = list(checks)
-            except Exception:
-                # 조회 실패(API 오류·rate limit·네트워크) — 빈 목록과 구분(리뷰 R1).
-                # None은 '관측 불가': decide는 0건 확인으로 취급하지 않는다(병합 우회 방지).
-                checks = None
-            out.append({"number": p["number"], "repo": repo, "branch": p.get("headRefName", ""),
-                        "title": p.get("title", ""), "head_sha": p.get("headRefOid", ""),
-                        "isDraft": bool(p.get("isDraft")),
-                        "labels": [l.get("name", "") for l in (p.get("labels") or [])],
-                        "checks": checks})
-    return out
+    """Optional provider observations; TT_PR_PROVIDER=none disables GitHub I/O."""
+    from .providers import collect
+    return collect(list(repos) if repos else _repos_default(), gh_json)
 
 
 def _probe_flag(url, act, msg):
@@ -1510,7 +1503,7 @@ def _review_dispatch_msg(act, agent):
             f"git diff origin/main...FETCH_HEAD(로컬 ref를 만들지 않으니 재리뷰에도 안전). "
             "리뷰 방식: 변경 파일 통독 + 변경 심볼 grep으로 호출자 확인(공용 모듈은 필수). "
             "판정 기준: 계약 v2.1 준수·시크릿 노출·테스트 적절성·놓친 엣지. "
-            "결과 제출: GitHub PR 코멘트와 TT 카드 코멘트 양쪽(docs/review-gate.md 형식) — "
+            "결과 제출: TT 카드 코멘트가 정본, PR 코멘트는 선택적 미러(docs/review-gate.md 형식) — "
             f"첫 줄 'review: approve' 또는 'review: request-changes', 둘째 줄 'PR#{act['pr']}@{sha8}'. "
             f"TT 코멘트 author는 '{agent}'로 게시.")
 
@@ -1557,6 +1550,15 @@ def _parse_iso(s):
 
 def execute(url, act):
     kind = act["action"]
+    if kind in {"tt-review", "tt-review-fix", "tt-verify", "tt-review-stalled"}:
+        from . import tt_lifecycle
+        try:
+            tt_lifecycle.execute(sys.modules[__name__], url, act)
+        except Exception as e:
+            # Failed claims, stale reports and transport failures must not kill
+            # the whole cycle or write a success/dedup marker.
+            print(time.strftime("%F %T"), f"[tt-review] {act['issue']}: {e}", flush=True)
+        return
     if kind == "release-reviewer":
         cur = api(url, f"/issues/{act['issue']}")
         if cur.get("reviewer") == act.get("reviewer"):
@@ -2217,8 +2219,9 @@ def execute(url, act):
                f"3단계 완료 보고(계약 v2)를 준수할 것. tt pull(풀) 금지. "
                f"자기 단계(구현·push·보고)가 끝나면 즉시 종료 — CI·리뷰 결과를 기다리거나 "
                f"폴링하지 말 것(후속 전이는 probe 소유, 필요 시 보드가 재호출). "
-               f"코드 작업은 브랜치 tt/{act['issue']}-<slug>에서 커밋 후 GitHub PR로만 main에 올려라"
-               f"(메인 직push 금지 — 예외는 message 명시 시만). tt issue {act['issue']} 로 상세 확인 후 시작.")
+               f"코드 작업은 브랜치 tt/{act['issue']}-<slug> 등 해당 저장소 규약을 따르고 "
+               f"산출물·검증 증거를 TT에 제출하라. PR은 선택적 보조 수단(GitHub/Gitea/local 지원). "
+               f"병합·배포 권한은 사용자 지시를 따른다. tt show {act['issue']} 로 상세 확인 후 시작.")
         api(url, f"/issues/{act['issue']}/dispatch", "POST",
             {"agent": act["agent"], "message": msg})
         api(url, f"/issues/{act['issue']}/comments", "POST",
@@ -2280,6 +2283,8 @@ def run_once(url, dry=False):
     snap["prs"] = collect_prs(repos)
     # 게이트 unset 여부와 무관 — in_progress 자동화(JXYS)도 코멘트 dedup이 필요.
     hydrate_reviews(url, snap)
+    from .providers import observe_linked
+    snap["pr_context"] = observe_linked(snap.get("issues") or [], snap["prs"], gh_json)
     snap["cycle_id"] = uuid.uuid4().hex  # §8.1 판단 로그 사이클 식별자(리뷰 R4)
     acts = decide(snap)
     for a in acts:

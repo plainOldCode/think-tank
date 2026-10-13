@@ -13,7 +13,6 @@
 pytest 없는 환경 대응: stdlib unittest + gh/exec 주입(실 dispatchd 임포트).
 실행: python3 -m unittest tests.test_execute_merge_head_guard
 """
-import importlib.util
 import json
 import sys
 import unittest
@@ -22,11 +21,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "server"))
 
-_spec = importlib.util.spec_from_file_location(
-    "dispatchd", ROOT / "server" / "probe" / "core.py")  # M14N 후속(ZK3G): 로직은 probe.core — 네임스페이스 패치가 실제 함수에 닿는다
-assert _spec is not None and _spec.loader is not None
-dispatchd = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(dispatchd)
+import probe.core as dispatchd  # package imports and injection use the production namespace
 
 
 class FakeGh:

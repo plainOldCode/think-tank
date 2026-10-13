@@ -23,3 +23,10 @@ def test_제출_동사는_submit이_정본이다():
     for f in ("server/static/api.md", "skills/tt/SKILL.md"):
         s = (ROOT / f).read_text()
         assert "tt submit" in s, f"{f}: tt submit 문서화 없음"
+
+
+def test_tt_submission_identity_is_delivered_in_every_contract():
+    for text in _blocks("server/static/api.md").values():
+        assert "review_subject" in text
+        assert "PRs are optional" in text
+        assert "after merge" not in text

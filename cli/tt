@@ -5,7 +5,7 @@ URL="${TT_URL:-http://127.0.0.1:7800}"  # serve-time 주입 계약 — 설치본
 AGENT="${TT_AGENT:-$USER@$(hostname -s)}"
 JQ="jq -r"
 # TT 개선#3f: CLI 버전 — 서버 openapi 해시와 함께 `tt version`으로 표기(드리프트 감지)
-TT_CLI_VERSION="2.4.0"
+TT_CLI_VERSION="2.5.0"
 jfilter() { if [[ "${JSON:-0}" == 1 ]]; then jq .; else jq -r "$@"; fi; }
 
 usage() {
@@ -28,7 +28,7 @@ tt — think-tank issue tracker ($URL)
   tt ... --json                 # (어디든) 서버 원 JSON 그대로 — 스크립트/파이프라인용
   tt note ID "로그"          # 진행 로그 코멘트
   tt contract                # 현재 공통 방법론 조회
-  tt submit ID ["로그"] [--report FILE]  # 완료 제출 → review (done의 별칭 — 병합 후 probe 자동 verify)
+  tt submit ID ["로그"] [--report FILE]  # 완료 제출 → review (TT 독립 승인 후 probe verify, PR 선택)
   tt done ID ["로그"] [--report FILE]  # (submit의 구별칭 — 기존 스크립트 호환)
   tt verify ID ["테스트 결과"] [--report FILE] [--human]  # review → done. --human=사람 자기선언 승인. 자기 카드(assignee)는 verify 불가(409)
   tt state ID STATE          # 상태 이동 (상태 가드 있음)
@@ -246,8 +246,9 @@ case "$cmd" in
       jq . <<<"$out"
     elif [[ "$(jq -r '.state' <<<"$out")" == review ]]; then
       echo "◆ $id → review (성공 결과 보고 필요)"
-      echo "  확정: 병합 후 probe가 자동 verify → done (수동 폴백: tt verify $id --report report.json)"
-      echo "  재작업: tt edit $id --state todo 후 tt claim $id"
+      echo "  확정: 현재 TT 제출물 독립 승인 후 probe verify → done (PR은 선택적 보조)"
+      echo "  판정 대상: $(jq -r '.review_subject // "legacy — 서버 규약 확인"' <<<"$out")"
+      echo "  동일 회차 수정: tt submit $id --report report.json 재제출 / 새 회차: todo → claim"
     else
       jq -r '"✓ \(.id) \(.title) 완료 \(.completed_at) [\(.verification_status // "legacy")]"' <<<"$out"
     fi ;;
@@ -414,5 +415,3 @@ case "$cmd" in
 
   help|*) usage ;;
 esac
-
-
