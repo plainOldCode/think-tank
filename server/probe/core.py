@@ -611,6 +611,40 @@ def _fix_stall_fields(body):
     return out or None
 
 
+_REWORK_SRC_RE = re.compile(r"^\[([a-z-]+)\s*(a\d+)?\s+#(\d+)/([0-9a-f]{8})\]$")
+
+
+def _probe_marker_to_src(marker):
+    """probe 마커 원문 → src_* 정규형(docs/embedding-daemon-design.md §3-2).
+    매칭 실패 시 None. round-trip: _rework_src_marker(_probe_marker_to_src(m)) == m."""
+    m = _REWORK_SRC_RE.match((marker or "").strip())
+    if not m:
+        return None
+    return {"src_kind": m.group(1), "src_att": m.group(2) or "-",
+            "src_pr": m.group(3), "src_head": m.group(4)}
+
+
+def _rework_src_marker(fs):
+    """src_* 정규형 → probe 마커 원문 복원(설계 §3-2). src_att='-'면 att 토큰 없음."""
+    att = fs.get("src_att") or "-"
+    if att == "-":
+        return f"[{fs.get('src_kind', '')} #{fs.get('src_pr', '')}/{fs.get('src_head', '')}]"
+    return f"[{fs.get('src_kind', '')} {att} #{fs.get('src_pr', '')}/{fs.get('src_head', '')}]"
+
+
+def _rework_stuck_fields(body):
+    """데몬 [rework-stuck] 첫 행의 key=value 필드 — 4J4S 소비 입력."""
+    m = re.match(r"^\[rework-stuck\]\s+(.*)$", (body or "").split("\n", 1)[0])
+    if not m:
+        return None
+    out = {}
+    for tok in m.group(1).split():
+        if "=" in tok:
+            k, v = tok.split("=", 1)
+            out[k] = v
+    return out or None
+
+
 def _relay_timer_s(assignee, agents):
     """무반응 양도 타이머(초) — receive_mode: hook 1h / relay(기본) 6h.
 
@@ -1319,6 +1353,48 @@ def decide(snap):
                 break
             if any(a["issue"] == iid and a["action"] == "review-fix-relay" for a in actions):
                 continue  # 이번 회차 재발령 중 — 양도 판정은 다음 사이클
+        # 1b) [rework-stuck] 소비(4J4S) — review-fix dispatch 실패(404·non-executor·
+        #     failed)의 재라우팅 1회. 소비자 재확인 의무(설계 §2): src_pr/src_head/
+        #     attempt가 현재값과 다르면 과거 사건 — 무시(현재 회차로 재태깅 금지).
+        #     소비 전 src_* 역파싱 원문이 카드 코멘트에 존재해야 한다(설계 §3-2).
+        #     relay 예산은 fix-stall과 공유 — rmarker(pr,sha,att당 1회)가 dedup.
+        if i["state"] == "review" and not i.get("busy_agents") and \
+                not _lease_held(i, now) and not _probe_marker(i, rmarker):
+            rws = [c for c in comments if c.get("author") == "tt-embedding-daemon"
+                   and (c.get("body") or "").startswith("[rework-stuck]")]
+            for c in reversed(rws):
+                fs = _rework_stuck_fields(c.get("body") or "")
+                if not fs or fs.get("kind") not in ("404", "non-executor", "failed"):
+                    continue
+                if fs.get("src_pr") != str(pr_no) or fs.get("src_head") != sha8:
+                    continue  # 과거 head의 실패 — 현재 head는 재판정됐으므로 무시
+                if str(fs.get("attempt") or "") != str(att):
+                    continue  # 과거 회차의 실패 — 현재 회차로 재태깅 금지(리뷰 R1)
+                orig = _rework_src_marker(fs)
+                if not any(orig in (x.get("body") or "") for x in comments
+                           if x.get("author") == "probe"):
+                    continue  # 마커가 가리키는 위임 원문 부재 — 소비 불가(설계 §3-2)
+                _sdt = _comment_ts(c)
+                _sdtv = _iso(_sdt)
+                _sid = c.get("id") or 0
+                if _sdtv and any(
+                        (x.get("author") or "") not in _RELAY_OBSERVERS
+                        and not str(x.get("author") or "").startswith("runner")
+                        and _comment_after(x, _sdtv, _sid) for x in comments):
+                    break  # 마커 뒤 워커 응답·진행 — 이미 해소된 정체(리뷰 R2)
+                _revs = ({reviewer, i.get("reviewer")}
+                         | _requested_reviewers(i, pr_no, sha8)) - {None, ""}
+                if review_verdict(comments, _revs, pr_no, sha8) == "approve":
+                    break  # 실패 뒤 승인 — 재작업 대상 아님
+                actions.append({"agent": "probe", "issue": iid, "action": "review-fix-relay",
+                                "pr": pr_no, "repo": pr_repo,
+                                "branch": p.get("branch", ""),
+                                "head_sha": p.get("head_sha", ""), "att": att,
+                                "stall_ts": _sdt, "stall_id": _sid,
+                                "rs_kind": fs.get("kind"), "rs_target": fs.get("target"),
+                                "reason": f"PR#{pr_no} review-fix dispatch 실패"
+                                          f"({fs.get('kind')}) — 재라우팅"})
+                break
         # 2) 무반응 양도 — 현재 (pr,head,attempt)의 relay 마커만 소비한다(리뷰 R1).
         #    과거 회차·head의 relay는 새 워커를 해치므로 회귀 입력에서 제외.
         relays = [c for c in comments if c.get("author") == "probe"
