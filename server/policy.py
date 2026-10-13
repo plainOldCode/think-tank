@@ -34,6 +34,49 @@ def _labels(i):
     return [str(x).strip().lower() for x in (v or [])]
 
 
+# 라벨 의미 클래스 표(FHH8): 어휘 → 클래스 → 판정 지점. 표에 없는 라벨은 무시한다
+# (자유 문자열 라벨과 충돌하지 않게 접두어/정확 일치 규칙만 사용 — 기존 동작 불변).
+# 어휘는 사람이 결정했다(카드 M4S94ARA-FHH8 코멘트 2026-10-13):
+# 고위험 = 'risk:*' 접두어(기존 security 12건 소급 없음), 기존 4개 어휘는 선언만.
+LABEL_SEMANTICS = {
+    "low_risk": {
+        "exact": ("docs", "documentation", "i18n", "문서", "번역"),
+        "used_at": "decide() ⓪ 병합 게이트 — 계약 없는 무인 병합 허용(M4DEK6WC-MQYS)",
+    },
+    "high_risk": {
+        "prefix": ("risk:",),
+        "used_at": "decide() ⓪ 병합 게이트 + tt_lifecycle tt-deliver — "
+                   "v2.1 보고 강제 + probe 자동병합 휴면, 사람 병합 승인 대기(FHH8)",
+    },
+    # 선언 전용 — 기존 코드가 하드코딩으로 판정하는 어휘(연결 변경 없음, 문서화만).
+    "auto": {"exact": ("auto",), "used_at": "policy.eligible() not_auto 게이트"},
+    "self": {"exact": ("self",), "used_at": "자기발의 구분"},
+    "close": {"exact": ("close",), "used_at": "done 승인 예외(routers/issues.py)"},
+    "needs-human": {"exact": ("needs-human",), "used_at": "자동화 정지(probe/eligible)"},
+}
+
+# 기존 공개 상수 — 표의 low_risk 항목과 단일 출처(기존 임포트 호환 유지).
+LOW_RISK_LABELS = LABEL_SEMANTICS["low_risk"]["exact"]
+
+
+def labels_in_class(labels, cls):
+    """라벨 컬렉션에서 클래스 규칙에 걸린 어휘 목록. 미선언 라벨은 무시."""
+    rule = LABEL_SEMANTICS.get(cls) or {}
+    exact = rule.get("exact") or ()
+    prefix = rule.get("prefix") or ()
+    out = []
+    for x in labels or []:
+        s = str(x).strip().lower()
+        if s in exact or any(s.startswith(p) for p in prefix):
+            out.append(s)
+    return out
+
+
+def is_high_risk(i):
+    """카드 라벨 기준 고위험 판정 — 'risk:*' 접두어(FHH8). 라벨 문자열 대소문자 무시."""
+    return bool(labels_in_class(_labels(i), "high_risk"))
+
+
 def is_low_risk(i):
     """카드 라벨 기준 저위험 판정 — 라벨 문자열 대소문자 무시."""
     return any(x in LOW_RISK_LABELS for x in _labels(i))

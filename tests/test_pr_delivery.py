@@ -66,6 +66,32 @@ def test_explicit_local_work_still_finishes_without_pr(client):
     assert [a["action"] for a in actions(issue, None)] == ["tt-verify"]
 
 
+def test_고위험_tt카드는_probe_병합_휴면_사람승인_대기(client, monkeypatch):
+    # FHH8 — tt-deliver 경로도 ⓪과 동일하게 휴면: OPEN PR 병합 금지 + 노트 1회.
+    # 사람이 GitHub에서 직접 병합한 뒤(MERGED 관측) 완결되는 경로는 유지된다.
+    import probe.providers as providers
+    issue = approve(client, resubmit(client, submitted(client), SPEC))
+    assert client.patch(f"/issues/{issue['id']}",
+                        json={"labels": ["risk:security"]}).status_code == 200
+    issue = client.get(f"/issues/{issue['id']}").json()
+    monkeypatch.setattr(providers, "inspect_delivery", lambda t, g: observation("OPEN"))
+    merged = []
+    monkeypatch.setattr(providers, "merge_delivery", lambda t, g: merged.append(1))
+
+    def api(url, path, method="GET", body=None):
+        r = client.request(method, path, json=body)
+        assert r.status_code < 400, r.text
+        return r.json()
+
+    monkeypatch.setattr(core, "api", api)
+    core.execute("http://tt", {"issue": issue["id"], "subject": issue["review_subject"],
+                               "action": "tt-deliver", "agent": "probe"})
+    assert not merged
+    got = client.get(f"/issues/{issue['id']}").json()
+    assert got["state"] == "review"
+    assert any("tt-high-risk-hold" in (c.get("body") or "") for c in got["comments"])
+
+
 def test_explicit_report_work_finishes_without_pr(client):
     issue = approve(client, resubmit(client, submitted(client), {"mode": "report"}))
     assert issue["completion_report"]["delivery"]["mode"] == "report"

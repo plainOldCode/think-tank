@@ -862,6 +862,12 @@ def decide(snap):
                 card_labels = []
         low_risk = bool({x.strip().lower() for x in (card_labels or [])}
                         & set(policy.LOW_RISK_LABELS)) or bool(pr_labels & set(policy.LOW_RISK_LABELS))
+        # 고위험 클래스(FHH8): 'risk:*' 라벨 카드/PR — probe 자동병합 휴면, 사람 승인 대기.
+        # 저위험과 동시에 걸리면 고위험이 이긴다(문서 라벨로 보안 변경 납치 방지).
+        high_risk = bool(policy.labels_in_class(card_labels or [], "high_risk")) or \
+            bool(policy.labels_in_class(pr_labels, "high_risk"))
+        if high_risk:
+            low_risk = False
         if (not i.get("work_contract") or (i.get("execution_attempt") or 0) < 1) and not low_risk:
             continue
         if low_risk and not i.get("work_contract") and i["state"] != "review":
@@ -1036,7 +1042,14 @@ def decide(snap):
                                                 **({"reviewer": routed} if routed else {})})
                     continue
                 # approve — 아래 merge로 통과
+                if high_risk:
+                    _high_risk_hold(actions, i, p)
+                    continue  # gated 유지 — ⓪b 접촉 없음(FHH8)
                 gated.discard(iid)
+            if high_risk:
+                _high_risk_hold(actions, i, p)
+                gated.add(iid)  # ⓪b가 needs-merge로 재알림하지 않게(FHH8)
+                continue
             merge_reason = (f"리뷰 판정 대체(checks 0건) + 카드 계약/수령 검증 — gh pr merge ({pr_repo})"
                             if no_checks else
                             f"CI green + 카드 계약/수령 검증 — gh pr merge ({pr_repo})")
@@ -1491,6 +1504,20 @@ def _probe_flag(url, act, msg):
                 {"author": "probe", "body": f"PR#{act['pr']}: 장애 2회 지속 — review로 반납(사람 판단)"})
     except Exception:
         pass
+
+
+def _high_risk_hold(actions, i, p):
+    """고위험(risk:*) 라벨 카드의 병합 보류 노트(FHH8) — 사람 병합 승인 대기.
+    마커 dedup: 동일 attempt+pr+sha8 재노트 금지. 병합 외 자동화(ci-fix 등)는 유지."""
+    att = i.get("execution_attempt") or 0
+    marker = f"[high-risk-hold a{att} #{p['number']}/{(p.get('head_sha') or '')[:8]}]"
+    if any(marker in (c.get("body") or "") for c in (i.get("comments") or [])
+           if c.get("author") == "probe"):
+        return
+    actions.append({"agent": "probe", "issue": i["id"], "action": "review-note",
+                    "marker": marker,
+                    "reason": f"PR#{p['number']} 고위험(risk:*) 라벨 — probe 자동병합 휴면, "
+                              "사람 병합 승인 대기(v2.1 보고는 유지)"})
 
 
 def _review_dispatch_msg(act, agent):
