@@ -1,0 +1,321 @@
+"""EG9D 데몬 단위 테스트 — 검증기준 3(state PATCH 경로 없음) 포함."""
+import json
+import math
+import os
+import re
+from datetime import datetime, timedelta, timezone as tz
+import sys
+import tempfile
+import urllib.request
+
+# 단일 원천: 리포 daemon/daemon.py(이관 후). 과거 mini 로컬 경로는 폴백.
+_DAEMON_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                           "daemon")
+if not os.path.exists(os.path.join(_DAEMON_DIR, "daemon.py")):
+    _DAEMON_DIR = os.path.expanduser("~/tt-embedding-daemon")
+sys.path.insert(0, _DAEMON_DIR)
+import daemon  # noqa: E402
+
+
+def _norm(v):
+    n = math.sqrt(sum(x * x for x in v)) or 1.0
+    return [x / n for x in v]
+
+
+class Fake:
+    """fetcher/poster 이중 — PATCH 호출을 감시한다."""
+
+    def __init__(self, issues):
+        self.issues = {i["id"]: dict(i) for i in issues}
+        self.notes = []
+        self.patches = []
+
+    def fetch(self, path):
+        if path == "/issues?limit=500":
+            return [dict(v, comments=v.get("comments")) for v in self.issues.values()]
+        iid = path.split("/")[2]
+        return self.issues.get(iid)
+
+    def post(self, card, body):
+        self.notes.append((card, body))
+        self.issues[card].setdefault("comments", []).append(
+            {"author": "tt-embedding-daemon", "id": 1000 + len(self.notes),
+             "body": body, "ts": "2026-10-11T21:00:00+0900"})
+
+
+def _i(iid, state="todo", labels=(), **kw):
+    base = {"id": iid, "state": state, "labels": list(labels), "version": 1,
+            "title": kw.pop("title", iid), "body": kw.pop("body", ""), "comments": []}
+    base.update(kw)
+    return base
+
+
+def test_데몬은_state_PATCH를_호출하지_않는다(tmp_path):
+    # 검증기준 3 — 소스 정적 검사: PATCH/PUT 경로가 없어야 한다
+    src = open(daemon.__file__).read()
+    assert '"PATCH"' not in src and "'PATCH'" not in src
+    assert "def patch" not in src.lower().replace("_", "_")  # PATCH 헬퍼 없음
+
+
+# ---------- K91X: 승인 노트 임베딩 입력 + 사람 승인 참표 ----------
+
+def test_임베딩_입력에_승인_노트가_포함된다(tmp_path, monkeypatch):
+    # 수용 1 — verified_evidence(사람 승인 노트)가 임베딩 텍스트에 들어간다
+    seen = []
+
+    def fake_embed(texts, dim=daemon.DIM):
+        seen.extend(texts)
+        return [_norm([1.0] + [0.0] * 9) for _ in texts]
+
+    monkeypatch.setattr(daemon, "embed", fake_embed)
+    idx = daemon.Index(os.path.join(tmp_path, "idx.db"))
+    approved = _i("M4APPR-0001", state="done", body="본문" * 300)
+    approved["verification_status"] = "approved"
+    approved["verified_evidence"] = "사람 승인: 하위 이슈 done으로 done 처리"
+    f = Fake([approved, _i("M4TODO-0001", body="신규 작업")])
+    daemon.cycle(idx, set(), fetcher=f.fetch, poster=f.post)
+    assert any("승인 노트: 사람 승인: 하위 이슈" in t for t in seen)
+    # 본문 400자 컷은 유지 — 승인 노트 없는 카드 텍스트는 제목+본문만
+    assert any(t.startswith("M4TODO-0001") and "승인 노트" not in t for t in seen)
+
+
+def test_라벨없는_사람승인_카드도_참표로_편입된다(tmp_path, monkeypatch):
+    # 수용 2 — done+무라벨+사람 승인 → 인덱스 편입. 단, 데몬 labels 테이블에
+    # 라벨을 만들지 않는다(카드 라벨 자동 부착 금지 — 오염 방지).
+    monkeypatch.setattr(daemon, "embed",
+                        lambda texts, dim=daemon.DIM: [_norm([1.0] * 10) for _ in texts])
+    idx = daemon.Index(os.path.join(tmp_path, "idx.db"))
+    approved = _i("M4APPR-0002", state="done")
+    approved["verification_status"] = "approved"
+    approved["verified_evidence"] = "사람 승인: 조직완성"
+    f = Fake([approved])
+    daemon.cycle(idx, set(), fetcher=f.fetch, poster=f.post)
+    assert any(c == "M4APPR-0002" for c, _ in idx.all())
+    assert idx.labeled() == []  # 라벨 부여 없음 — 미래 채택 시 투표권 행사
+
+
+def test_사람승인_카드는_분류_제안_대상이_아니다(tmp_path, monkeypatch):
+    # K91X 금지 조항 — 경계 밖 카드에 [auto-classified]를 붙이지 않는다
+    monkeypatch.setattr(daemon, "embed",
+                        lambda texts, dim=daemon.DIM: [_norm([1.0] * 10) for _ in texts])
+    idx = daemon.Index(os.path.join(tmp_path, "idx.db"))
+    ref = _i("M4REF-0001", state="in_progress", labels=["docs"])
+    approved = _i("M4APPR-0003", state="todo")  # 승인됐는데 재오픈된 형태
+    approved["verification_status"] = "approved"
+    approved["verified_evidence"] = "사람 승인: 경계 밖"
+    f = Fake([ref, approved])
+    daemon.cycle(idx, set(), fetcher=f.fetch, poster=f.post)
+    assert not any("[auto-classified]" in b for _, b in f.notes)
+
+
+def test_데몬은_verify를_호출하지_않는다(tmp_path):
+    # 수용 3 — 승인 확률이 probe 자동 verify로 이어지는 경로 부재(정적 검사)
+    src = open(daemon.__file__).read()
+    assert "/verify" not in src
+    assert "completion_report" not in src
+
+
+def test_분류기는_라벨없는_카드만_제안하고_간격_미달은_보류한다(tmp_path):
+    idx = daemon.Index(os.path.join(tmp_path, "idx.db"))
+    v_code = _norm([1.0] + [0.0] * 9)
+    v_docs = _norm([0.0, 1.0] + [0.0] * 8)
+    idx.upsert("M4CODE-0001", 1, v_code)
+    idx.upsert("M4DOCS-0001", 1, v_docs)
+    idx.set_labels("M4CODE-0001", ["think-tank"])
+    idx.set_labels("M4DOCS-0001", ["docs"])
+    f = Fake([])
+    vec = _norm([0.99, 0.01] + [0.0] * 8)
+    label, gap, refs = daemon.classify(idx, "M4NEW-0001", vec)
+    assert label == "think-tank" and refs == ["M4CODE-0001", "M4DOCS-0001"] and gap > 0
+    vec_mid = _norm([0.5, 0.5] + [0.0] * 8)
+    assert daemon.classify(idx, "M4NEW-0002", vec_mid) == (None, None, [])  # 간격 미달 — 조용한 추측 금지
+
+
+def test_중복_감지는_0_93_이상에서_발화한다(tmp_path, monkeypatch):
+    idx = daemon.Index(os.path.join(tmp_path, "idx.db"))
+    v = _norm([1.0] * 4 + [0.0] * 6)
+    idx.upsert("M4OLD-0001", 1, v)
+    f = Fake([_i("M4NEW-0001", body="x")])
+    monkeypatch.setattr(daemon, "embed",
+                        lambda texts, dim=daemon.DIM: [_norm([1.0] * 4 + [0.0] * 6)])
+    daemon.cycle(idx, set(), fetcher=f.fetch, poster=f.post)
+    assert any("possible-duplicate" in b and "M4OLD-0001" in b for _, b in f.notes)
+    assert f.patches == []
+
+
+def test_임베딩_실패시_감시기능은_계속_동작한다(tmp_path):
+    # 검증기준 5 — embed()가 None을 돌려도 2~5 감시는 도는 것을 카드 상태로 확인
+    idx = daemon.Index(os.path.join(tmp_path, "idx.db"))
+    soon = "2020-01-01T00:00:00+09:00"  # 과거 — 만료 임박
+    f = Fake([_i("M4WORK-0001", state="in_progress", lease_by="codex",
+                 lease_expires=soon)])
+    daemon.cycle(idx, set(), fetcher=f.fetch, poster=f.post)
+    assert any("submit-remind" in b for _, b in f.notes)
+    assert f.patches == []
+
+
+def test_v1_마커는_억제하지_않고_v2로_1회_전환한다(tmp_path):
+    """설계 §2 — v1 코멘트(필드 없음)는 이벤트 키 매치가 안 되므로 v2 전환 1회 허용."""
+    idx = daemon.Index(os.path.join(tmp_path, "idx.db"))
+    soon = "2020-01-01T00:00:00+09:00"
+    i = _i("M4WORK-0002", state="in_progress", lease_by="codex",
+           lease_expires=soon)
+    i["comments"] = [{"author": "tt-embedding-daemon", "id": 1,
+                      "body": "[submit-remind] codex — lease 만료 임박", "ts": ""}]
+    f = Fake([i])
+    daemon.cycle(idx, set(), fetcher=f.fetch, poster=f.post)
+    # v1 존재 → v2 구조화 전환 1회
+    assert len([b for _, b in f.notes if "submit-remind" in b]) == 1
+    # 같은 이벤트 키로 재실행 → 재게시 없음
+    daemon.cycle(idx, set(), fetcher=f.fetch, poster=f.post)
+    assert len([b for _, b in f.notes if "submit-remind" in b]) == 1
+
+
+def test_rework_플래그는_probe_실패_노트에서_발화한다(tmp_path):
+    idx = daemon.Index(os.path.join(tmp_path, "idx.db"))
+    i = _i("M4FIX-0001", state="review")
+    i["comments"] = [{"author": "probe", "id": 2,
+                      "body": "[review-fix #9/aaaaaaaa] 수정 dispatch 대상이 실행 불가"
+                              " 에이전터(kanban-adapter) — 사람/감독관 판단 대기",
+                      "ts": ""}]
+    f = Fake([i])
+    daemon.cycle(idx, set(), fetcher=f.fetch, poster=f.post)
+    assert any("rework-stuck" in b for _, b in f.notes)
+
+
+def test_판정_워처는_신규판정을_1회만_다이제스트한다(tmp_path):
+    idx = daemon.Index(os.path.join(tmp_path, "idx.db"))
+    i = _i("M4REV-0001", state="review", reviewer="claude")
+    i["comments"] = [{"author": "claude", "id": 3,
+                      "body": "review: approve\nPR#9@aaaaaaaa ok", "ts": ""}]
+    f = Fake([i])
+    seen = set()
+    daemon.cycle(idx, seen, fetcher=f.fetch, poster=f.post)
+    n1 = len([b for _, b in f.notes if "verdict-seen" in b])
+    before = len(f.notes)
+    daemon.cycle(idx, seen, fetcher=f.fetch, poster=f.post)
+    n2 = len([b for _, b in f.notes if "verdict-seen" in b])
+    assert n1 == 1 and n2 == 1 and len(f.notes) == before
+
+
+def test_v2_마커는_정규화된_필드를_갖는다(tmp_path):
+    """M4NHG5DF-5YM3 — 6종 마커 계약: 첫 행이 [kind] key=value ... 형식."""
+    import re
+    idx = daemon.Index(os.path.join(tmp_path, "idx.db"))
+    soon = (datetime.now(tz(timedelta(hours=9))) + timedelta(minutes=30)).isoformat()
+    f = Fake([_i("M4NEW-0001", "in_progress", lease_by="codex", lease_expires=soon)])
+    daemon.cycle(idx, set(), fetcher=f.fetch, poster=f.post)
+    # 제출 독려 — agent + lease_expires 필드
+    assert any(re.search(r"^\[submit-remind\] agent=codex lease_expires=\S+", b)
+               for _, b in f.notes)
+
+    # 판정 워처 — key=card:comment 필드
+    idx2 = daemon.Index(os.path.join(tmp_path, "idx2.db"))
+    f2 = Fake([_i("M4NEW-0002", "review", reviewer="claude",
+                  comments=[{"author": "probe", "id": 7,
+                             "body": "review: request-changes PR#5@abc — 사유", "ts": "2026-10-01T00:00:00+0900"}])])
+    daemon.cycle(idx2, set(), fetcher=f2.fetch, poster=f2.post)
+    assert any(re.search(r"^\[verdict-seen\] key=M4NEW-0002:7$", b) for _, b in f2.notes)
+
+    # 재작업 플래그 — src/target/kind 필드
+    idx3 = daemon.Index(os.path.join(tmp_path, "idx3.db"))
+    f3 = Fake([_i("M4NEW-0003", "review",
+                  comments=[{"author": "probe", "id": 8,
+                             "body": "수정 dispatch 404 — 사람 개입 필요 [review-fix #5/abc12345]",
+                             "ts": "2026-10-11T00:00:00+0900"}])])
+    daemon.cycle(idx3, set(), fetcher=f3.fetch, poster=f3.post)
+    m = [b for _, b in f3.notes if b.startswith("[rework-stuck]")]
+    assert m and re.search(
+        r"^\[rework-stuck\] src_kind=review-fix src_att=- src_pr=5 src_head=abc12345 "
+        r"attempt=1 target=\S+ kind=404 — ", m[-1])
+
+
+def test_v2_스키마는_v1_마커와_dedup_호환이다(tmp_path, monkeypatch):
+    """v1 잔재(prefix 동일)는 억제하지 않고 v2로 1회 전환한다(설계 §2).
+    전환 후 동일 이벤트 키(label) 재발화는 없다 — 기존 dedup 계약(K91X 수용 4)."""
+    monkeypatch.setattr(daemon, "embed",
+                        lambda texts, dim=daemon.DIM: [_norm([0.9, 0.1] + [0.0] * 8)
+                                                       for _ in texts])
+    idx = daemon.Index(os.path.join(tmp_path, "idx.db"))
+    idx.upsert("M4CODE-0001", 1, _norm([1.0] + [0.0] * 9))
+    idx.set_labels("M4CODE-0001", ["think-tank"])
+    v1 = "[auto-classified] 라벨 제안: think-tank — 유사 카드 top-3 투표. 채택·기각은 사람/트리아지."
+    f = Fake([_i("M4NEW-0001", "todo", comments=[
+        {"author": "tt-embedding-daemon", "id": 5, "body": v1,
+         "ts": "2026-10-11T00:00:00+0900"}])])
+    daemon.cycle(idx, set(), fetcher=f.fetch, poster=f.post)
+    ac = [b for _, b in f.notes if b.startswith("[auto-classified]")]
+    assert len(ac) == 1 and "label=think-tank" in ac[0]  # v1 → v2 구조화 전환 1회
+    daemon.cycle(idx, set(), fetcher=f.fetch, poster=f.post)
+    assert len([b for _, b in f.notes if b.startswith("[auto-classified]")]) == 1  # 재발화 0
+
+
+def test_parse_ts는_콜론없는_타임존도_파싱한다():
+    """mini Python 3.9 회귀 — +0900 파싱 실패로 since_hours 폭증했던 버그."""
+    assert daemon.parse_ts("2026-10-11T22:31:51+0900") == \
+        daemon.parse_ts("2026-10-11T22:31:51+09:00")
+    assert daemon.parse_ts("") is None  # 파싱 실패는 0이 아니라 None — 오탐 방지
+
+
+def _fix_카드(tmp_path, comments, state="review", **kw):
+    """[fix-stall] 테스트용 — review 상태 카드 + probe fix 위임 마커."""
+    idx = daemon.Index(os.path.join(str(tmp_path), "idx.db"))
+    i = _i("M4FIX-0001", state, comments=comments, **kw)
+    f = Fake([i])
+    return idx, f
+
+
+_OLD = "2026-10-11T10:00:00+0900"  # cycle 기준 과거
+
+
+def test_fix_stall은_위임후_무진행에서_발화한다(tmp_path):
+    """M4NNZX0M-8A28 — review-fix 위임 후 45분+ 무진행 → [fix-stall] no-progress."""
+    idx, f = _fix_카드(tmp_path, [
+        {"author": "probe", "id": 1, "ts": _OLD,
+         "body": "[review-fix #93/3a18c0b5] PR#93 request-changes — review 반납+수정 위임"},
+    ])
+    daemon.cycle(idx, set(), fetcher=f.fetch, poster=f.post)
+    m = [b for _, b in f.notes if b.startswith("[fix-stall]")]
+    assert len(m) == 1
+    assert re.search(r"src_kind=review-fix src_att=- src_pr=93 src_head=3a18c0b5 "
+                     r"attempt=1 minutes=\d+ kind=no-progress — ", m[0])
+
+
+def test_fix_stall은_dispatch가_이어지면_침묵한다(tmp_path):
+    idx, f = _fix_카드(tmp_path, [
+        {"author": "probe", "id": 1, "ts": _OLD,
+         "body": "[review-fix #93/3a18c0b5] PR#93 — 수정 위임"},
+        {"author": "runner@m2max", "id": 2, "ts": "2026-10-11T10:05:00+0900",
+         "body": "runner:m2max dispatch#360 → tmux tt-opencode-360 (queued)"},
+    ])
+    daemon.cycle(idx, set(), fetcher=f.fetch, poster=f.post)
+    assert not [b for _, b in f.notes if b.startswith("[fix-stall]")]
+
+
+def test_fix_stall은_즉시실패에서_바로_발화한다(tmp_path):
+    """수정 dispatch 실패(에이전트 미등록) — 대기 없이 kind=dispatch-failed."""
+    now_ts = datetime.now(tz(timedelta(hours=9))).isoformat()
+    idx, f = _fix_카드(tmp_path, [
+        {"author": "probe", "id": 1, "ts": now_ts,
+         "body": "[review-fix #114/b99b25f7] 수정 dispatch 실패(에이전트 미등록) — 재시도 필요"},
+    ])
+    daemon.cycle(idx, set(), fetcher=f.fetch, poster=f.post)
+    m = [b for _, b in f.notes if b.startswith("[fix-stall]")]
+    assert len(m) == 1 and "kind=dispatch-failed" in m[0] and "src_pr=114" in m[0]
+
+
+def test_fix_stall은_이벤트키당_1회다(tmp_path):
+    """같은 src_pr/src_head/attempt 재관측 → 재게시 없음. attempt 변경 → 새 이벤트."""
+    from datetime import datetime, timedelta, timezone as tz
+    now_ts = datetime.now(tz(timedelta(hours=9))).isoformat()
+    idx, f = _fix_카드(tmp_path, [
+        {"author": "probe", "id": 1, "ts": now_ts,
+         "body": "[review-fix #93/3a18c0b5] 수정 dispatch 실패(에이전트 미등록) — 재시도 필요"},
+    ])
+    daemon.cycle(idx, set(), fetcher=f.fetch, poster=f.post)
+    daemon.cycle(idx, set(), fetcher=f.fetch, poster=f.post)
+    assert len([b for _, b in f.notes if b.startswith("[fix-stall]")]) == 1
+    # 회차 변경 → 새 이벤트
+    f.issues["M4FIX-0001"]["execution_attempt"] = 2
+    daemon.cycle(idx, set(), fetcher=f.fetch, poster=f.post)
+    assert len([b for _, b in f.notes if b.startswith("[fix-stall]")]) == 2
