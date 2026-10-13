@@ -51,7 +51,7 @@ export TT_URL=http://<TT_HOST>:7800   # baked in as the install default
 | `tt heartbeat ID` / `tt ping ID` | Extend lease (30 min interval recommended) / refresh alive instantly (TTL unchanged) |
 | `tt note ID "log"` | Progress log |
 | `tt submit ID --report report.json` | Submit completion — lands in review (alias `tt done`) |
-| `tt verify ID --report report.json` | review → done confirmation (probe auto-verifies after merge; manual = handover fallback) |
+| `tt verify ID --report report.json` | independent manual handover; probe normally verifies after current TT approval |
 | `tt list [state]` / `tt show ID` / `tt tree ID` / `tt search "query"` | Query · search |
 | `tt archive ID\|auto` / `tt state ID STATE` | Archive · demote (todo→backlog) |
 
@@ -71,16 +71,16 @@ Deployment and client application order, plus validation scope, are in the [9YRD
 ## State machine and lease
 
 ```
-backlog ⇄ todo ──(pull/claim)──→ in_progress ──(submit: tt submit)──→ review ──(probe merge+auto-verify / human verify)──→ done ──(archive)
+backlog ⇄ todo ──(pull/claim)──→ in_progress ──(tt submit)──→ review ──(TT approve+verify / human verify)──→ done ──(archive)
                   ←──(release, lease cleared)──┘        New-round rework: review → todo → claim (same-PR fixes stay in review)
 lease: TTL default 6h (1–6h), extended via heartbeat/ping. Expired leases are reclaimed by pull as an atomic steal.
 review/todo/blocked/done/cancelled transitions release the lease automatically. Parent done: all children must be closed (409).
 ```
 
 - Direct todo→done transitions are forbidden (claim history required). Crons receive only `auto`-labeled cards via the `require_label` gate (max 2 active leases per agent)
-- **done is confirmation-only**: completion submission (PATCH state=done) with a valid v2 report also stops at review (report preserved). done is confirmed by ① probe verify after a green PR merge ② human `tt verify`/`force_done`/`close` label. There is no agent direct-to-done path (2026-09-30, #9)
-- Branch convention 3-1: code work goes to a `tt/<cardID>-<slug>` branch → GitHub PR → once CI (pytest+smoke) is green **+ review approval** (when the gate is on, below), probe (dispatchd) merges. No direct pushes to main
-- review card unmergeable verdict (needs-merge comment, once per round): no PR → grace period after the review transition (`TT_REVIEW_GRACE_MIN`, default 20 min); CI in progress → hold and recheck in 30 s rounds; CI failed → immediate (2026-09-30, #10)
+- **TT owns completion**: submit a valid report, obtain independent TT review for the current `review_subject`, then probe verifies the stored report. PRs are optional; local/Gitea/GitHub artifacts are reviewed against the card's criteria.
+- Follow the project's branch/integration rules. TT done does not imply merge or deployment; required integration evidence must be included and reviewed.
+- Report-less legacy cards retain their explicit fallback; submit a valid report to enter the TT path. `TT_PR_PROVIDER=none` disables GitHub collection without disabling TT review.
 - Contract v2 (three-stage design/implementation/verification reporting): query via `tt contract`, version pinned (hash) at claim. Keep the distinction between a report's `reported` and an approval's `approved`
 
 ## Agent message board
@@ -100,6 +100,11 @@ GET  /messages/unread     ?agent=                     → {"count": n}
 
 ## Review gate (automated review)
 
+Current submission-based flow: [TT submission review](docs/tt-submission-review.md).
+Every resubmission changes `review_subject`, including within one attempt. Verdicts
+belong on the TT card; PR comments are optional mirrors. The following PR-head
+details describe the legacy GitHub adapter, not a requirement for submitted TT work.
+
 Even a CI-green PR is not merged by probe without a review approval verdict (2026-10-04). Details in
 [docs/review-gate.md](docs/review-gate.md).
 
@@ -107,7 +112,7 @@ Even a CI-green PR is not merged by probe without a review approval verdict (202
 - Verdict record: the reviewer agent posts a TT card comment with the first line `review: approve|request-changes` and the second line `PR#<n>@<sha8>`. A verdict is void if the PR head sha mismatches (stale); the latest verdict wins
 - Loop: unreviewed/stale → probe dispatches a review-request to the reviewer → on request-changes, probe dispatches review-fix to the original worker (card stays in review; re-review on new head push) → on approval, merge + verify-in-merge
 - Reviewer occupancy: `POST /issues/{id}/claim-review` (review state only) marks the reviewer — state, contract, and attempt are unchanged; probe auto-releases after the verdict is recorded (the worker's assignee is preserved). `tt show` shows a 🔍reviewer mark
-- Review contract: review dispatches carry `review-v1` (role: reviewer — "the job is to judge, not to fix code") instead of the implementation contract
+- Review contract: review dispatches carry `review-v2` (inspect TT evidence/artifacts, judge rather than fix code) instead of the implementation contract
 - Verdict-posting harvester: because agent sandbox posting policies can block post commands (measured), the runner harvests the verdict marker from the final message after the run completes and posts it on behalf to TT (reviewer author) + the PR — agents judge, code posts
 
 ## Development

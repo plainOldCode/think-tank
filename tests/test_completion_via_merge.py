@@ -218,13 +218,13 @@ def test_PR_그냥_ID는_무관카드_pr_card_id_무시():
               title="무관 작업")
     acts = dispatchd.decide(_snap([i], prs))
     notes = [a for a in acts if a["action"] == "review-note"]
-    assert len(notes) == 1 and "PR 없음" in notes[0]["reason"]
+    assert len(notes) == 1 and "PR 미확인" in notes[0]["reason"]
 
 
 def test_review카드_PR없으면_needs_merge_판정():
     acts = dispatchd.decide(_snap([_issue("review")]))
     notes = [a for a in acts if a["action"] == "review-note"]
-    assert len(notes) == 1 and "PR 없음" in notes[0]["reason"]
+    assert len(notes) == 1 and "PR 미확인" in notes[0]["reason"]
     assert notes[0]["issue"] == "M3R7M0ZR-YF99"
 
 
@@ -353,8 +353,9 @@ def test_nondraft_PR은_기존경로_merge():
     assert [a for a in acts if a["action"] == "merge"]
 
 
-def test_isDraft_필드_수집됨():
-    # collect_prs가 isDraft를 수집 — gh JSON 키와 동일 이름 유지
-    import inspect
-    src = inspect.getsource(dispatchd.collect_prs)
-    assert "isDraft" in src
+def test_isDraft_필드_수집됨(monkeypatch):
+    # Adapter extraction must preserve actual draft observations, not source text.
+    monkeypatch.setenv("TT_PR_PROVIDER", "github")
+    monkeypatch.setattr(probe.core, "gh_json", lambda *args:
+                        [{"number": 1, "isDraft": True}] if args[1] == "list" else [])
+    assert dispatchd.collect_prs(["example/project"])[0]["isDraft"] is True

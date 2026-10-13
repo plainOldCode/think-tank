@@ -4,6 +4,11 @@ v0.1 · 2026-10-04 · Parent: M425EVXW-N0AN · Implementation: probe (M428RMBY-X
 
 ## Purpose
 
+Q614 supersedes the PR-required lifecycle for cards with a valid submitted report:
+see [TT submission review](tt-submission-review.md). TT verdicts quote the card's
+`review_subject`; PR comments are optional mirrors. The PR-head format below
+remains the legacy GitHub adapter's format for cards outside that path.
+
 Add a **reviewer-approval condition** to the path that used to merge on CI green alone. The gate is enforced via TT comments (POC — no GitHub branch protection).
 
 ## Roles
@@ -16,7 +21,7 @@ Add a **reviewer-approval condition** to the path that used to merge on CI green
 
 ## Review comment format (contract)
 
-The reviewer leaves **the same content in two places**: a GitHub PR comment + a TT card comment.
+The reviewer posts the authoritative verdict to the **TT card**. A PR comment is an optional mirror.
 
 TT comment (author = the review agent's name):
 
@@ -149,7 +154,7 @@ probe auto-review + probe auto-review-fix on one PR simultaneously). The guard i
 리뷰 방식: working copy에서 git diff 기준 변경 파일 통독 + 변경 심볼 grep으로
 호출자 확인. 공용 모듈(service/probe/routers) 변경 시 호출자 추적 필수.
 판정 기준: 계약 v2.1 준수, 시크릿 노출, 테스트 적절성, 놓친 엣지.
-결과 제출: GitHub PR 코멘트 + TT 카드 코멘트(포맷: docs/review-gate.md).
+결과 제출: TT 카드 코멘트가 정본, PR 코멘트는 선택적 미러(포맷: docs/review-gate.md).
 첫 줄 'review: approve' 또는 'review: request-changes', 둘째 줄 'PR#<n>@<sha8>'.
 ```
 

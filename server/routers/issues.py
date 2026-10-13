@@ -295,6 +295,14 @@ def claim_review(issue_id: str, p: ReviewClaimIn, ctx: Ctx = Depends(get_ctx)):
                          (p.agent, dbmod.now(), issue_id)).fetchone()["n"]
         if held >= config.max_leases():
             raise HTTPException(409, f"lease limit: active leases={held} (max={config.max_leases()})")
+        token = dbmod.to_dict(row).get("review_subject")
+        if token:
+            # Persist reviewer authorization for this submission after lease release.
+            body = f"[tt-review {token}] reviewer={p.agent}"
+            c.execute("INSERT INTO comments (issue_id, author, body, ts) VALUES (?,?,?,?)",
+                      (issue_id, "tt-server", body, dbmod.now()))
+            service.log_event(c, "comment.added", "issue", issue_id,
+                              {"author": "tt-server", "preview": body[:120]})
         service.bump(c, issue_id, {"reviewer": p.agent, "lease_by": p.agent,
                                    "lease_expires": dbmod.future(p.safe_hours()),
                                    "heartbeat_at": dbmod.now()}, row["version"])
@@ -438,10 +446,12 @@ def patch_issue(issue_id: str, p: IssuePatch, ctx: Ctx = Depends(get_ctx)):
                               verification_status="unverified", completed_at=None)
                 if proof:
                     fields["completion_report"] = proof.model_dump_json()
+                    fields["submission_revision"] = row["submission_revision"] + 1
+                    fields["reviewer"] = None
                     if proof.result == "passed":
                         fields.update(service.reported_fields(proof.evidence))
-                    # 제출의 종착지는 review (M3R7M0ZR-YF99): done은 probe 병합 확인(verify)
-                    # 또는 사람 verify/force_done/close만 가능 — agent 직행 경로 없음.
+                    # 제출의 종착지는 review. 현재 TT 판정에 연결된 probe verify
+                    # 또는 명시적 인수계/승인 경로가 종결을 담당한다.
                     fields["state"] = "review"
                 elif "close" in labels_now or p.force_done:
                     fields.update({"verified": 1, "verified_at": dbmod.now(),
@@ -534,9 +544,11 @@ def patch_issue(issue_id: str, p: IssuePatch, ctx: Ctx = Depends(get_ctx)):
             accepted = (fields.get("completion_report")
                         and fields.get("verification_status") == "reported")
             if accepted:
-                # 유효보고 접수 = 정상 정지. 병합 확인(probe) 또는 사람 verify가 done 확정.
-                body = ("보고 접수 — review에 정지(병합 대기). PR 병합 확인 후 probe verify 또는 "
-                        f"tt verify {issue_id} --report/증거로 done 확정. 재작업은 review → todo → claim.")
+                # 유효보고 접수 = 정상 정지. 현재 제출물의 독립 리뷰를 기다린다.
+                body = ("보고 접수 — review에 정지(TT 독립 리뷰 대기). 현재 review_subject에 대한 "
+                         "승인 후 probe verify → done. PR은 선택적 보조 자료. "
+                         f"수동 인수계: tt verify {issue_id} --report/증거. "
+                         "동일 회차 수정은 보고 재제출, 새 회차는 review → todo → claim.")
                 c.execute("INSERT INTO comments (issue_id, author, body, ts) VALUES (?,?,?,?)",
                           (issue_id, "tt-server", body, dbmod.now()))
                 service.log_event(c, "comment.added", "issue", issue_id,
@@ -579,6 +591,16 @@ def verify_issue(issue_id: str, p: VerifyIn, ctx: Ctx = Depends(get_ctx)):
     with ctx.con() as c:
         c.execute("BEGIN IMMEDIATE")
         row = service.get_issue(c, issue_id)
+        if p.review_subject is not None:
+            from review_subject import subject, verdict
+            current = dbmod.to_dict(row)
+            current["comments"] = dbmod.comments_of(c, issue_id)
+            if p.review_subject != subject(current):
+                raise HTTPException(409, "stale review subject: re-read the current submission")
+            if verdict(current) != "approve":
+                raise HTTPException(409, "current TT submission requires independent review: approve")
+            if not p.completion_report or json.loads(p.completion_report.model_dump_json()) != current["completion_report"]:
+                raise HTTPException(409, "verification report differs from reviewed submission")
         if p.human and row["state"] not in ("in_progress", "review"):
             raise HTTPException(409, f"state is {row['state']} — human verify는 in_progress/review에서만")
         if not p.human and row["state"] != "review":

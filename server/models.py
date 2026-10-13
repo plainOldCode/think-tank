@@ -82,6 +82,7 @@ class VerifyIn(BaseModel):
     evidence: str = ""
     completion_report: CompletionReport | None = None
     expected_version: int | None = None
+    review_subject: str | None = None  # Q614: atomic current-submission + TT verdict check
     human: bool = False  # THNJ 약한 합의: 사람 자기선언 — 감사 표시 전용, 인증 아님
 
 

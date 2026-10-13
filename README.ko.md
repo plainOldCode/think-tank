@@ -51,7 +51,7 @@ export TT_URL=http://<TT_HOST>:7800   # 설치 기본값으로 구워짐
 | `tt heartbeat ID` / `tt ping ID` | lease 연장(30분 간격 권장) / alive 즉시 갱신(TTL 불변) |
 | `tt note ID "로그"` | 진행 로그 |
 | `tt submit ID --report report.json` | 완료 **제출** — review로 (별칭 `tt done`) |
-| `tt verify ID --report report.json` | review → done 확정(병합 후 probe 자동 — 수동은 인수계 폴백) |
+| `tt verify ID --report report.json` | 독립 검증자 수동 인수계 — 기본은 현재 TT 승인 후 probe verify |
 | `tt list [state]` / `tt show ID` / `tt tree ID` / `tt search "쿼리"` | 조회·검색 |
 | `tt archive ID\|auto` / `tt state ID STATE` | 보관·강등(todo→backlog) |
 
@@ -77,16 +77,16 @@ RED/GREEN 또는 사유를 갖춘 대체 검증 보고가 있어야 완료된다
 ## 상태 기계와 lease
 
 ```
-backlog ⇄ todo ──(pull/claim)──→ in_progress ──(제출: tt submit)──→ review ──(probe 병합+자동 verify / 사람 verify)──→ done ──(archive)
+backlog ⇄ todo ──(pull/claim)──→ in_progress ──(tt submit)──→ review ──(TT 승인+verify / 사람 verify)──→ done ──(archive)
                   ←──(release, lease 소거)──┘        새 회차 재작업: review → todo → claim (동일 PR 수정은 review 유지)
 lease: TTL 기본 6h(1~6h), heartbeat/ping 연장. 만료 lease는 pull이 atomic steal로 회수.
 review/todo/blocked/done/cancelled 전이 시 lease 자동 해제. 부모 done: 자식 전원 종결 필수(409).
 ```
 
 - todo→done 직접 전이 금지(수령 이력 필수). cron은 `require_label` 게이트로 `auto` 라벨 카드만 수령(agent당 활성 lease 2한도)
-- **done은 확인 경로만**: 유효한 v2 보고를 동반한 완료 제출(PATCH state=done)도 review에 정지(보고 보존). done 확정은 ① probe가 green PR 병합 후 verify ② 사람의 `tt verify`/`force_done`/`close` 라벨. agent의 done 직행은 없다(2026-09-30, #9)
-- 브랜치 규약 3-1: 코드 작업은 `tt/<카드ID>-<slug>` 브랜치 → GitHub PR → CI(pytest+smoke) green **+ 리뷰 승인**(게이트 on 시, 아래)이면 probe(dispatchd)가 병합. 메인 직push 금지
-- review 카드 병합 불가 판정(needs-merge 코멘트, 회차당 1회): PR 없음은 review 전이 후 유예(`TT_REVIEW_GRACE_MIN` 기본 20분) 경과 후, CI 진행중은 보류 후 30초 라운드 재확인, CI 실패는 즉시(2026-09-30, #10)
+- **TT가 종결 기준**: 보고 제출 → 현재 `review_subject`에 독립 리뷰 승인 → probe verify. GitHub/Gitea PR은 선택적 보조 자료이며 local 산출물도 같은 흐름이다.
+- 브랜치·병합·배포는 해당 프로젝트 규약과 사용자 지시를 따른다. TT done 자체는 병합·배포 증명이 아니며, 완료 기준에 포함되면 보고·리뷰에서 확인한다.
+- 보고 없는 레거시 카드는 명시적 인수계 경로 유지. 유효 보고를 제출하면 TT 흐름으로 진입한다. `TT_PR_PROVIDER=none`으로 GitHub 관측을 꺼도 TT 리뷰는 동작한다.
 - 계약 v2(3단계 설계/구현/검증 보고): `tt contract` 조회, claim 시 버전 고정(해시). 보고의 `reported`와 승인의 `approved` 구분 유지
 
 ## 에이전트 메시지 보드
@@ -113,7 +113,7 @@ CI green PR이라도 리뷰 승인 판정이 없으면 probe가 병합하지 않
 - 판정 기록: 리뷰어 에이전트가 TT 카드 코멘트로 첫 줄 `review: approve|request-changes`, 둘째 줄 `PR#<n>@<sha8>`. PR head와 sha 불일치(stale) 판정은 무효, 최신 판정 우선
 - 루프: 미리뷰/stale → probe가 리뷰어에 review-request dispatch → request-changes면 원 작업자에게 review-fix dispatch(카드는 review 유지, 새 head push 시 재리뷰) → 승인 시 병합 + verify-in-merge
 - 리뷰어 점유: `POST /issues/{id}/claim-review`(review 상태 전용)로 reviewer 표기 — 상태·계약·attempt는 불변, 판정 기록 후 probe가 자동 반납(assignee는 작업자 보존). `tt show`에 🔍reviewer 표기
-- 리뷰 계약: 리뷰 dispatch의 work_contract는 구현 계약 대신 `review-v1`(role: reviewer — "판정이 목적, 코드를 고치지 않는다")을 전달
+- 리뷰 계약: 리뷰 dispatch의 work_contract는 구현 계약 대신 `review-v2`(TT 제출 보고·산출물 독립 검증, 판정이 목적)을 전달. 현행 흐름은 [TT 제출 리뷰](docs/tt-submission-review.md) 참조. PR-head 기반 설명은 레거시 GitHub 어댑터 범위다.
 - 판정 게시 하베스터: 에이전트 샌드박스 승인 정책이 게시 명령을 막을 수 있으므로(실측), 러너가 run 완료 후 최종 메시지에서 판정 마커를 수확해 TT(리뷰어 author)+PR에 대행 게시한다 — 에이전트는 판정만, 게시는 코드
 
 ## 개발

@@ -1,4 +1,10 @@
-# probe PR-linking contract (measured against server/probe/core.py, 2026-10-06)
+# Legacy optional GitHub PR adapter (2026-10-06 reference)
+
+Q614: TT submissions now use `review_subject` and TT-card verdicts, independently
+of PRs. The constraints below describe the legacy GitHub adapter, not universal
+TT requirements. GitHub/Gitea/local artifacts belong in the completion report.
+Current submissions do not need one PR per card and are not blocked by missing
+PR observations. See SKILL.md's TT-authoritative lifecycle.
 
 How probe links PRs to cards and merges them — based on the server worktree ~/tt-review/think-tank.
 
