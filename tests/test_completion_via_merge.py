@@ -75,11 +75,12 @@ def test_근거없는_done은_강등코멘트(client):
     assert any("done 증거 없음" in c["body"] for c in got["comments"])
 
 
-def test_close라벨은_done유지(client):
+def test_close라벨은_done을_승인하지_않는다(client):
     i = client.post("/issues", json={"acceptance": "완료 기준: 테스트 통과", "title": "close 예외", "labels": ["close"]}).json()
     client.post(f"/issues/{i['id']}/claim", json={"agent": "w@t"})
-    r = client.patch(f"/issues/{i['id']}", json={"state": "done"}).json()
-    assert r["state"] == "done" and r["verified"] == 1
+    r = client.patch(f"/issues/{i['id']}", json={"state": "done"})
+    assert r.status_code == 422
+    assert client.get(f"/issues/{i['id']}").json()["state"] == "in_progress"
 
 
 class Recorder:

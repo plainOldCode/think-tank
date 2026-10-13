@@ -13,6 +13,12 @@ def client(tmp_path):
         yield c
 
 
+def human_done(client, iid, note="테스트 승인"):
+    r = client.post(f"/issues/{iid}/verify", json={"verifier": "tester", "human": True, "evidence": note})
+    assert r.status_code == 200, r.text
+    return r
+
+
 def mk(client, **kw):
     # TT 개선#3a 게이트 통과 기본값 — acceptance 필요 테스트는 kw로 덮어씀
     kw.setdefault("acceptance", "완료 기준: 전체 회귀 통과")

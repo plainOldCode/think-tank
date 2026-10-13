@@ -206,7 +206,11 @@ def test_stale_report_is_rejected_after_a_new_claim(client):
 
 def test_approval_exception_is_distinct_from_test_report(client):
     issue = start(client)
-    data = client.patch(f"/issues/{issue['id']}", json={"state": "done", "force_done": True}).json()
+    rejected = client.patch(f"/issues/{issue['id']}", json={"state": "done", "force_done": True})
+    assert rejected.status_code == 422
+    data = client.post(f"/issues/{issue['id']}/verify", json={
+        "verifier": "person", "human": True, "evidence": "사람 승인",
+    }).json()
     assert data["state"] == "done" and data["verification_status"] == "approved"
 
 
@@ -289,11 +293,15 @@ def test_required_report_policy_closes_legacy_completion_paths(tmp_path, monkeyp
     assert result.status_code == 200 and result.json()["verification_status"] == "reported"
 
 
-def test_required_report_policy_has_explicit_approval_exception(tmp_path, monkeypatch):
+def test_required_report_policy_keeps_human_approval_only(tmp_path, monkeypatch):
     monkeypatch.setenv("TT_REQUIRE_REPORT", "1")
     strict = TestClient(create_app(str(tmp_path / "strict.db")))
     issue = start(strict)
-    data = strict.patch(f"/issues/{issue['id']}", json={"state": "done", "force_done": True}).json()
+    rejected = strict.patch(f"/issues/{issue['id']}", json={"state": "done", "force_done": True})
+    assert rejected.status_code == 422
+    data = strict.post(f"/issues/{issue['id']}/verify", json={
+        "verifier": "person", "human": True, "evidence": "사람 승인",
+    }).json()
     assert data["state"] == "done" and data["verification_status"] == "approved"
 
 

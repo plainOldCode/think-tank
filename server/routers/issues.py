@@ -417,6 +417,8 @@ def patch_issue(issue_id: str, p: IssuePatch, ctx: Ctx = Depends(get_ctx)):
             if p.state != "done" or row["state"] not in {"in_progress", "review"}:
                 raise HTTPException(422, "completion_report requires a transition to done")
             service.check_report(effective, p.completion_report)
+        if p.force_done:
+            raise HTTPException(422, "force_done은 폐기됨. 승인은 tt verify --human \"한 줄 사유\"")
         if p.state and p.state != row["state"]:
             if p.state not in dbmod.STATES:
                 raise HTTPException(422, f"bad state {p.state}")
@@ -439,7 +441,7 @@ def patch_issue(issue_id: str, p: IssuePatch, ctx: Ctx = Depends(get_ctx)):
                     (issue_id,)).fetchone()["n"]
                 if n_open:
                     raise HTTPException(409, f"child 미완료 {n_open}건 — 자식을 done/cancelled로 먼저 종결하세요")
-                labels_now = [s for s in (row["labels"] or "").split(",") if s]
+                labels_now = p.labels if p.labels is not None else [s for s in (row["labels"] or "").split(",") if s]
                 proof = p.completion_report
                 ev = service.find_evidence(c, issue_id, effective) if not proof and not service.requires_report(effective) else ""
                 fields.update(verified=0, verified_at=None, verified_evidence="",
@@ -454,10 +456,8 @@ def patch_issue(issue_id: str, p: IssuePatch, ctx: Ctx = Depends(get_ctx)):
                     # 제출의 종착지는 review. 현재 TT 판정에 연결된 probe verify
                     # 또는 명시적 인수계/승인 경로가 종결을 담당한다.
                     fields["state"] = "review"
-                elif "close" in labels_now or p.force_done:
-                    fields.update({"verified": 1, "verified_at": dbmod.now(),
-                                   "verification_status": "approved",
-                                   "verified_evidence": "close 라벨/force_done 승인 경로"})
+                elif "close" in labels_now and not ev:
+                    raise HTTPException(422, "close 라벨 종결은 폐기됨. 승인은 tt verify --human \"한 줄 사유\"")
                 elif ev:
                     fields.update(service.reported_fields(ev))
                 elif gate == "gate" or service.requires_report(effective):
@@ -621,7 +621,7 @@ def verify_issue(issue_id: str, p: VerifyIn, ctx: Ctx = Depends(get_ctx)):
         if p.human:
             # 약한 합의(THNJ): 사람 자기선언 완료 — 토큰·보고 불요, 한 줄 노트 필수.
             # in_progress/review 모두 허용(사람은 에이전트 제출 전에도 즉시 승인 가능).
-            # approved = 사람 승인(close/force_done과 동일 등급), agent verify(reported)와 구분.
+            # approved = 사람 승인. force_done/close 우회는 폐기(422).
             ev = p.evidence.strip()
             if not ev:
                 raise HTTPException(422, "human verify requires a one-line attestation note")
@@ -641,6 +641,8 @@ def verify_issue(issue_id: str, p: VerifyIn, ctx: Ctx = Depends(get_ctx)):
             service.log_event(c, "issue.updated", "issue", issue_id,
                               {"state": "done", "via": "human-verify", "verifier": p.verifier})
             service.finish_issue_dispatches(c, issue_id)
+            service.reconcile_release(c, issue_id, "사람 승인으로 done", p.verifier)
+            service.notify_blocked_dependents(c, issue_id, "done")
             row2 = service.get_issue(c, issue_id)
             return dbmod.to_dict(row2)
         proof = p.completion_report

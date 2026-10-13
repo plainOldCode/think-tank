@@ -147,7 +147,7 @@ def execute(core, url, act):
             cur = core.api(url, f"/issues/{iid}")
             if not eligible(cur) or subject(cur) != act["subject"] or verdict(cur) != "approve":
                 return
-        elif target["mode"] != "local":
+        elif target["mode"] not in ("report", "local"):
             return
         core.api(url, f"/issues/{iid}/verify", "POST", {
             "verifier": "probe", "completion_report": cur["completion_report"],

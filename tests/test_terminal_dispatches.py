@@ -17,11 +17,11 @@ def seed(client, iid, state, attempt=0):
             (iid, state, attempt)).lastrowid
 
 
-@pytest.mark.parametrize("via", ["done", "cancelled", "archive", "human", "verify", "auto-archive"])
+@pytest.mark.parametrize("via", ["cancelled", "archive", "human", "verify", "auto-archive"])
 def test_terminal_transition_cascades_all_active_dispatches(client, monkeypatch, via):
     i = mk(client)
     iid = i["id"]
-    if via in {"done", "human", "verify"}:
+    if via in {"human", "verify"}:
         assert client.patch(f"/issues/{iid}", json={"state": "in_progress"}).status_code == 200
     if via == "verify":
         assert client.patch(f"/issues/{iid}", json={"state": "review"}).status_code == 200
@@ -39,7 +39,7 @@ def test_terminal_transition_cascades_all_active_dispatches(client, monkeypatch,
     elif via == "auto-archive":
         r = client.post(f"/issues/{iid}/archive")
     else:
-        payload = {"archived": True} if via == "archive" else {"state": via, "force_done": via == "done"}
+        payload = {"archived": True} if via == "archive" else {"state": via}
         r = client.patch(f"/issues/{iid}", json=payload)
     assert r.status_code == 200, r.text
     for did in dids:

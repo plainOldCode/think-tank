@@ -73,7 +73,7 @@ class IssuePatch(BaseModel):
     waiting_for: str | None = None
     waiting_actor: str | None = None
     blocked_detail: str | None = None
-    # 완료 보고 게이트: 성공 결과 없으면 review. force_done/close는 명시적 승인 예외.
+    # 폐기된 승인 우회. true면 422. 종결 승인은 human verify만.
     force_done: bool = False
     completion_report: CompletionReport | None = None
 

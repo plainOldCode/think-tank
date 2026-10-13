@@ -62,6 +62,13 @@ def test_unready_or_changed_pr_cannot_close(client, overrides):
 
 def test_explicit_local_work_still_finishes_without_pr(client):
     issue = approve(client, resubmit(client, submitted(client), {"mode": "local"}))
+    assert issue["completion_report"]["delivery"]["mode"] == "local"
+    assert [a["action"] for a in actions(issue, None)] == ["tt-verify"]
+
+
+def test_explicit_report_work_finishes_without_pr(client):
+    issue = approve(client, resubmit(client, submitted(client), {"mode": "report"}))
+    assert issue["completion_report"]["delivery"]["mode"] == "report"
     assert [a["action"] for a in actions(issue, None)] == ["tt-verify"]
 
 
