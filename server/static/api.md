@@ -232,6 +232,7 @@ backlog ──→ todo ──(pull/claim)──→ in_progress ──(submit)─
 - todo→backlog demotion allowed (returns it to unassigned)
 - in_progress→todo = release (assignee auto-cleared, other agents can claim)
 - done→todo reopen allowed; the completion time (completed_at) is updated
+- **No self-approval**: `POST /issues/{id}/verify` returns 409 when the verifier is the card's assignee (the same rule `claim-review` enforces for review reception). The implementer cannot finish its own card — probe auto-verifies after merge, or another agent / a human verifies. Contract pinning is irrelevant here: even legacy unpinned cards are covered. `--human` attestation is a separate audit path and stays open.
 - **Parent done guard**: if even one child is unfinished (not done/cancelled), parent done is 409. Close the children first
 
 ## Busy/eligible policy — one gate, stable reason codes (TT improvement #3b/#3c)

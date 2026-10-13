@@ -583,6 +583,10 @@ def verify_issue(issue_id: str, p: VerifyIn, ctx: Ctx = Depends(get_ctx)):
             raise HTTPException(409, f"state is {row['state']} — human verify는 in_progress/review에서만")
         if not p.human and row["state"] != "review":
             raise HTTPException(409, f"state is {row['state']} — review만 verify 가능")
+        # 자기승인 금지 — claim-review와 대칭 (M4S94AS4-8QY8). assignee가 자기 카드를
+        # 직접 done으로 미는 종결 구멍을 막는다. human 경로는 감사 선언이라 유지.
+        if not p.human and row["assignee"] and row["assignee"] == p.verifier:
+            raise HTTPException(409, "cross-review: 본인 작업 카드는 verify 불가 — 자기승인 금지")
         n_open = c.execute(
             "SELECT COUNT(*) n FROM issues WHERE parent_id=? AND state NOT IN ('done','cancelled')",
             (issue_id,)).fetchone()["n"]
