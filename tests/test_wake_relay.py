@@ -85,6 +85,22 @@ def test_comment_merge_hash_wakes():
     assert R.handle_event(row, cache=_cache()) is not None
 
 
+def test_probe_ci_fail_comment_wakes_assignee():
+    # 7FQH — probe ci-fix 위임 코멘트(작업자 wake). preview[:120] 잘림 대비
+    # [CI:fail]은 첫 줄, 마커 dedup 라인은 둘째 줄.
+    row = _row(payload={"author": "probe",
+                        "preview": "[CI:fail] @tester@ci #115 — tests 확인하라\n"
+                                   "[ci-fix a3 #115/7941d573] PR#115 CI 실패 — 위임"})
+    prompt = R.handle_event(row, cache=_cache())
+    assert prompt is not None and "[CI:fail]" in prompt and "#115" in prompt
+
+
+def test_probe_ci_fail_다른_담당자면_무시():
+    row = _row(payload={"author": "probe",
+                        "preview": "[CI:fail] @tester@ci #115 — tests 확인하라"})
+    assert R.handle_event(row, cache=_cache(assignee="other@host")) is None
+
+
 def test_signal_mid_sentence_ignored():
     """판정 필수 1 — 접수 안내 문구 본문 중간의 신호어는 매칭하지 않는다."""
     row = _row(payload={"author": "some-agent",

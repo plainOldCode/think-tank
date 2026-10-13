@@ -1722,8 +1722,15 @@ def execute(url, act):
                 {"author": "probe", "body": f"{marker} dispatch 실패({str(e)[:80]}) — "
                                             "사람 판단 대기(needs-merge 회귀)"})
             return
+        # 작업자 wake(M4T4WW0N-7FQH): assignee가 있으면 첫 줄에 [CI:fail] — relay가
+        # 이 신호로 터미널을 깨운다. preview가 120자로 잘리므로 첫 줄이어야 한다.
+        # 마커 dedup은 본문 전체 스캔이라 줄 순서는 자유.
+        assignee = cur.get("assignee") or ""
+        wake = (f"[CI:fail] @{assignee} #{act['pr']} — "
+                f"{', '.join(act.get('checks_failed') or ['?'])} 확인하라\n") if assignee else ""
         api(url, f"/issues/{act['issue']}/comments", "POST",
-            {"author": "probe", "body": f"{marker} PR#{act['pr']} CI 실패 — {agent}({target}) "
+            {"author": "probe", "body": f"{wake}"
+                                        f"{marker} PR#{act['pr']} CI 실패 — {agent}({target}) "
                                         "review+수정 위임"})
         return
     if kind == "review-claim":
