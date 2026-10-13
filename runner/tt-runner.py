@@ -954,7 +954,7 @@ def cleanup_terminal_session(key, snap):
 def session_tail(name, limit=200):
     try:
         r = tmux_run("capture-pane", "-p", "-t", name, "-S", "-80",
-                     capture_output=True, text=True, timeout=10)
+                     capture_output=True, text=True, errors="replace", timeout=10)
         return mask((r.stdout or "")[-limit:])
     except Exception:
         return ""
@@ -1278,7 +1278,7 @@ def _run_summary(key):
         cand = os.path.join(RUNTIME_DIR, base + suffix)
         if os.path.exists(cand):
             try:
-                with open(cand) as f:
+                with open(cand, errors="replace") as f:
                     summary = f.read()[-2000:]
             except OSError:
                 pass
@@ -1393,7 +1393,7 @@ def pane_fingerprint(name, key=None):
     실행도 무음으로 보인다 — 파일 mtime 진행도 liveness로 친다. 판정 없으면 None."""
     try:
         r = tmux_run("capture-pane", "-p", "-t", name, "-S", "-10",
-                     capture_output=True, text=True, timeout=10)
+                     capture_output=True, text=True, errors="replace", timeout=10)
         if r.returncode != 0:
             return None
         h = hashlib.md5((r.stdout or "").rstrip().encode())
@@ -1590,7 +1590,7 @@ def progress_tail(key, session):
     base = os.path.join(RUNTIME_DIR, key.replace("#", "_"))
     for suffix in (".out", ".log"):
         try:
-            with open(base + suffix) as f:
+            with open(base + suffix, errors="replace") as f:
                 f.seek(max(0, os.path.getsize(base + suffix) - 4096))
                 lines = [l for l in f.read().splitlines() if l.strip()]
                 if lines:
