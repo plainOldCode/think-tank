@@ -5,7 +5,7 @@ URL="${TT_URL:-http://127.0.0.1:7800}"  # serve-time 주입 계약 — 설치본
 AGENT="${TT_AGENT:-$USER@$(hostname -s)}"
 JQ="jq -r"
 # TT 개선#3f: CLI 버전 — 서버 openapi 해시와 함께 `tt version`으로 표기(드리프트 감지)
-TT_CLI_VERSION="2.5.2"
+TT_CLI_VERSION="2.5.3"
 jfilter() { if [[ "${JSON:-0}" == 1 ]]; then jq .; else jq -r "$@"; fi; }
 
 usage() {
@@ -28,7 +28,7 @@ tt — think-tank issue tracker ($URL)
   tt ... --json                 # (어디든) 서버 원 JSON 그대로 — 스크립트/파이프라인용
   tt note ID "로그"          # 진행 로그 코멘트
   tt contract                # 현재 공통 방법론 조회
-  tt submit ID ["로그"] [--report FILE]  # 완료 제출 → review (TT 독립 승인 후 probe verify, PR 선택)
+  tt submit ID ["로그"] [--report FILE] [--delivery report] [--pr owner/repo#N --head SHA --base NAME]
   tt done ID ["로그"] [--report FILE]  # (submit의 구별칭 — 기존 스크립트 호환)
   tt verify ID ["테스트 결과"] [--report FILE] [--human]  # review → done. --human=사람 자기선언 승인. 자기 카드(assignee)는 verify 불가(409)
   tt state ID STATE          # 상태 이동 (상태 가드 있음)
@@ -67,6 +67,10 @@ req() {
     return 1
   fi
   printf '%s\n' "$body"
+}
+
+pr_linked() {
+  printf '%s\n' "$1" | grep -Eq 'https?://[^[:space:]"<>]+/(pull|pulls)/[0-9]+|(^|[^A-Za-z0-9_])PR[[:space:]]*#[0-9]+'
 }
 
 # Preserve HTTP error detail without repeating a mutating request.
@@ -220,19 +224,69 @@ case "$cmd" in
     echo "note ok" ;;
 
   done|submit|verify)
-    [[ $# -lt 1 ]] && { echo "usage: tt $cmd ID [text] [--report FILE]" >&2; exit 1; }
-    id="$1"; shift; summary=""; report_file=""
+    [[ $# -lt 1 ]] && { echo "usage: tt $cmd ID [text] [--report FILE] [--delivery report] [--pr owner/repo#N --head SHA --base NAME]" >&2; exit 1; }
+    id="$1"; shift; summary=""; report_file=""; delivery_mode=""; pr_ref=""; head_sha=""; base_ref=""
     while [[ $# -gt 0 ]]; do case "$1" in
       --report)
         [[ $# -lt 2 ]] && { echo "--report FILE 필요" >&2; exit 1; }
         report_file="$2"; shift 2 ;;
+      --delivery)
+        [[ $# -lt 2 ]] && { echo "--delivery report 필요" >&2; exit 1; }
+        delivery_mode="$2"; shift 2 ;;
+      --pr)
+        [[ $# -lt 2 ]] && { echo "--pr owner/repo#번호 필요" >&2; exit 1; }
+        pr_ref="$2"; shift 2 ;;
+      --head)
+        [[ $# -lt 2 ]] && { echo "--head 전체 SHA 필요" >&2; exit 1; }
+        head_sha="$2"; shift 2 ;;
+      --base)
+        [[ $# -lt 2 ]] && { echo "--base 필요" >&2; exit 1; }
+        base_ref="$2"; shift 2 ;;
       *) summary="$1"; shift ;;
     esac; done
+    if [[ "$cmd" != verify ]]; then
+      if [[ -n "$delivery_mode" && "$delivery_mode" != report ]]; then
+        echo "delivery는 report만 명시한다. PR은 --pr owner/repo#N --head SHA --base NAME" >&2
+        exit 1
+      fi
+      if [[ -n "$pr_ref$head_sha$base_ref" ]]; then
+        [[ "$delivery_mode" == report ]] && { echo "--delivery report와 --pr은 함께 쓸 수 없다" >&2; exit 1; }
+        [[ -n "$report_file" ]] || { echo "--pr은 --report와 함께" >&2; exit 1; }
+        [[ "$pr_ref" =~ ^[^[:space:]#]+/[^[:space:]#]+#[0-9]+$ ]] || { echo "--pr은 owner/repo#번호" >&2; exit 1; }
+        [[ "$head_sha" =~ ^[0-9a-fA-F]{40}$ || "$head_sha" =~ ^[0-9a-fA-F]{64}$ ]] || { echo "--head는 전체 SHA(40 또는 64 hex)" >&2; exit 1; }
+        [[ -n "$base_ref" ]] || { echo "--base 필요" >&2; exit 1; }
+      fi
+      existing=""
+      if [[ -n "$report_file" ]]; then
+        existing="$(jq -er 'if has("delivery") then .delivery.mode else "" end' "$report_file" 2>/dev/null)" || { echo "report JSON이 아님" >&2; exit 1; }
+        if [[ -n "$existing" && ( -n "$delivery_mode" || -n "$pr_ref" ) ]]; then
+          echo "보고에 delivery가 이미 있다. CLI가 덮어쓰지 않는다" >&2
+          exit 1
+        fi
+      fi
+      blob="$summary"
+      [[ -n "$report_file" ]] && blob+=$'\n'"$(cat "$report_file")"
+      issue_json="$(req "$URL/issues/$id")" || exit 1
+      blob+=$'\n'"$(jq -r '.body // "", ((.comments // [])[].body // "")' <<<"$issue_json")"
+      if [[ -z "$existing" && -z "$pr_ref" && "$delivery_mode" != report ]] && pr_linked "$blob"; then
+        echo "PR이 보이는데 delivery가 없다. 제출 전에 --pr owner/repo#N --head SHA --base NAME 또는 --delivery report" >&2
+        exit 1
+      fi
+    fi
     if [[ "$cmd" != verify ]]; then payload='{"state":"done"}'
     else payload="$(jq -cn --arg a "$AGENT" --arg e "$summary" '{verifier:$a,evidence:$e}')"; fi
     if [[ -n "$report_file" ]]; then
       payload="$(jq -cn --argjson p "$payload" --slurpfile r "$report_file" \
         'if ($r|length)==1 and ($r[0]|type)=="object" then $p + {completion_report:$r[0]} else error("one report object required") end')" || exit 1
+    fi
+    if [[ "$cmd" != verify && -n "$report_file" && -z "$existing" ]]; then
+      if [[ -n "$pr_ref" ]]; then
+        payload="$(jq -cn --argjson p "$payload" --arg repo "${pr_ref%%#*}" --argjson n "${pr_ref##*#}" \
+          --arg head "$(printf '%s' "$head_sha" | tr 'A-F' 'a-f')" --arg base "$base_ref" \
+          '$p | .completion_report.delivery = {mode:"pr", provider:"github", repo:$repo, number:$n, head_sha:$head, base:$base}')" || exit 1
+      else
+        payload="$(jq -cn --argjson p "$payload" '$p | .completion_report.delivery = {mode:"report"}')" || exit 1
+      fi
     fi
     if [[ "$cmd" != verify ]]; then
       if [[ -n "$summary" ]]; then
