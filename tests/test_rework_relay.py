@@ -137,6 +137,85 @@ def test_과거_head의_stall은_소비하지_않는다(monkeypatch):
     assert not [a for a in acts if a["action"] == "review-fix-relay"]
 
 
+# --- [rework-stuck] 소비(4J4S) — dispatch 실패의 review-fix 재라우팅 ---
+
+RWS = {"author": "tt-embedding-daemon", "id": 60, "ts": "2026-10-04T10:00:00+0900",
+       "body": f"[rework-stuck] src_kind=review-fix src_att=- src_pr=9 src_head={SHA8} "
+               "attempt=1 target=a@t kind=404 — review-fix dispatch 실패 재라우팅 검토"}
+
+
+def _rws_with_fx(**kw):
+    return _issue(comments=[
+        {"author": "probe", "id": 1, "ts": "2026-10-04T08:00:00+0900",
+         "body": f"{_fx_marker()} PR#9 request-changes — review 반납+수정 위임"}, RWS], **kw)
+
+
+def test_rework_stuck_round_trip_무손실():
+    # 설계 §3-2 — probe 마커 원문 ↔ src_* 필드 역파싱 무손실
+    for orig in ("[review-fix #93/c661baaa]", "[ci-fix a1 #93/ed574468]"):
+        fs = probe_core._probe_marker_to_src(orig)
+        assert fs == {"src_kind": orig.strip("[]").split()[0],
+                      "src_att": orig.strip("[]").split()[1] if " a" in orig else "-",
+                      "src_pr": orig.strip("[]").split("#")[1].split("/")[0],
+                      "src_head": orig.strip("[]").split("/")[1].rstrip("]")}
+        assert probe_core._rework_src_marker(fs) == orig
+
+
+def test_rework_stuck을_소비해_재라우팅한다():
+    acts = dispatchd.decide(_snap([_rws_with_fx()], _pr()))
+    r = [a for a in acts if a["action"] == "review-fix-relay"]
+    assert len(r) == 1 and r[0]["pr"] == 9 and r[0]["att"] == 1
+    assert r[0].get("rs_kind") == "404"
+
+
+def test_rework_stuck_동일_이벤트는_재발화_0():
+    # relay 마커((pr,sha,att)당 1회) 존재 시 같은 회차 이벤트 재소비 없음
+    card = _issue(comments=[
+        {"author": "probe", "id": 1, "ts": "2026-10-04T08:00:00+0900",
+         "body": f"{_fx_marker()} 위임"},
+        {"author": "probe", "id": 2, "ts": "2026-10-04T10:05:00+0900",
+         "body": f"[rework-relay #9/{SHA8} a1] 원 워커 재발령 (dispatch#77)"},
+        RWS])
+    assert not [a for a in dispatchd.decide(_snap([card], _pr()))
+                if a["action"] == "review-fix-relay"]
+
+
+def test_rework_stuck_과거_head_미소비():
+    stale = dict(RWS, body=RWS["body"].replace(SHA8, "c" * 8))
+    card = _issue(comments=[{"author": "probe", "id": 1, "ts": "2026-10-04T08:00:00+0900",
+                             "body": f"{_fx_marker()} 위임"}, stale])
+    assert not [a for a in dispatchd.decide(_snap([card], _pr()))
+                if a["action"] == "review-fix-relay"]
+
+
+def test_rework_stuck_과거_회차_미소비():
+    stale = dict(RWS, body=RWS["body"].replace("attempt=1", "attempt=2"))
+    card = _issue(comments=[{"author": "probe", "id": 1, "ts": "2026-10-04T08:00:00+0900",
+                             "body": f"{_fx_marker()} 위임"}, stale])
+    assert not [a for a in dispatchd.decide(_snap([card], _pr()))
+                if a["action"] == "review-fix-relay"]
+
+
+def test_rework_stuck_유효_임대면_재발령_금지():
+    card = _rws_with_fx(lease_by="a@t", lease_expires="2026-10-04T23:00:00+0900")
+    assert not [a for a in dispatchd.decide(_snap([card], _pr()))
+                if a["action"] == "review-fix-relay"]
+
+
+def test_rework_stuck_위임_원문_부재면_소비_안한다():
+    # src_* 역파싱 원문([review-fix #pr/sha])이 카드에 없음 — 근거 없는 마커
+    assert not [a for a in dispatchd.decide(_snap([_issue(comments=[RWS])], _pr()))
+                if a["action"] == "review-fix-relay"]
+
+
+def test_rework_stuck_스키마밖_kind는_무시():
+    odd = dict(RWS, body=RWS["body"].replace("kind=404", "kind=no-progress"))
+    card = _issue(comments=[{"author": "probe", "id": 1, "ts": "2026-10-04T08:00:00+0900",
+                             "body": f"{_fx_marker()} 위임"}, odd])
+    assert not [a for a in dispatchd.decide(_snap([card], _pr()))
+                if a["action"] == "review-fix-relay"]
+
+
 # --- 2순위: relay 무반응 양도 ---
 
 def _relayed_card(extra=(), att=1, relay_ts=TS_RELAY, **kw):
