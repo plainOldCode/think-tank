@@ -208,3 +208,25 @@ def test_stored_local_delivery_is_not_rewritten(cli, tmp_path):
     response = run("submit", iid, "--report", str(path), "--json")
     assert response.returncode == 0, response.stderr
     assert json.loads(response.stdout)["completion_report"]["delivery"]["mode"] == "local"
+
+
+def test_verify_human_flag_keeps_evidence_and_marks_human(cli):
+    # BMAJ: --human이 *) 분기에서 evidence를 덮어쓰던 버그 — 파싱되고 payload에 human:true
+    run, _ = cli
+    iid = new(run)
+    run("claim", iid)
+    response = run("verify", iid, "테스트 결과", "--human", "--json")
+    assert response.returncode == 0, response.stderr
+    out = json.loads(response.stdout)
+    assert out["state"] == "done"
+    assert out["approval_path"] == "human"
+    assert out["verified_evidence"] == "사람 승인: 테스트 결과"
+
+
+def test_human_flag_is_verify_only(cli):
+    run, writes = cli
+    iid = new(run)
+    response = run("done", iid, "x", "--human")
+    assert response.returncode != 0
+    assert "--human은 verify 전용" in response.stderr
+    assert writes == []
