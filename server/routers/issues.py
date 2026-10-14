@@ -460,10 +460,12 @@ def patch_issue(issue_id: str, p: IssuePatch, ctx: Ctx = Depends(get_ctx)):
                     raise HTTPException(422, "close 라벨 종결은 폐기됨. 승인은 tt verify --human \"한 줄 사유\"")
                 elif ev:
                     fields.update(service.reported_fields(ev))
+                    fields["approval_path"] = "evidence-only"
                 elif gate == "gate" or service.requires_report(effective):
                     fields["state"] = "review"
                 else:
                     gate_warn = gate == "warn"
+                    fields["approval_path"] = "direct"
                 if fields["state"] == "done":
                     fields["completed_at"] = dbmod.now()
             if p.state in ("todo", "backlog", "done", "cancelled", "blocked"):
@@ -634,7 +636,8 @@ def verify_issue(issue_id: str, p: VerifyIn, ctx: Ctx = Depends(get_ctx)):
             service.log_event(c, "comment.added", "issue", issue_id,
                               {"author": p.verifier, "preview": verify_body[:120]})
             c.execute("UPDATE issues SET verified=1, verified_at=?, verified_evidence=?, "
-                      "verification_status='approved', state='done', completed_at=?, version=version+1 "
+                      "verification_status='approved', approval_path='human', state='done', "
+                      "completed_at=?, version=version+1 "
                       "WHERE id=? AND version=?",
                       (dbmod.now(), f"사람 승인: {ev[:300]}", dbmod.now(), issue_id, row["version"]))
             # 리뷰 R2 2차: 사람 승인 분기도 상태 전이 이벤트 기록 — done 소비자가 놓치지 않게
@@ -694,6 +697,9 @@ def verify_issue(issue_id: str, p: VerifyIn, ctx: Ctx = Depends(get_ctx)):
         service.log_event(c, "comment.added", "issue", issue_id,
                           {"author": p.verifier, "preview": verify_body[:120]})
         fields = {**service.reported_fields(ev), "state": "done", "completed_at": dbmod.now(),
+                  # VQK1 B안 — 승인 경로: review_subject 검증 통과=독립검증, 없으면 증거만
+                  "approval_path": ("independent-review" if p.review_subject is not None
+                                    else "evidence-only"),
                   "delivery_receipt": p.delivery_receipt.model_dump_json() if p.delivery_receipt else "",
                   "completion_report": (row["completion_report"] if p.review_subject is not None
                                         else proof.model_dump_json() if proof else ""),

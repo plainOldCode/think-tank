@@ -96,7 +96,8 @@ def reset_evidence(c, issue_id):
     cursor = c.execute("SELECT COALESCE(MAX(id),0) FROM comments WHERE issue_id=?", (issue_id,)).fetchone()[0]
     return {"verified": 0, "verified_at": None, "verified_evidence": "",
             "verification_status": "unverified", "completion_report": "", "completed_at": None,
-            "evidence_after_comment_id": cursor, "delivery_receipt": ""}
+            "evidence_after_comment_id": cursor, "delivery_receipt": "",
+            "approval_path": ""}
 
 
 def log_event(c, kind: str, entity: str, entity_id, payload=None):
