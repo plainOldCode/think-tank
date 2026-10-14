@@ -8,7 +8,7 @@ async function refreshAgents() {
 function toggleAgents() {
   const p = document.getElementById("agentpanel");
   p.style.display = p.style.display === "none" ? "block" : "none";
-  if (p.style.display === "block") { renderAgents(); enrichLive(); }
+  if (p.style.display === "block") { renderAgents(); enrichLive(); renderRouting(); }
 }
 
 async function enrichLive() {
@@ -62,7 +62,54 @@ function renderAgents() {
       <input name="url" placeholder="http://host:port/hook" style="width:100%;margin-top:4px" required>
       <input name="secret" placeholder="secret(선택, Bearer)" style="width:100%;margin-top:4px">
       <button>등록</button>
+    </form>
+    <hr style="border:none;border-top:2px solid var(--line);margin:10px 0">
+    <b>리뷰어 라우팅</b> <small style="color:var(--dim)">(폴백 순서·카운터파트 맵 — 저장 시 다음 probe 사이클부터 즉시 적용, 재배포 불필요)</small>
+    <div id="routingbody"><small style="color:var(--dim)">불러오는 중…</small></div>`;
+  renderRouting();
+}
+
+// 리뷰어 라우팅 설정(XV84) — 코드 기본값(DEFAULT_REVIEW_MAP·REVIEW_FALLBACK)을
+// 저장 설정으로 덮는다. 순서는 쉼표 목록, 맵은 줄당 impl->reviewer.
+async function renderRouting() {
+  const el = document.getElementById("routingbody");
+  if (!el) return;
+  const d = await jQuiet("/settings/review-routing") || {};
+  const fb = (d.review_fallback || []).join(", ");
+  const mapLines = Object.entries(d.review_map || {}).map(([k,v]) => `${k}->${v}`).join("\n");
+  el.innerHTML = `
+    <small style="color:var(--dim)">현재: ${d.source === "stored" ? "저장 설정" : "코드 기본값"}${d.updated_at ? " · 수정 " + esc(d.updated_at.slice(5, 16)) : ""}</small>
+    <form onsubmit="return saveRouting(event)" style="margin-top:4px">
+      <input name="fallback" value="${esc(fb)}" style="width:100%" placeholder="폴백 순서(쉼표): agy, cursor-review, codex, claude" required>
+      <textarea name="map" rows="3" style="width:100%;margin-top:4px" placeholder="카운터파트 맵(줄당 impl->reviewer, 비우면 기본):
+codex->claude
+claude->codex">${esc(mapLines)}</textarea>
+      <button type="submit">저장</button>
+      <button type="button" onclick="resetRouting()">기본값으로</button>
     </form>`;
+}
+
+async function saveRouting(e) {
+  e.preventDefault();
+  const f = e.target;
+  const fb = f.fallback.value.split(",").map(s => s.trim()).filter(Boolean);
+  if (!fb.length) { alert("폴백 순서는 최소 1명 이상"); return false; }
+  const map = {};
+  for (const line of f.map.value.split("\n")) {
+    const t = line.trim(); if (!t) continue;
+    const i = t.indexOf("->"); if (i < 1) continue;
+    const k = t.slice(0, i).trim(), v = t.slice(i + 2).trim();
+    if (k && v) map[k] = v;
+  }
+  await j("/settings/review-routing", {method: "PUT", headers: {"content-type": "application/json"}, body: JSON.stringify({review_fallback: fb, review_map: map})});
+  await renderRouting();
+  return false;
+}
+
+async function resetRouting() {
+  if (!confirm("설정을 지우고 코드 기본값으로 복귀할까요?")) return;
+  await j("/settings/review-routing", {method: "DELETE"});
+  await renderRouting();
 }
 
 async function addAgent(e) {
