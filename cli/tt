@@ -225,8 +225,11 @@ case "$cmd" in
 
   done|submit|verify)
     [[ $# -lt 1 ]] && { echo "usage: tt $cmd ID [text] [--report FILE] [--delivery report] [--pr owner/repo#N --head SHA --base NAME]" >&2; exit 1; }
-    id="$1"; shift; summary=""; report_file=""; delivery_mode=""; pr_ref=""; head_sha=""; base_ref=""
+    id="$1"; shift; summary=""; report_file=""; delivery_mode=""; pr_ref=""; head_sha=""; base_ref=""; human_flag=""
     while [[ $# -gt 0 ]]; do case "$1" in
+      --human)
+        [[ "$cmd" != verify ]] && { echo "--human은 verify 전용" >&2; exit 1; }
+        human_flag=1; shift ;;
       --report)
         [[ $# -lt 2 ]] && { echo "--report FILE 필요" >&2; exit 1; }
         report_file="$2"; shift 2 ;;
@@ -274,7 +277,8 @@ case "$cmd" in
       fi
     fi
     if [[ "$cmd" != verify ]]; then payload='{"state":"done"}'
-    else payload="$(jq -cn --arg a "$AGENT" --arg e "$summary" '{verifier:$a,evidence:$e}')"; fi
+    else payload="$(jq -cn --arg a "$AGENT" --arg e "$summary" --arg h "$human_flag" \
+      '{verifier:$a,evidence:$e} + (if $h=="1" then {human:true} else {} end)')"; fi
     if [[ -n "$report_file" ]]; then
       payload="$(jq -cn --argjson p "$payload" --slurpfile r "$report_file" \
         'if ($r|length)==1 and ($r[0]|type)=="object" then $p + {completion_report:$r[0]} else error("one report object required") end')" || exit 1
