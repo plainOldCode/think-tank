@@ -354,7 +354,7 @@ def test_execute는_수령_거부시_다음_후보로_폴백한다(monkeypatch):
 def test_execute는_전원_거부시_마커없이_건너뛴다(monkeypatch):
     # 리뷰 R3 — 마커가 남으면 같은 head 재시도가 영구 차단된다
     card = {"id": "M4JTJ970-WS3C", "state": "review", "version": 3, "comments": []}
-    fake, calls = _api_double(card, claim_fail={"claude", "agy", "codex"})
+    fake, calls = _api_double(card, claim_fail={"claude", "agy", "codex", "cursor-review"})
     monkeypatch.setattr(probe.core, "api", fake)
     probe.core.execute("u", _act(reviewer="claude"))
     assert not calls["dispatch"]
@@ -367,7 +367,7 @@ def test_execute는_거부_공지를_head당_한번만_남긴다(monkeypatch):
             "comments": [{"author": "probe",
                           "body": f"[review-claim-fail #9/{SHA8}] 리뷰어 수령 거부(HTTP 409) — "
                                   "다음 사이클 재시도"}]}
-    fake, calls = _api_double(card, claim_fail={"claude", "agy", "codex"})
+    fake, calls = _api_double(card, claim_fail={"claude", "agy", "codex", "cursor-review"})
     monkeypatch.setattr(probe.core, "api", fake)
     probe.core.execute("u", _act(reviewer="claude"))
     assert not [c for c in calls["comments"] if "review-claim-fail" in (c.get("body") or "")]
@@ -470,3 +470,40 @@ def test_execute_review_claim은_수령_거부시_사이클을_죽이지_않는�
     assert not calls["dispatch"]
     assert not any(marker in (c.get("body") or "") for c in calls["comments"])
     assert any("[review-claim-fail #9/" in (c.get("body") or "") for c in calls["comments"])
+
+
+# --- XV84(M4W99A6Z): cursor-review 리뷰어 편입 + 설정 기반 폴백 순서 ---
+
+def test_cursor_review는_cursor_가족이다():
+    # cursor-review는 구현 cursor의 별도 리뷰 프로필 — 가족 정규화로 자기 리뷰 가드 유지
+    assert probe.core.agent_family("cursor-review") == "cursor"
+    assert probe.core.agent_family("cursor") == "cursor"
+
+
+def test_기본_폴백에_cursor_review가_둘째다():
+    assert probe.core.REVIEW_FALLBACK[0] == "agy"
+    assert probe.core.REVIEW_FALLBACK[1] == "cursor-review"
+
+
+def test_설정으로_폴백순서_런타임_교체():
+    # 저장 설정(snap["review_routing"])이 코드 기본을 덮는다 — 재배포 없이 순서 조정
+    agents = _agents("codex", "cursor-review", "agy")
+    fb = ("cursor-review", "agy", "codex", "claude")
+    assert pick_reviewer("codex", agents, set(), RMAP, fallback=fb) == "cursor-review"
+    # 설정은 체인을 '교체'한다 — claude(1순위 라우팅)·codex(자기 리뷰)만 남으면 None
+    fb2 = ("claude", "codex")
+    assert pick_reviewer("codex", _agents("codex", "agy"), set(), RMAP,
+                         fallback=fb2) is None
+
+
+def test_설정의_review_map도_런타임_교체():
+    agents = _agents("codex", "cursor-review", "agy", "claude")
+    rmap = {**RMAP, "codex": "cursor-review"}
+    assert pick_reviewer("codex", agents, set(), rmap) == "cursor-review"
+
+
+def test_설정_폴백에도_자기리뷰_가드_유지():
+    # cursor 구현에 cursor-review는 가족 동반 — 설정이 1순위로 밀어도 제외된다
+    agents = _agents("cursor", "cursor-review", "agy")
+    fb = ("cursor-review", "agy")
+    assert pick_reviewer("cursor", agents, set(), RMAP, fallback=fb) == "agy"

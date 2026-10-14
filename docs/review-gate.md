@@ -87,14 +87,24 @@ prevention takes priority over the codex default (issuer decision 2026-10-10).
 - **Unavailable reviewer fallback** (issuer decision 2026-10-10): if the routed reviewer is
   unavailable — offline (not a registered+enabled agent) or holding an active lease (judged
   **per resolved agent name, not per family** — one busy family member must not block an idle
-  sibling, F3) — or refusing the claim (`claim-review` 409), walk **agy → codex → claude**
-  (issuer decision 2026-10-12; the counterpart table picks the first candidate, this chain
-  follows it). The author's identity and implementing family stay excluded through the whole
+  sibling, F3) — or refusing the claim (`claim-review` 409), walk **agy → cursor-review → codex
+  → claude** (issuer decision 2026-10-14, XV84: cursor-review = cursor's read-only review
+  profile; `cursor-review` ≡ cursor family via FAMILY_ALIASES so implementing `cursor` never
+  gets reviewed by it, and vice versa; the counterpart table picks the first candidate, this
+  chain follows it). The author's identity and implementing family stay excluded through the whole
   chain (self-review
   prevention holds). If nobody in the chain is claimable, the probe does **not** widen to a general
   idle scan (F1 — an unassigned agent would end up reviewing); the legacy fallback applies:
   `TT_REVIEW_AGENT` env, or the `kanban-adapter` default — and a legacy reviewer that is the
   author (or their family) is not dispatched either.
+- **Runtime routing config (XV84, 2026-10-14)**: the fallback order and counterpart map are
+  editable without a redeploy — `GET/PUT/DELETE /settings/review-routing`
+  (also editable in the web board's Agents panel). A stored setting overrides the code
+  defaults (`REVIEW_FALLBACK`, `DEFAULT_REVIEW_MAP`) from the next probe cycle; the probe
+  degrades to the code defaults when the setting is absent or the fetch fails (intended
+  fail-open). `TT_REVIEW_MAP` env keeps working as an env-level override beneath the stored
+  setting. The self-review guard (author identity + fixed family vocabulary) is **not**
+  overridable by the setting — mapping cannot route a review to the author's own family.
 - **Routing scope — both dispatch paths**: the auto-claim (`review-claim`) targets **only** the
   `pick_reviewer` result — the routed counterpart walked down the fallback chain (F1). The
   `review-request` dispatch carries the routed reviewer (absent when the whole chain is

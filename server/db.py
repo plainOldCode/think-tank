@@ -133,6 +133,14 @@ CREATE TABLE IF NOT EXISTS dispatch_reports (
   ts TEXT NOT NULL,
   PRIMARY KEY (dispatch_id, session)
 );
+
+CREATE TABLE IF NOT EXISTS settings (
+  -- 런타임 설정(XV84): 서버 재배포 없이 웹·API에서 편집. 코드 상수는 부팅 기본값.
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  updated_by TEXT NOT NULL DEFAULT ''
+);
 """
 
 

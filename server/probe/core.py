@@ -200,9 +200,12 @@ def _requested_reviewers(i, pr_no, sha8):
 
 # 자기 리뷰 방지용 고정 가족 어휘 — TT_REVIEW_MAP 확장과 무관하게 이 어휘로만 제외한다
 # (매핑 키 codex-labs->codex로 가족 경유 자기 리뷰를 만들 수 없다)
-REVIEW_FAMILIES = ("codex", "claude", "hermes", "opencode")
+# cursor: cursor-review(읽기전용 리뷰 프로필)는 가족 동반 — 구현 cursor의 자기 리뷰 방지(XV84)
+REVIEW_FAMILIES = ("codex", "claude", "hermes", "opencode", "cursor")
 # 어댑터 별칭 — kanban-adapter는 hermes의 리뷰 대행자다(발령자 결정 2026-10-10)
-FAMILY_ALIASES = {"kanban-adapter": "hermes"}
+FAMILY_ALIASES = {"kanban-adapter": "hermes",
+                  # cursor-review는 cursor의 읽기전용 리뷰 프로필(별도 에이전트, 가족 동일) — XV84
+                  "cursor-review": "cursor"}
 # host 별칭 — assignee가 user@host 형식이고 base로 가족을 못 찾을 때 host로 추정한다(F2).
 # 실제 보드 assignee 2위 형식(skshim@tp-13)은 등록 에이전트명과 달라 가족 정규화에
 # 걸리지 않는다. 카드 표 "opencode (tp-13 포함)" — env TT_HOST_FAMILY_MAP으로 확장.
@@ -210,9 +213,11 @@ HOST_FAMILY_ALIASES = {"tp-13": "opencode"}
 # 발령자 결정(2026-10-10) 기본 카운터파트 표 — TT_REVIEW_MAP env로 override·확장
 DEFAULT_REVIEW_MAP = {"codex": "claude", "claude": "codex",
                       "hermes": "codex", "opencode": "codex"}
-# 리뷰어 미가용 폴백 순서 (발령자 결정 2026-10-12) — agy→codex→claude.
+# 리뷰어 미가용 폴백 순서 — 발령자 결정 갱신(2026-10-14, XV84): agy→cursor-review→
+# codex→claude. cursor-review는 cursor의 읽기전용 리뷰 프로필. 런타임 순서 조정은
+# 설정(settings/review-routing, 웹 편집)이 이 기본값을 덮는다 — 재배포 불필요.
 # 1순위는 카운터파트 표(DEFAULT_REVIEW_MAP)가 정하고, 이 체인은 그 뒤를 잇는다.
-REVIEW_FALLBACK = ("agy", "codex", "claude")
+REVIEW_FALLBACK = ("agy", "cursor-review", "codex", "claude")
 # 진행 중 run 상태(runner run_state.ACTIVE 동기) — 이 상태의 dispatch가 있으면
 # 같은 카드에 리뷰/수정 dispatch를 추가로 스폰하지 않는다(M4N469TR-JWW0).
 _ACTIVE_RUN_STATES = frozenset({"queued", "running", "stalled", "finalizing", "held"})
@@ -350,7 +355,7 @@ def _resolve_executor(cand, agents):
     return None
 
 
-def pick_reviewer(assignee, agents, busy, rmap):
+def pick_reviewer(assignee, agents, busy, rmap, fallback=None):
     """라우팅 + 미가용 폴백(순수). 전부 미가용이면 None — 레거시 폴백으로.
 
     agents: 등록+활성 에이전트 스냅샷(오프라인 판정), busy: 활성 lease 보유
@@ -362,7 +367,9 @@ def pick_reviewer(assignee, agents, busy, rmap):
     a = (assignee or "").strip()
     impl_fam = _impl_family(a)
     primary = route_reviewer(assignee, rmap)
-    for cand in [primary] + [c for c in REVIEW_FALLBACK if c != primary]:
+    # 런타임 설정 우선(XV84) — fallback 인자가 snap["review_routing"]에서 온다
+    chain = [primary] + [c for c in (fallback or REVIEW_FALLBACK) if c != primary]
+    for cand in chain:
         cand_fam = agent_family(cand)
         if cand == a or (impl_fam and cand_fam == impl_fam):
             continue  # 자기 리뷰 방지 — 본인 신원·구현 가족 후보 제외
@@ -919,6 +926,11 @@ def decide(snap):
     by_id = {i["id"]: i for i in issues}
     reviewer = os.environ.get("TT_REVIEW_AGENT", "").strip()
     rmap = effective_review_map()  # 카운터파트 라우팅(M4JTJ970-WS3C) — env override 포함
+    # 런타임 설정(XV84) — 저장 설정이 코드 기본을 덮는다. decide는 순수 함수라
+    # snap에 조달된다(snapshot에서 GET /settings/review-routing).
+    routing = snap.get("review_routing") or {}
+    rmap = {**rmap, **(routing.get("review_map") or {})}
+    fb = routing.get("review_fallback")
     from . import tt_lifecycle
     tt_cards = {i["id"] for i in issues if tt_lifecycle.eligible(i)}
     for i in issues:
@@ -1093,7 +1105,8 @@ def decide(snap):
                         # 수령 방식(review-claim 선점)은 #3c 그대로, 대상 선정만 양 경로가
                         # 같은 카운터파트/가족 정책을 따른다(R1).
                         routed = pick_reviewer(i.get("assignee"), agents,
-                                               busy_agents | claimed, rmap)
+                                               busy_agents | claimed, rmap,
+                                               fallback=fb)
                         # F1: 교차 수령 후보는 pick_reviewer 결과(라우팅 1순위 + 3a
                         # 폴백 체인)로 한정한다 — 전원 미가용이면 일반 유휴 스캔으로
                         # 확장하지 않는다(발령자가 지정하지 않은 에이전트의 수령 방지).
@@ -1972,7 +1985,14 @@ def execute(url, act):
         author = (cur.get("assignee") or "").strip()
         author_fam = _impl_family(author)
         if act.get("reviewer"):
-            cands = [act["reviewer"]] + [c for c in REVIEW_FALLBACK if c != act["reviewer"]]
+            # 런타임 설정 우선(XV84) — 조회 실패 시 코드 기본으로 회귀
+            try:
+                s = api(url, "/settings/review-routing")
+                rf = tuple(s.get("review_fallback") or REVIEW_FALLBACK) \
+                    if isinstance(s, dict) and s.get("review_fallback") else REVIEW_FALLBACK
+            except Exception:
+                rf = REVIEW_FALLBACK
+            cands = [act["reviewer"]] + [c for c in rf if c != act["reviewer"]]
         else:
             legacy = os.environ.get("TT_REVIEW_AGENT", "").strip() or "kanban-adapter"
             cands = [legacy]
@@ -2484,8 +2504,17 @@ def snapshot(url):
                 i["comments"] = api(url, f"/issues/{i['id']}").get("comments") or []
             except Exception:
                 i["comments"] = []
-    return {"auto": os.getenv("TT_AUTO_DISPATCH") == "1",
+    snap = {"auto": os.getenv("TT_AUTO_DISPATCH") == "1",
             "now": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "agents": agents, "issues": issues}
+    # 리뷰어 라우팅 런타임 설정(XV84) — 설정 서버가 없거나 키가 없으면 기본 동작
+    try:
+        s = api(url, "/settings/review-routing")
+        if isinstance(s, dict) and s.get("source") == "stored":
+            snap["review_routing"] = {"review_fallback": s.get("review_fallback"),
+                                      "review_map": s.get("review_map")}
+    except Exception:
+        pass  # 설정 조회 실패는 기본 동작 회귀(의도된 degrade)
+    return snap
 
 
 def _sleep(seconds, stop=None):
