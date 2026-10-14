@@ -431,3 +431,89 @@ def test_B3_dispatch_신호는_prefix_설정_시만_활성(monkeypatch):
          _i("M4D-3", dispatches=0, assignee="worker"),
          _i("M4D-4", dispatches=2, assignee="human-01@host")], preds)
     assert hit.get("M4D-2") == "B3" and "M4D-3" not in hit and "M4D-4" not in hit
+
+
+# --- M3DP(M4W9J54M): B3 dispatch 신호 조달 — GET /issues/ID/dispatches(읽기 전용) ---
+
+class DispatchFake:
+    """issues + per-card dispatches를 함께 서빙하는 fetcher — 실제 응답 형태 모사."""
+
+    def __init__(self, issues, dispatches):
+        self.issues = {i["id"]: dict(i) for i in issues}
+        self.dispatches = dispatches  # {id: list}
+        self.fetches = []
+
+    def fetch(self, path):
+        self.fetches.append(path)
+        m = re.match(r"^/issues/([^/]+)/dispatches$", path)
+        if m:
+            return self.dispatches.get(m.group(1), [])
+        if path == "/issues?limit=500":
+            return list(self.issues.values())
+        iid = path.split("/")[2]
+        return self.issues.get(iid)
+
+
+def _setup_daemon(monkeypatch, tmp_path, issues, dispatches):
+    monkeypatch.setattr(daemon, "embed",
+                        lambda texts, dim=daemon.DIM: [_norm([1.0] * 10) for _ in texts])
+    monkeypatch.setenv("TT_HUMAN_ACTOR_PREFIX", "human-")
+    idx = daemon.Index(os.path.join(str(tmp_path), "idx.db"))
+    f = DispatchFake(issues, dispatches)
+    notes = []
+    f.post = lambda card, body: notes.append((card, body))
+    return idx, f, notes
+
+
+def test_B3_dispatch_조달_list_응답(monkeypatch, tmp_path):
+    # 사람 claim + dispatchs=0 → B3 감지. 재위임(dispatchs>0)은 제외 — 실제 list 응답 형태
+    idx, f, notes = _setup_daemon(monkeypatch, tmp_path,
+                                  [_i("M4DP-1", state="todo", assignee="human-01@host"),
+                                   _i("M4DP-2", state="todo", assignee="human-01@host"),
+                                   _i("M4DP-3", state="in_progress", assignee="human-01@host")],
+                                  {"M4DP-1": [], "M4DP-2": [{"id": 1}], "M4DP-3": []})
+    daemon.cycle(idx, set(), fetcher=f.fetch,
+                 poster=lambda c, b: f.post(c, b),
+                 boundary_predicates=daemon.load_boundary_predicates(_REPO_DOC))
+    hit = [c for c, b in notes if "[boundary-out]" in b and "id=B3" in b]
+    # M4DP-1(todo, 0), M4DP-3(in_progress도 비종결, 0) → 감지. M4DP-2는 재위임 제외.
+    assert hit == ["M4DP-1", "M4DP-3"]
+
+
+def test_B3_dispatch_조달_dict_응답(monkeypatch, tmp_path):
+    # {"dispatches":[...]} 래퍼 형태도 수용 — 실측된 두 응답 형태 모두
+    idx, f, notes = _setup_daemon(monkeypatch, tmp_path,
+                                  [_i("M4DP-4", state="todo", assignee="human-01@host")],
+                                  {"M4DP-4": {"dispatches": [{"id": 1}, {"id": 2}]}})
+    daemon.cycle(idx, set(), fetcher=f.fetch,
+                 poster=lambda c, b: f.post(c, b),
+                 boundary_predicates=daemon.load_boundary_predicates(_REPO_DOC))
+    assert not any("id=B3" in b for _, b in notes)  # 2건 재위임 — 미탐 아님, 정상 제외
+
+
+def test_조달은_prefix_매칭_비종결만(monkeypatch, tmp_path):
+    # dispatches GET은 prefix 매칭·비종결 카드에만 — GET 최소화
+    idx, f, notes = _setup_daemon(monkeypatch, tmp_path,
+                                  [_i("M4DP-5", state="todo", assignee="human-01@host"),
+                                   _i("M4DP-6", state="todo", assignee="other-agent"),
+                                   _i("M4DP-7", state="done", assignee="human-01@host")],
+                                  {"M4DP-5": []})
+    daemon.cycle(idx, set(), fetcher=f.fetch,
+                 poster=lambda c, b: f.post(c, b),
+                 boundary_predicates=daemon.load_boundary_predicates(_REPO_DOC))
+    disp = [p for p in f.fetches if p.endswith("/dispatches")]
+    assert disp == ["/issues/M4DP-5/dispatches"]
+
+
+def test_조달_실패는_무시(monkeypatch, tmp_path):
+    # dispatches GET 실패 → 크래시 없이 진행(B3 dispatch 신호만 비발화)
+    idx, f, notes = _setup_daemon(monkeypatch, tmp_path,
+                                  [_i("M4DP-8", state="todo", assignee="human-01@host")], {})
+    def boom(path):
+        if path.endswith("/dispatches"):
+            raise OSError("network down")
+        return f.fetch(path)
+    daemon.cycle(idx, set(), fetcher=boom,
+                 poster=lambda c, b: notes.append((c, b)),
+                 boundary_predicates=daemon.load_boundary_predicates(_REPO_DOC))
+    assert isinstance(notes, list)  # 예외 전파 없이 사이클 완료
