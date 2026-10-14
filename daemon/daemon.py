@@ -190,7 +190,71 @@ def _fetch(path):
     return http_json(TT_URL, path)
 
 
-def cycle(index, seen, fetcher=None, poster=None):
+def _boundary_doc_path():
+    """docs/automation-boundary.md 탐색 — env > daemon.py 기준 리포 레이아웃 > mini 미러."""
+    p = os.environ.get("TT_BOUNDARY_DOC")
+    if p:
+        return p
+    here = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                         os.pardir, "docs", "automation-boundary.md"))
+    if os.path.exists(here):
+        return here
+    return os.path.expanduser("~/tt-repo/docs/automation-boundary.md")
+
+
+def load_boundary_predicates(path=None):
+    """automation-boundary.md §3 JSON 블록의 boundary_predicates 로드.
+
+    문서가 정본(스키마 이원화 금지) — 파일 부재·파싱 실패 시 [] (동작 불변)."""
+    p = path or _boundary_doc_path()
+    try:
+        text = open(p, encoding="utf-8").read()
+    except OSError:
+        return []
+    src = None
+    for block in re.findall(r"```json\n(.*?)```", text, re.S):
+        if "boundary_predicates" in block:
+            src = block
+            break
+    if not src:
+        return []
+    try:
+        data = json.loads(src, strict=False)  # 문서 note 필드에 원시 개행 허용
+    except ValueError:
+        return []
+    return [pr for pr in (data.get("boundary_predicates") or [])
+            if isinstance(pr, dict) and pr.get("id")]
+
+
+def _boundary_out_ids(issues, preds):
+    """술어 평가 — 데이터 기반: title_prefix·evidence_contains·
+    dispatches_zero_with_manual_claim(TT_HUMAN_ACTOR_PREFIX 설정 시 활성).
+
+    주의(a2 리뷰): 라이브 /issues 목록 응답에는 dispatches 필드가 없다(probe 스냅샷
+    전용 — server/probe/core.py에서 /issues/ID/dispatches로 별도 계산). 따라서
+    서버가 필드를 노출하거나 테스트 픽스처가 주입하지 않는 한 dispatch 신호는
+    발화하지 않는다 — evidence_contains가 B3의 실질 동작 경로. 조달은 후속 카드.
+    알 수 없는 signal 키는 무시 — 문서 선진화 대응."""
+    prefix = os.environ.get("TT_HUMAN_ACTOR_PREFIX")
+    out = {}
+    for i in issues:
+        title = i.get("title") or ""
+        ev = i.get("verified_evidence") or ""
+        who = i.get("assignee") or i.get("lease_by") or ""
+        for pred in preds:
+            sig = pred.get("signals") or {}
+            hit = any(title.startswith(s) for s in (sig.get("title_prefix") or []))
+            hit = hit or any(n in ev for n in (sig.get("evidence_contains") or []))
+            if sig.get("dispatches_zero_with_manual_claim") and prefix \
+                    and i.get("dispatches") == 0 and who.startswith(prefix):
+                hit = True
+            if hit:
+                out.setdefault(i["id"], pred["id"])
+                break
+    return out
+
+
+def cycle(index, seen, fetcher=None, poster=None, boundary_predicates=None):
     """1회 폴링. fetcher/poster 주입(테스트) — 기본은 TT_URL 단일 원천."""
     fetcher = fetcher or _fetch
     poster = poster or (lambda card, body: post_note(card, body, DAEMON))
@@ -217,11 +281,27 @@ def cycle(index, seen, fetcher=None, poster=None):
     labeled_ids = {i["id"] for i in labeled_cards}
     approved_refs = [i for i in issues
                      if i["id"] in approved_ids and i["id"] not in labeled_ids]
+    # --- 0b: 경계 밖 감지(EM37) — 문서 §3 술어 로드 → 표시·제외만. verify·라벨·
+    # 상태 변경 없음(K91X 금지 계약 유지). 술어 하나라도 참이면 경계 밖.
+    preds = boundary_predicates if boundary_predicates is not None \
+        else load_boundary_predicates()
+    boundary_ids = _boundary_out_ids(issues, preds) if preds else {}
+    for i in issues:
+        if i["id"] in boundary_ids and i["state"] not in ("done", "cancelled"):
+            comments = _comments(i["id"], fetcher)
+            pid = boundary_ids[i["id"]]
+            pred = next(p for p in preds if p["id"] == pid)
+            if not _event_key_present(comments, "boundary-out", {"id": pid}):
+                poster(i["id"], f"[boundary-out] id={pid} "
+                                f"name={pred.get('name', '')} — "
+                                f"{pred.get('effect', '자동화 대상 제외')} "
+                                f"(docs/automation-boundary.md §3)")
     # --- 1·6: 분류기 + 중복 감지(임베딩 필요 — 실패 시 이 구간만 보류) ---
     # 사람 승인(경계 밖) 카드는 제안 대상에서 제외 — 오염 방지(K91X 금지 조항).
     unclassified = [i for i in issues if i["state"] in ("todo", "backlog")
                     and not [l for l in (i.get("labels") or []) if l != "auto"]
-                    and i["id"] not in approved_ids]
+                    and i["id"] not in approved_ids
+                    and i["id"] not in boundary_ids]
     embeds = embed([_card_text(i) for i in labeled_cards + approved_refs + unclassified]) \
         if (labeled_cards or approved_refs or unclassified) else None
     if embeds:
