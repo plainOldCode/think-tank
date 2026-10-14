@@ -185,6 +185,9 @@ def connect(path):
                 "todo_since TEXT",
                 # M42KC1XR-2DD1: 리뷰어 점유 — review 카드에서 판정자 표기(assignee는 작업자 유지)
                 "reviewer TEXT",
+                # VQK1(M4TZ78S8) B안: 승인 경로 필드화 — probe 독립검증 종료 구분.
+                # 회차 스코프(done 이탈 시 소거), 소급 0(기존 done은 '' 유지).
+                "approval_path TEXT NOT NULL DEFAULT ''",
                 # TT 개선#3d: 자기발의 원 발의자 — assignee는 가변이라 WIP 산정에 못 씀
                 "nominee TEXT NOT NULL DEFAULT ''"):
         try:
