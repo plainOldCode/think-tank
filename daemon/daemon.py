@@ -228,8 +228,13 @@ def load_boundary_predicates(path=None):
 
 def _boundary_out_ids(issues, preds):
     """술어 평가 — 데이터 기반: title_prefix·evidence_contains·
-    dispatches_zero_with_manual_claim(dispatchs=0 + 사람 claim — TT_HUMAN_ACTOR_PREFIX
-    설정 시 활성, 미설정 시 비활성). 알 수 없는 signal 키는 무시 — 문서 선진화 대응."""
+    dispatches_zero_with_manual_claim(TT_HUMAN_ACTOR_PREFIX 설정 시 활성).
+
+    주의(a2 리뷰): 라이브 /issues 목록 응답에는 dispatches 필드가 없다(probe 스냅샷
+    전용 — server/probe/core.py에서 /issues/ID/dispatches로 별도 계산). 따라서
+    서버가 필드를 노출하거나 테스트 픽스처가 주입하지 않는 한 dispatch 신호는
+    발화하지 않는다 — evidence_contains가 B3의 실질 동작 경로. 조달은 후속 카드.
+    알 수 없는 signal 키는 무시 — 문서 선진화 대응."""
     prefix = os.environ.get("TT_HUMAN_ACTOR_PREFIX")
     out = {}
     for i in issues:

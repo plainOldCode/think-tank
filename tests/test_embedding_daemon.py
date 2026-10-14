@@ -383,6 +383,8 @@ def test_B3_사람승인_증거도_경계밖_표시(monkeypatch):
 
 def test_B3_prefix_미설정은_비활성_TypeError_없다(monkeypatch):
     # 리뷰 지적 회귀 — dispatches=0 + TT_HUMAN_ACTOR_PREFIX 미설정 → TypeError 없이 비활성
+    # (주의: 라이브 /issues 목록엔 dispatches 필드가 없다 — 픽스처 주입은 서버 노출
+    #  시점의 동작 명세이며, 현재 운영에서는 evidence_contains만 B3로 발화)
     monkeypatch.delenv("TT_HUMAN_ACTOR_PREFIX", raising=False)
     i = _i("M4B3U-0001", title="일반 작업", dispatches=0,
            assignee="human-01@host")
