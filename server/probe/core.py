@@ -1133,6 +1133,21 @@ def decide(snap):
                     _high_risk_hold(actions, i, p)
                     continue  # gated 유지 — ⓪b 접촉 없음(FHH8)
                 gated.discard(iid)
+                # ZDNH(M4TW2J3V) — 승인 확정(head-bound verdict) 시점에
+                # tt/review-approved success 게시. 필수 상태 검사 등록 저장소에서
+                # 승인 전 병합이 기계 차단된다(실패-폐쇄 가드). 게시 실패 시 병합
+                # 후보에서 제외 → ⓪b [needs-merge] dedup 규약으로 인간 판단 요청.
+                if pr_repo in _review_status_repos() and p.get("head_sha"):
+                    _sha = p["head_sha"]
+                    if review_status_posted(pr_repo, _sha) != "success":
+                        try:
+                            review_status_post(pr_repo, _sha,
+                                               f"TT#{iid} 독립 리뷰 승인 ({_sha[:8]})")
+                        except Exception as e:
+                            print(time.strftime("%F %T"),
+                                  f"review-status 게시 실패 #{p['number']} {_sha[:8]}: "
+                                  f"{str(e)[:120]}", flush=True)
+                            continue  # 병합 보류 — ⓪b에서 needs-merge(회차당 1회)
             if high_risk:
                 _high_risk_hold(actions, i, p)
                 gated.add(iid)  # ⓪b가 needs-merge로 재알림하지 않게(FHH8)
@@ -1610,6 +1625,33 @@ def gh_json(*args):
 
 def gh_exec(*args):
     return _gh(list(args))
+
+
+REVIEW_STATUS_CTX = "tt/review-approved"
+
+
+def _review_status_repos():
+    """TT_REVIEW_STATUS=repo[,repo…] — 승인 상태 게시 가드 대상 저장소. 미설정=off
+    (기존 소비자 무영향 — ZDNH M4TW2J3V)."""
+    return {r.strip() for r in os.environ.get("TT_REVIEW_STATUS", "").split(",") if r.strip()}
+
+
+def review_status_posted(repo, sha):
+    """컨텍스트 tt/review-approved의 기존 success 여부. 조회 실패는 미게시 취급
+    (멱등 — 재게시 시도해도 같은 값으로 수렴)."""
+    try:
+        combined = gh_json("api", f"repos/{repo}/commits/{sha}/status") or {}
+    except Exception:
+        return ""
+    return "success" if any((s.get("context") or "") == REVIEW_STATUS_CTX
+                            and s.get("state") == "success"
+                            for s in combined.get("statuses") or []) else ""
+
+
+def review_status_post(repo, sha, description):
+    """head SHA에 tt/review-approved success 게시 — 필수 상태 검사로 승인 전 병합 차단."""
+    gh_exec("api", f"repos/{repo}/statuses/{sha}", "-f", "state=success",
+            "-f", f"context={REVIEW_STATUS_CTX}", "-f", f"description={description}")
 
 
 def collect_prs(repos=None):
