@@ -319,3 +319,113 @@ def test_fix_stall은_이벤트키당_1회다(tmp_path):
     f.issues["M4FIX-0001"]["execution_attempt"] = 2
     daemon.cycle(idx, set(), fetcher=f.fetch, poster=f.post)
     assert len([b for _, b in f.notes if b.startswith("[fix-stall]")]) == 2
+
+
+# --- EM37(M4TZJ05K): automation-boundary.md §3 술어 로드 — 경계 밖 감지·제외·표시 ---
+# 문서가 정본(스키마 이원화 금지). 용도는 표시·제외만 — verify·라벨·상태 변경 금지 유지.
+
+_REPO_DOC = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                         "docs", "automation-boundary.md")
+
+
+def test_문서_블록에서_술어_로드():
+    preds = daemon.load_boundary_predicates(_REPO_DOC)
+    ids = [p["id"] for p in preds]
+    assert {"B1", "B2", "B3"} <= set(ids)
+    for p in preds:
+        assert isinstance(p.get("signals"), dict)
+
+
+def test_문서_부재는_동작_불변():
+    assert daemon.load_boundary_predicates("/nonexistent/boundary.md") == []
+
+
+def test_B1_조직결정_제목은_제안_대상_제외(monkeypatch):
+    monkeypatch.setattr(daemon, "embed",
+                        lambda texts, dim=daemon.DIM: [_norm([1.0] * 10) for _ in texts])
+    idx = daemon.Index(os.path.join(tempfile.mkdtemp(), "idx.db"))
+    i = _i("M4B1-0001", title="[임명] 리뷰어 임명 — 조직 결정")
+    f = Fake([i])
+    daemon.cycle(idx, set(), fetcher=f.fetch, poster=f.post,
+                 boundary_predicates=daemon.load_boundary_predicates(_REPO_DOC))
+    assert not any("[auto-classified]" in b for _, b in f.notes)
+    assert any("[boundary-out]" in b and "B1" in b for _, b in f.notes)
+
+
+def test_B2_판단소비_마커는_회차당_1회(monkeypatch):
+    monkeypatch.setattr(daemon, "embed",
+                        lambda texts, dim=daemon.DIM: [_norm([0.5, 0.5] + [0.0] * 8)
+                                                       for _ in texts])
+    idx = daemon.Index(os.path.join(tempfile.mkdtemp(), "idx.db"))
+    i = _i("M4B2-0001", title="[분석] 재작업 원인 판단 보고")
+    f = Fake([i])
+    daemon.cycle(idx, set(), fetcher=f.fetch, poster=f.post,
+                 boundary_predicates=daemon.load_boundary_predicates(_REPO_DOC))
+    daemon.cycle(idx, set(), fetcher=f.fetch, poster=f.post,
+                 boundary_predicates=daemon.load_boundary_predicates(_REPO_DOC))
+    assert not any("[auto-classified]" in b for _, b in f.notes)
+    assert len([b for _, b in f.notes if "[boundary-out]" in b]) == 1
+
+
+def test_B3_사람승인_증거도_경계밖_표시(monkeypatch):
+    monkeypatch.setattr(daemon, "embed",
+                        lambda texts, dim=daemon.DIM: [_norm([0.9, 0.1] + [0.0] * 8)
+                                                       for _ in texts])
+    idx = daemon.Index(os.path.join(tempfile.mkdtemp(), "idx.db"))
+    i = _i("M4B3-0001", state="review", verification_status="approved",
+           verified_evidence="사람 승인: 경계 밖 — 사람 눈으로 확인")
+    f = Fake([i])
+    daemon.cycle(idx, set(), fetcher=f.fetch, poster=f.post,
+                 boundary_predicates=daemon.load_boundary_predicates(_REPO_DOC))
+    assert any("[boundary-out]" in b and "B3" in b for _, b in f.notes)
+    assert not any("[auto-classified]" in b for _, b in f.notes)
+
+
+def test_B3_prefix_미설정은_비활성_TypeError_없다(monkeypatch):
+    # 리뷰 지적 회귀 — dispatches=0 + TT_HUMAN_ACTOR_PREFIX 미설정 → TypeError 없이 비활성
+    monkeypatch.delenv("TT_HUMAN_ACTOR_PREFIX", raising=False)
+    i = _i("M4B3U-0001", title="일반 작업", dispatches=0,
+           assignee="human-01@host")
+    hit = daemon._boundary_out_ids([i], daemon.load_boundary_predicates(_REPO_DOC))
+    assert "M4B3U-0001" not in hit
+
+
+def test_B3_prefix_설정시_dispatches0_사람claim_감지(monkeypatch):
+    # 리뷰 지적 — TT_HUMAN_ACTOR_PREFIX 설정 시 dispatchs=0 + 사람 claim → B3 감지
+    monkeypatch.setenv("TT_HUMAN_ACTOR_PREFIX", "human-")
+    i = _i("M4B3S-0001", title="일반 작업", dispatches=0,
+           assignee="human-01@host")
+    hit = daemon._boundary_out_ids([i], daemon.load_boundary_predicates(_REPO_DOC))
+    assert hit.get("M4B3S-0001") == "B3"
+
+
+def test_술어_미로드는_기존_동작_그대로(monkeypatch):
+    # boundary_predicates 미주입 + 문서 미존재 경로 → 마커 없음(기존 회귀)
+    monkeypatch.setattr(daemon, "embed",
+                        lambda texts, dim=daemon.DIM: [_norm([1.0] * 10) for _ in texts])
+    idx = daemon.Index(os.path.join(tempfile.mkdtemp(), "idx.db"))
+    i = _i("M4N-0001", title="[분석] 경계 판정 대상")
+    f = Fake([i])
+    daemon.cycle(idx, set(), fetcher=f.fetch, poster=f.post,
+                 boundary_predicates=daemon.load_boundary_predicates("/nonexistent/x.md"))
+    assert not any("[boundary-out]" in b for _, b in f.notes)
+
+
+def test_술어_평가는_데이터_기반():
+    preds = daemon.load_boundary_predicates(_REPO_DOC)
+    hit = daemon._boundary_out_ids(
+        [_i("M4X-1", title="[토론] 안건"), _i("M4Y-2", title="일반 작업")], preds)
+    assert hit.get("M4X-1") == "B2" and "M4Y-2" not in hit
+
+
+def test_B3_dispatch_신호는_prefix_설정_시만_활성(monkeypatch):
+    # 회귀(a1 리뷰): TT_HUMAN_ACTOR_PREFIX 미설정 + dispatches:0 → TypeError 없이 비활성
+    preds = daemon.load_boundary_predicates(_REPO_DOC)
+    monkeypatch.delenv("TT_HUMAN_ACTOR_PREFIX", raising=False)
+    assert daemon._boundary_out_ids([_i("M4D-1", dispatches=0, assignee="worker")], preds) == {}
+    monkeypatch.setenv("TT_HUMAN_ACTOR_PREFIX", "human-")
+    hit = daemon._boundary_out_ids(
+        [_i("M4D-2", dispatches=0, assignee="human-01@host"),
+         _i("M4D-3", dispatches=0, assignee="worker"),
+         _i("M4D-4", dispatches=2, assignee="human-01@host")], preds)
+    assert hit.get("M4D-2") == "B3" and "M4D-3" not in hit and "M4D-4" not in hit
