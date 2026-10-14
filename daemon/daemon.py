@@ -226,15 +226,31 @@ def load_boundary_predicates(path=None):
             if isinstance(pr, dict) and pr.get("id")]
 
 
+def _dispatch_counts(iids, fetcher):
+    """B3 dispatch 신호 조달(M3DP) — prefix 매칭 비종결 카드에 한해
+    GET /issues/ID/dispatches(읽기 전용)로 건수를 채운다. 실제 응답은
+    list(runner/tt-runner.py) 또는 {"dispatches":[...]} 래퍼 — 둘 다 수용.
+    개별 조회 실패는 무시(해당 카드만 신호 비발화, 사이클 계속)."""
+    out = {}
+    for iid in iids:
+        try:
+            d = fetcher(f"/issues/{iid}/dispatches")
+        except Exception:
+            continue
+        if isinstance(d, dict):
+            d = d.get("dispatches") or []
+        if isinstance(d, list):
+            out[iid] = len(d)
+    return out
+
+
 def _boundary_out_ids(issues, preds):
     """술어 평가 — 데이터 기반: title_prefix·evidence_contains·
-    dispatches_zero_with_manual_claim(TT_HUMAN_ACTOR_PREFIX 설정 시 활성).
+    dispatchs_zero_with_manual_claim(TT_HUMAN_ACTOR_PREFIX 설정 시 활성).
 
-    주의(a2 리뷰): 라이브 /issues 목록 응답에는 dispatches 필드가 없다(probe 스냅샷
-    전용 — server/probe/core.py에서 /issues/ID/dispatches로 별도 계산). 따라서
-    서버가 필드를 노출하거나 테스트 픽스처가 주입하지 않는 한 dispatch 신호는
-    발화하지 않는다 — evidence_contains가 B3의 실질 동작 경로. 조달은 후속 카드.
-    알 수 없는 signal 키는 무시 — 문서 선진화 대응."""
+    B3의 dispatchs는 cycle()이 prefix 매칭 비종결 카드에 한해
+    /issues/ID/dispatches로 조달해 주입한다(M3DP). 알 수 없는 signal 키는
+    무시 — 문서 선진화 대응."""
     prefix = os.environ.get("TT_HUMAN_ACTOR_PREFIX")
     out = {}
     for i in issues:
@@ -285,6 +301,16 @@ def cycle(index, seen, fetcher=None, poster=None, boundary_predicates=None):
     # 상태 변경 없음(K91X 금지 계약 유지). 술어 하나라도 참이면 경계 밖.
     preds = boundary_predicates if boundary_predicates is not None \
         else load_boundary_predicates()
+    # --- 0b-전: B3 dispatch 조달(M3DP) — GET 최소화: prefix 매칭·비종결만.
+    prefix = os.environ.get("TT_HUMAN_ACTOR_PREFIX")
+    if prefix and preds:
+        cand = [i for i in issues
+                if i["state"] not in ("done", "cancelled")
+                and (i.get("assignee") or i.get("lease_by") or "").startswith(prefix)]
+        counts = _dispatch_counts([i["id"] for i in cand], fetcher)
+        for i in cand:
+            if i["id"] in counts:
+                i["dispatches"] = counts[i["id"]]
     boundary_ids = _boundary_out_ids(issues, preds) if preds else {}
     for i in issues:
         if i["id"] in boundary_ids and i["state"] not in ("done", "cancelled"):
