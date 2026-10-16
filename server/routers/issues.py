@@ -530,6 +530,13 @@ def patch_issue(issue_id: str, p: IssuePatch, ctx: Ctx = Depends(get_ctx)):
                                "waiting_for": "", "waiting_actor": "", "blocked_detail": "",
                                "blocked_notified_at": None, "blocked_question": "",
                                "blocked_options": "", "blocked_default": ""})
+        # HDPB: blocked 이탈은 목적지 무관하게 게이트 사족 소거 — blocked→in_progress
+        # 재개 경로(cursor-review 지적)까지. 위 블록이 todo/backlog/done/cancelled를
+        # 이미 커버하므로 여기는 누락 목적지만 실제로 걸린다.
+        if row["state"] == "blocked" and fields.get("state") not in (None, "blocked"):
+            fields.update({"waiting_for": "", "waiting_actor": "", "blocked_detail": "",
+                           "blocked_notified_at": None, "blocked_question": "",
+                           "blocked_options": "", "blocked_default": ""})
         if p.acceptance is not None:
             # 기존 카드 점진 보완 경로 — 생성 게이트와 달리 PATCH는 강제하지 않는다
             if not p.acceptance.strip():
