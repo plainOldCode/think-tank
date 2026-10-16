@@ -16,6 +16,12 @@ class IssueCreate(BaseModel):
     state: str = "todo"
     # TT 개선#3d: 자기발의(label=self) 카드의 발의자 — WIP 1 산정과 배정에 쓰인다
     nominee: str | None = None
+    # P8MN(M5283KGX-P8MN): brief 필드 — SCOPE·VERIFY·FORBIDDEN·TIMEBOX (acceptance 옆).
+    # auto 라벨 카드는 brief_verify가 필수다("missing fields are refuse-to-spawn").
+    brief_scope: str | None = None
+    brief_verify: str | None = None
+    brief_forbidden: str | None = None
+    brief_timebox: str | None = None
 
     @field_validator("acceptance")
     @classmethod
@@ -78,6 +84,11 @@ class IssuePatch(BaseModel):
     blocked_question: str | None = None
     blocked_options: list[str] | None = None
     blocked_default: str | None = None
+    # P8MN(M5283KGX-P8MN): brief 필드 갱신 — auto 라벨 추가 시 brief_verify 필요
+    brief_scope: str | None = None
+    brief_verify: str | None = None
+    brief_forbidden: str | None = None
+    brief_timebox: str | None = None
     # 폐기된 승인 우회. true면 422. 종결 승인은 human verify만.
     force_done: bool = False
     completion_report: CompletionReport | None = None

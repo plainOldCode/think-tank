@@ -9,6 +9,8 @@ import pytest
 def _create(client, **kw):
     base = {"title": "자기발의 카드", "acceptance": "완료 기준: 규약 통과"}
     base.update(kw)
+    if "auto" in (base.get("labels") or []):
+        base.setdefault("brief_verify", "pytest -q")  # P8MN auto 게이트
     return client.post("/issues", json=base)
 
 

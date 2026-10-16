@@ -11,7 +11,7 @@ def issue(iid, state="todo", **kw):
     base = {"id": iid, "state": state, "parent_id": None, "assignee": None,
             "lease_expires": None, "labels": [], "priority": None,
             "execution_attempt": 0, "dispatches": 0, "release_ready": False,
-            "waiting_for": None, "title": iid}
+            "waiting_for": None, "title": iid, "brief_verify": "pytest -q"}
     base.update(kw)
     return base
 

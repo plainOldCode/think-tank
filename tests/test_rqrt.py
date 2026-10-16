@@ -109,12 +109,12 @@ def test_receive_mode_undeclared가_규칙표에_있다():
 def test_pull도_수신_계약을_거친다(client):
     """pull 우회 차단(R2) — claim과 같은 관문."""
     _agent(client, "silent-agent")
-    _todo(client, title="RQRT pull 우회", labels=["auto"])
+    _todo(client, title="RQRT pull 우회", labels=["auto"], brief_verify="pytest -q")
     r = client.post("/pull", json={"agent": "silent-agent", "require_label": "auto"})
     assert r.status_code == 409 and "receive_mode_undeclared" in r.json()["detail"]
     # 선언 에이전트는 pull 정상
     _agent(client, "hook-agent", mode="hook")
-    _todo(client, title="RQRT pull 정상", labels=["auto"])
+    _todo(client, title="RQRT pull 정상", labels=["auto"], brief_verify="pytest -q")
     ok = client.post("/pull", json={"agent": "hook-agent", "require_label": "auto"})
     assert ok.status_code == 200 and ok.json()["assignee"] == "hook-agent"
 
@@ -136,7 +136,7 @@ def test_probe는_미선언_에이전트에게_배정하지_않는다(monkeypatc
     app.post("/agents", json={"name": "silent-agent", "base_url": "https://agent.example/hook"})
     app.post("/agents", json={"name": "declared-agent", "base_url": "https://agent.example/hook",
                               "receive_mode": "hook"})
-    app.post("/issues", json={"title": "혼합 배정", "state": "todo", "labels": ["auto"],
+    app.post("/issues", json={"title": "혼합 배정", "state": "todo", "labels": ["auto"], "brief_verify": "pytest -q",
                               "acceptance": "완료 기준: 테스트 통과"})
     monkeypatch.setattr(probe_core, "api", _make_api(app))
     monkeypatch.setenv("TT_AUTO_DISPATCH", "1")
@@ -158,9 +158,9 @@ def test_work_claim_409은_사이클을_죽이지_않는다(monkeypatch, tmp_pat
     app.post("/agents", json={"name": "race-agent", "base_url": "https://agent.example/hook",
                               "receive_mode": "hook"})
     i1 = app.post("/issues", json={"title": "실제 배정", "state": "todo",
-                                   "labels": ["auto"], "acceptance": "완료 기준: 테스트 통과"}).json()
+                                   "labels": ["auto"], "acceptance": "완료 기준: 테스트 통과", "brief_verify": "pytest -q"}).json()
     i2 = app.post("/issues", json={"title": "후속 카드", "state": "todo",
-                                   "labels": ["auto"], "acceptance": "완료 기준: 테스트 통과"}).json()
+                                   "labels": ["auto"], "acceptance": "완료 기준: 테스트 통과", "brief_verify": "pytest -q"}).json()
     monkeypatch.setattr(probe_core, "api", _make_api(app))
     work = {"agent": "dispatchd", "issue": None, "action": "work",
             "agent": "race-agent", "reason": "RQRT 왕복"}
@@ -209,9 +209,9 @@ def test_실제_사이클_409_후_후속_집행_생존(monkeypatch, tmp_path):
     app.post("/agents", json={"name": "agent-b", "base_url": "https://agent.example/hook",
                               "receive_mode": "hook"})
     c1 = app.post("/issues", json={"title": "경합 카드", "state": "todo",
-                                   "labels": ["auto"], "acceptance": "완료 기준: 테스트 통과"}).json()
+                                   "labels": ["auto"], "acceptance": "완료 기준: 테스트 통과", "brief_verify": "pytest -q"}).json()
     c2 = app.post("/issues", json={"title": "후속 카드", "state": "todo",
-                                   "labels": ["auto"], "acceptance": "완료 기준: 테스트 통과"}).json()
+                                   "labels": ["auto"], "acceptance": "완료 기준: 테스트 통과", "brief_verify": "pytest -q"}).json()
     # decide 직후 첫 배정 에이전트의 선언 취소 — 실제 claim 409 경합 시뮬레이션
     real_decide = probe_core.decide
 

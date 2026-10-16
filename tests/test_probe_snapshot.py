@@ -72,7 +72,7 @@ def test_snapshot_enriches_and_decides_cards_on_later_pages(client, snapshot_api
                     ('{"version":"v2"}', review))
         con.execute("UPDATE issues SET state='blocked', waiting_for='dependency', blocked_detail=? WHERE id=?",
                     (f"dependency: {ids[-1]}", blocked))
-        con.execute("UPDATE issues SET state='todo', labels='auto' WHERE id=?", (todo,))
+        con.execute("UPDATE issues SET state='todo', labels='auto', brief_verify='pytest -q' WHERE id=?", (todo,))
         con.execute("INSERT INTO comments (issue_id,author,body,ts) VALUES (?,?,?,?)",
                     (review, "tester", "review context", "2026-01-01T00:00:00"))
         con.commit()

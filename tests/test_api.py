@@ -143,7 +143,7 @@ def test_pull_steals_expired_lease(client, tmp_path):
 
 def test_pull_label_gate(client):
     mk(client, title="plain")
-    auto = mk(client, title="auto", labels=["auto"])
+    auto = mk(client, title="auto", labels=["auto"], brief_verify="pytest -q")
     assert client.post("/pull", json={"agent": "cron", "require_label": "auto"}).json()["id"] == auto["id"]
 
 

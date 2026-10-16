@@ -26,6 +26,11 @@ def create_issue(p: IssueCreate, ctx: Ctx = Depends(get_ctx)):
     iid = dbmod.new_id()
     ts = dbmod.now()
     nominee = ""
+    # P8MN(M5283KGX-P8MN): auto 라벨 = 자율 pull 승격 — VERIFY(정확한 명령) 없는
+    # 승격은 거부한다("missing fields are a refuse-to-spawn condition").
+    if "auto" in p.labels and not (p.brief_verify or "").strip():
+        raise HTTPException(422, "auto 라벨 카드는 brief_verify(정확한 검증 명령)가 필요합니다 "
+                            "(P8MN — 자율 pull 전제)")
     # TT 개선#3d: 자기발의 규약 — label=self는 backlog에서 시작, WIP 1,
     # 승격은 사람/트리아지만(패치 게이트). 발의자는 nominee로 기록해 배정.
     if "self" in p.labels:
@@ -47,10 +52,13 @@ def create_issue(p: IssueCreate, ctx: Ctx = Depends(get_ctx)):
                     409, f"self WIP 1: {nominee}의 열린 자기발의 카드가 이미 있다 — "
                          "종료 후 재발의 (TT 개선#3d)")
         c.execute(
-            "INSERT INTO issues (id,title,body,acceptance,state,priority,labels,assignee,nominee,parent_id,created_at,updated_at,todo_since) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO issues (id,title,body,acceptance,state,priority,labels,assignee,nominee,parent_id,created_at,updated_at,todo_since,"
+            "brief_scope,brief_verify,brief_forbidden,brief_timebox) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (iid, p.title, p.body, p.acceptance, p.state, p.priority, ",".join(p.labels),
-             nominee, nominee, p.parent_id, ts, ts, ts if p.state == "todo" else None),
+             nominee, nominee, p.parent_id, ts, ts, ts if p.state == "todo" else None,
+             (p.brief_scope or "").strip(), (p.brief_verify or "").strip(),
+             (p.brief_forbidden or "").strip(), (p.brief_timebox or "").strip()),
         )
         service.log_event(c, "issue.created", "issue", iid,
                           {"title": p.title[:80], "state": p.state, "parent": p.parent_id,
@@ -551,7 +559,20 @@ def patch_issue(issue_id: str, p: IssuePatch, ctx: Ctx = Depends(get_ctx)):
         if p.clear_priority:
             fields["priority"] = None
         if p.labels is not None:
+            # P8MN(M5283KGX-P8MN): auto 라벨 추가 = 자율 pull 승격 — VERIFY 필요.
+            # 같은 요청의 brief_verify 또는 기존 카드 값으로 충족한다. 이미 auto인
+            # 카드의 라벨 재설정은 재검사하지 않는다(승격 아님).
+            cur_labels = [s.strip() for s in (row["labels"] or "").split(",") if s.strip()]
+            if "auto" in [l.strip().lower() for l in p.labels] and "auto" not in cur_labels:
+                eff_verify = p.brief_verify if p.brief_verify is not None else (row["brief_verify"] or "")
+                if not eff_verify.strip():
+                    raise HTTPException(422, "auto 라벨 카드는 brief_verify(정확한 검증 명령)가 필요합니다 "
+                                        "(P8MN — 자율 pull 전제)")
             fields["labels"] = ",".join(p.labels)
+        for _bf in ("brief_scope", "brief_verify", "brief_forbidden", "brief_timebox"):
+            _bv = getattr(p, _bf)
+            if _bv is not None:
+                fields[_bf] = _bv.strip()
         if p.assignee is not None:
             if p.assignee == "":
                 fields["assignee"] = ""
