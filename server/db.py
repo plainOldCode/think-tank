@@ -48,6 +48,10 @@ CREATE TABLE IF NOT EXISTS issues (
   blocked_question TEXT NOT NULL DEFAULT '',
   blocked_options TEXT NOT NULL DEFAULT '',
   blocked_default TEXT NOT NULL DEFAULT '',
+  brief_scope TEXT NOT NULL DEFAULT '',
+  brief_verify TEXT NOT NULL DEFAULT '',
+  brief_forbidden TEXT NOT NULL DEFAULT '',
+  brief_timebox TEXT NOT NULL DEFAULT '',
   verified INTEGER NOT NULL DEFAULT 0,
   verified_at TEXT,
   verified_evidence TEXT NOT NULL DEFAULT '',
@@ -196,6 +200,11 @@ def connect(path):
                 "blocked_question TEXT NOT NULL DEFAULT ''",
                 "blocked_options TEXT NOT NULL DEFAULT ''",
                 "blocked_default TEXT NOT NULL DEFAULT ''",
+                # P8MN(M5283KGX-P8MN): brief 필드 — SCOPE·VERIFY·FORBIDDEN·TIMEBOX
+                "brief_scope TEXT NOT NULL DEFAULT ''",
+                "brief_verify TEXT NOT NULL DEFAULT ''",
+                "brief_forbidden TEXT NOT NULL DEFAULT ''",
+                "brief_timebox TEXT NOT NULL DEFAULT ''",
                 # SRM1: 지연 표기 — todo 진입 시각(기존 todo 행은 created_at 백필)
                 "todo_since TEXT",
                 # M42KC1XR-2DD1: 리뷰어 점유 — review 카드에서 판정자 표기(assignee는 작업자 유지)

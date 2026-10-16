@@ -12,6 +12,7 @@ reason code는 안정(stable) 문자열 — 로그·코멘트 파싱 전제라 �
 - "lease_held"            유효 작업 lease = 러너 실행 중(동일 차원, 단일 코드)
 - "budget:dispatch-tries>=2" / "budget:attempt>=2"   #1 배정 건너뜀 예산
 - "not_auto"              auto 모드인데 auto 라벨 없음(probe 한정)
+- "no_verify"             auto 모드인데 brief_verify(정확한 명령) 비어 있음(P8MN)
 """
 
 import json
@@ -49,7 +50,7 @@ LABEL_SEMANTICS = {
                    "v2.1 보고 강제 + probe 자동병합 휴면, 사람 병합 승인 대기(FHH8)",
     },
     # 선언 전용 — 기존 코드가 하드코딩으로 판정하는 어휘(연결 변경 없음, 문서화만).
-    "auto": {"exact": ("auto",), "used_at": "policy.eligible() not_auto 게이트"},
+    "auto": {"exact": ("auto",), "used_at": "policy.eligible() not_auto + no_verify 게이트(P8MN)"},
     "self": {"exact": ("self",), "used_at": "자기발의 구분"},
     "close": {"exact": ("close",), "used_at": "done 승인 예외(routers/issues.py)"},
     "needs-human": {"exact": ("needs-human",), "used_at": "자동화 정지(probe/eligible)"},
@@ -120,6 +121,10 @@ def busy_reason(i, *, now="", auto=False):
     if st == "todo":
         if auto and "auto" not in (_get(i, "labels") or []):
             return "not_auto"
+        # P8MN(M5283KGX-P8MN): auto pull은 VERIFY(정확한 명령) 없는 카드를
+        # spawn하지 않는다 — "missing fields are a refuse-to-spawn condition".
+        if auto and not (_get(i, "brief_verify") or "").strip():
+            return "no_verify"
         return budget_reason(i)
     return f"state:{st}" if st else "state:unknown"
 

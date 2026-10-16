@@ -9,6 +9,7 @@ import policy
 def _i(**kw):
     base = {"id": "X", "state": "todo", "archived": 0, "assignee": "", "reviewer": "",
             "lease_by": "", "lease_expires": None, "labels": ["auto"],
+            "brief_verify": "pytest -q",  # P8MN: auto pull은 VERIFY 있어야 spawn
             "dispatches": 0, "execution_attempt": 0}
     base.update(kw)
     return base
@@ -98,9 +99,11 @@ def test_pull_respects_dispatch_budget_with_real_dispatches(client, tmp_path):
     """R1 회귀: 실제 dispatch 레코드 2건이면 예산 소진 — pull은 다음 후보를 준다."""
     import sqlite3
     p1 = client.post("/issues", json={"title": "소진카드", "priority": 1,
-                                      "labels": ["auto"], "acceptance": "기준"}).json()
+                                      "labels": ["auto"], "acceptance": "기준",
+                                      "brief_verify": "pytest -q"}).json()
     p2 = client.post("/issues", json={"title": "유효후보", "priority": 2,
-                                      "labels": ["auto"], "acceptance": "기준"}).json()
+                                      "labels": ["auto"], "acceptance": "기준",
+                                      "brief_verify": "pytest -q"}).json()
     con = sqlite3.connect(tmp_path / "tt.db")
     for _ in range(2):
         con.execute("INSERT INTO dispatches (id, issue_id, agent, author, message, status, ts) "

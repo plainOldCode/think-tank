@@ -31,7 +31,8 @@ def _make_api(client):
 
 
 def new_issue(c, title, labels=("auto",), parent=None):
-    body = {"title": title, "labels": list(labels), "acceptance": "완료 기준: dispatch 전달 확인"}
+    body = {"title": title, "labels": list(labels), "acceptance": "완료 기준: dispatch 전달 확인",
+            **({"brief_verify": "pytest -q"} if "auto" in labels else {})}
     if parent:
         body["parent_id"] = parent
     r = c.post("/issues", json=body)
