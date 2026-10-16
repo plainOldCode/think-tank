@@ -59,6 +59,24 @@ def get_issue(c, issue_id):
     return row
 
 
+def resolve_agent_identity(c, cand: str) -> str | None:
+    """DX88(M5283J3A-DX88) — 수령자 정규화: 등록명 정확 일치 우선, Z1HP 별칭
+    사전(agents.aliases) 매칭 시 등록명 반환. 미매칭 None. 공백은 호출부에서 정리."""
+    s = (cand or "").strip()
+    if not s:
+        return None
+    if c.execute("SELECT 1 FROM agents WHERE name=?", (s,)).fetchone():
+        return s
+    for r in c.execute("SELECT name, aliases FROM agents").fetchall():
+        try:
+            aliases = json.loads(r["aliases"] or "[]")
+        except (ValueError, TypeError):
+            aliases = []
+        if s in aliases:
+            return r["name"]
+    return None
+
+
 def bump(c, issue_id, fields, expected_version=None):
     row = get_issue(c, issue_id)
     if expected_version is not None and row["version"] != expected_version:

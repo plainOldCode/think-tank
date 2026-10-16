@@ -39,10 +39,18 @@ def test_빈_문자열과_공백_별칭은_거부한다(client):
     assert _agent(client, "ghost-d", aliases=["   "]).status_code == 422
 
 
-def test_별칭에_공백과_골뱅이와_쉼표는_거부한다(client):
+def test_별칭에_공백과_쉼표와_선행_골뱅이는_거부한다(client):
     assert _agent(client, "ghost-e", aliases=["has space"]).status_code == 422
     assert _agent(client, "ghost-f", aliases=["@self"]).status_code == 422
     assert _agent(client, "ghost-g", aliases=["a,b"]).status_code == 422
+
+
+def test_별칭에_내부_골뱅이_호스트_표기는_허용한다(client):
+    """DX88(M5283J3A-DX88) — codex@m2pro류 수령자 표기를 별칭으로 등록해
+    claim/pull에서 등록명으로 정규화한다(Z1HP 원 취지는 멘션 토큰 충돌 방지)."""
+    r = _agent(client, "codex", aliases=["codex@m2pro", "codex@m2max"])
+    assert r.status_code == 201
+    assert r.json()["aliases"] == ["codex@m2pro", "codex@m2max"]
 
 
 def test_다른_에이전트_이름과_겹치는_별칭은_거부한다(client):
