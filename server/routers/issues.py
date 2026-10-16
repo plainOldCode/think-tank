@@ -336,6 +336,8 @@ def claim_review(issue_id: str, p: ReviewClaimIn, ctx: Ctx = Depends(get_ctx)):
 @router.post("/issues/{issue_id}/lease")
 def heartbeat(issue_id: str, p: LeaseIn, ctx: Ctx = Depends(get_ctx)):
     with ctx.con() as c:
+        # DX88: 별칭 수령 후 lease_by는 등록명 — 호출자 식별자도 같은 기준으로 비교
+        p.agent = service.resolve_agent_identity(c, p.agent) or p.agent
         row = service.get_issue(c, issue_id)
         if row["lease_by"] != p.agent:
             raise HTTPException(409, f"lease held by {row['lease_by'] or 'nobody'}")
@@ -350,6 +352,8 @@ def heartbeat(issue_id: str, p: LeaseIn, ctx: Ctx = Depends(get_ctx)):
              include_in_schema=True)
 def ping(issue_id: str, p: LeaseIn, ctx: Ctx = Depends(get_ctx)):
     with ctx.con() as c:
+        # DX88: heartbeat와 동일 — 별칭 호출자도 등록명 기준으로 판정
+        p.agent = service.resolve_agent_identity(c, p.agent) or p.agent
         row = service.get_issue(c, issue_id)
         if row["lease_by"] != p.agent:
             raise HTTPException(409, f"lease held by {row['lease_by'] or 'nobody'}")
@@ -619,6 +623,9 @@ def verify_issue(issue_id: str, p: VerifyIn, ctx: Ctx = Depends(get_ctx)):
     with ctx.con() as c:
         c.execute("BEGIN IMMEDIATE")
         row = service.get_issue(c, issue_id)
+        # DX88: verifier도 별칭→등록명 — 별칭 표기로 자기승인 가드 우회 방지.
+        # 미해석 값(사람 이름 등)은 원형 보존.
+        p.verifier = service.resolve_agent_identity(c, p.verifier) or p.verifier
         if p.review_subject is not None:
             from review_subject import subject, verdict
             current = dbmod.to_dict(row)

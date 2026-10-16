@@ -158,3 +158,128 @@ def test_lease_한도_판정도_정규화된_이름으로_집계한다(client):
     c = _todo(client, priority=3)
     r = client.post(f"/issues/{c['id']}/claim", json={"agent": "w"})
     assert r.status_code == 409 and "lease limit" in r.json()["detail"]
+
+
+# --- 리뷰 반영: lease/ping·verify 정규화 + 마이그레이션 (agy request-changes) ---
+
+def test_별칭으로_heartbeat와_ping이_통과한다(client):
+    """lease_by는 등록명(codex)으로 저장되지만 워커는 별칭(codex@m2pro)으로 계속 호출한다."""
+    from datetime import datetime, timedelta, timezone
+    _agent(client, "codex", aliases=["codex@m2pro"])
+    i = _todo(client)
+    client.post(f"/issues/{i['id']}/claim", json={"agent": "codex@m2pro"})
+    r = client.post(f"/issues/{i['id']}/lease", json={"agent": "codex@m2pro", "hours": 1})
+    assert r.status_code == 200, r.text
+    r = client.post(f"/issues/{i['id']}/ping", json={"agent": "codex@m2pro"})
+    assert r.status_code == 200, r.text
+
+
+def test_별칭_verifier로_자기승인이_차단된다(client):
+    """assignee는 정규명 저장, verifier는 별칭 전달 — 가드가 우회되면 안 된다."""
+    _agent(client, "worker", aliases=["worker@mini"])
+    i = _todo(client)
+    client.post(f"/issues/{i['id']}/claim", json={"agent": "worker@mini"})
+    client.patch(f"/issues/{i['id']}", json={"state": "review"})
+    r = client.post(f"/issues/{i['id']}/verify",
+                    json={"verifier": "worker@mini", "evidence": "pytest passed"})
+    assert r.status_code == 409 and "cross-review" in r.json()["detail"]
+
+
+def test_마이그레이션이_별칭_assignee를_등록명으로_치환한다(client, tmp_path):
+    import sqlite3
+    from migrations import migrate_assignees
+    _agent(client, "codex", aliases=["codex@m2pro"])
+    i = _todo(client)
+    con = sqlite3.connect(tmp_path / "tt.db")
+    con.row_factory = sqlite3.Row
+    con.execute("UPDATE issues SET assignee='codex@m2pro' WHERE id=?", (i["id"],))
+    con.commit()
+    stats = migrate_assignees(con, apply=True)
+    assert stats["assignee_normalized"] == 1
+    assert client.get(f"/issues/{i['id']}").json()["assignee"] == "codex"
+
+
+def test_마이그레이션이_숫자_정크_assignee를_해제한다(client, tmp_path):
+    import sqlite3
+    from migrations import migrate_assignees
+    i = _todo(client)
+    con = sqlite3.connect(tmp_path / "tt.db")
+    con.row_factory = sqlite3.Row
+    con.execute("UPDATE issues SET assignee='1' WHERE id=?", (i["id"],))
+    con.commit()
+    stats = migrate_assignees(con, apply=True)
+    assert stats["assignee_cleared"] == 1
+    assert client.get(f"/issues/{i['id']}").json()["assignee"] == ""
+
+
+def test_마이그레이션이_진행_카드의_정크_점유를_재큐한다(client, tmp_path):
+    """in_progress + 정크 점유는 회수 불가능한 좀비 — todo로 되돌려 재수령 가능하게."""
+    import sqlite3
+    from migrations import migrate_assignees
+    i = _todo(client)
+    con = sqlite3.connect(tmp_path / "tt.db")
+    con.row_factory = sqlite3.Row
+    con.execute("UPDATE issues SET state='in_progress', assignee='1', lease_by='1', "
+                "lease_expires='2099-01-01T00:00:00+0900' WHERE id=?", (i["id"],))
+    con.commit()
+    stats = migrate_assignees(con, apply=True)
+    row = client.get(f"/issues/{i['id']}").json()
+    assert row["state"] == "todo" and row["assignee"] == ""
+    assert row["lease_by"] == "" and row["lease_expires"] is None
+    # 재수령 가능 — 좀비가 아니라 큐로 복귀
+    assert client.post(f"/issues/{i['id']}/claim", json={"agent": "w"}).status_code == 200
+    assert stats["assignee_cleared"] == 1
+
+
+def test_마이그레이션은_미등록_호스트_표기를_보존한다(client, tmp_path):
+    """해석 불가한 이름은 감사 가치 보존 — 게이트 활성 후 새 수령만 차단된다."""
+    import sqlite3
+    from migrations import migrate_assignees
+    i = _todo(client)
+    con = sqlite3.connect(tmp_path / "tt.db")
+    con.row_factory = sqlite3.Row
+    con.execute("UPDATE issues SET assignee='legacy@old-host' WHERE id=?", (i["id"],))
+    con.commit()
+    migrate_assignees(con, apply=True)
+    assert client.get(f"/issues/{i['id']}").json()["assignee"] == "legacy@old-host"
+
+
+def test_마이그레이션은_멱등이다(client, tmp_path):
+    import sqlite3
+    from migrations import migrate_assignees
+    _agent(client, "codex", aliases=["codex@m2pro"])
+    a, b = _todo(client), _todo(client)
+    con = sqlite3.connect(tmp_path / "tt.db")
+    con.row_factory = sqlite3.Row
+    con.execute("UPDATE issues SET assignee='codex@m2pro' WHERE id=?", (a["id"],))
+    con.execute("UPDATE issues SET assignee='1', state='in_progress', lease_by='1' WHERE id=?", (b["id"],))
+    con.commit()
+    s1 = migrate_assignees(con, apply=True)
+    s2 = migrate_assignees(con, apply=True)
+    assert s1["assignee_normalized"] == 1 and s1["assignee_cleared"] == 1
+    assert s2 == {"assignee_normalized": 0, "assignee_cleared": 0,
+                  "lease_by_normalized": 0, "lease_by_cleared": 0}
+
+
+def test_마이그레이션_스크립트가_dry_run과_apply를_구분한다(client, tmp_path):
+    import sqlite3
+    import subprocess
+    import sys
+    from pathlib import Path
+    db = tmp_path / "tt.db"
+    i = _todo(client)
+    con = sqlite3.connect(db)
+    con.row_factory = sqlite3.Row
+    con.execute("UPDATE issues SET assignee='1' WHERE id=?", (i["id"],))
+    con.commit()
+    con.close()
+    script = str(Path(__file__).resolve().parent.parent / "scripts" / "migrate_assignees.py")
+    dry = subprocess.run([sys.executable, script, str(db)], capture_output=True, text=True)
+    assert dry.returncode == 0 and '"assignee_cleared": 1' in dry.stdout.replace("'", '"')
+    con = sqlite3.connect(db)
+    con.row_factory = sqlite3.Row
+    assert con.execute("SELECT assignee FROM issues WHERE id=?", (i["id"],)).fetchone()["assignee"] == "1"
+    app = subprocess.run([sys.executable, script, str(db), "--apply"], capture_output=True, text=True)
+    assert app.returncode == 0
+    con.row_factory = sqlite3.Row
+    assert con.execute("SELECT assignee FROM issues WHERE id=?", (i["id"],)).fetchone()["assignee"] == ""
