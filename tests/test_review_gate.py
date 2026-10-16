@@ -237,11 +237,24 @@ def test_execute_review_fix는_정확명을_가족해석보다_우선한다(gate
     assert rec.dispatches[0]["agent"] == "codex"
 
 
-def test_execute_review_fix는_해석실패시_사람통보로_종결한다(gate_on, monkeypatch):
-    """레지스트리에 가족이 없으면 dispatch 시도 없이 사람 통보(마커 유지 — 무음 반복 방지)."""
+def test_execute_review_fix는_해석실패시_등록_실행자에게_재위임한다(gate_on, monkeypatch):
+    """M5283HM4-0SZP — 원작업자 고정 해제: 가족이 없어도 등록 실행자가 있으면
+    대체 위임(통합 brief). 실행자가 전원 없을 때만 사람 통보로 종결한다."""
     card = {"id": "M428RMBY-XC0K", "state": "in_progress", "version": 5,
             "assignee": "skshim@tp-13", "comments": []}
     rec = Rec(card, agents=[{"name": "claude", "enabled": True, "base_url": "http://x", "receive_mode": "hook"}])
+    monkeypatch.setattr(probe.core, "api", rec)
+    probe.core.execute("u", _review_fix_act())
+    assert rec.dispatches and rec.dispatches[0]["agent"] == "claude"
+    assert any("claude" in c["body"] and "재위임" in c["body"] for c in rec.commented)
+    assert {"version": 5, "state": "review"} in rec.patched
+
+
+def test_execute_review_fix는_실행자_전원_부재시_사람통보로_종결한다(gate_on, monkeypatch):
+    """대체 후보가 하나도 없으면 기존 경로 유지 — dispatch 시도 없이 사람 통보."""
+    card = {"id": "M428RMBY-XC0K", "state": "in_progress", "version": 5,
+            "assignee": "skshim@tp-13", "comments": []}
+    rec = Rec(card, agents=[])
     monkeypatch.setattr(probe.core, "api", rec)
     probe.core.execute("u", _review_fix_act())
     assert not rec.dispatches

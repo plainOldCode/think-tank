@@ -355,6 +355,65 @@ def _resolve_executor(cand, agents):
     return None
 
 
+def _pick_rework_executor(url, issue_id, assignee, agents):
+    """M5283HM4-0SZP — 원작업자 고정 해제: 등록 실행자 중 대체 선정.
+
+    밴드 우선순위: 원작업자 tier와 동일 → impl → 기타(등록 순서 안정 정렬).
+    제외: NON_EXECUTORS, 원작업자 본인·그 가족(새 눈 원칙), 이 카드에서
+    진행 중 dispatch 보유자(JWW0 동일 판정). 전원 부재 시 None — 기존 사람 통보 경로.
+    원작업자 tier는 정확명이 등록돼 있을 때만 알 수 있고, 미해석 assignee는
+    impl 밴드부터 본다(수정 작업은 구현 계열이라).
+    """
+    a0 = (assignee or "").strip()
+    fam = agent_family(a0)
+    orig_tier = next((a.get("tier") for a in agents or [] if a.get("name") == a0), None)
+    default_tier = orig_tier if orig_tier in ("sota", "exec", "impl", "human") else "impl"
+
+    def band(a):
+        t = a.get("tier")
+        return 0 if t == default_tier else (1 if t == "impl" else 2)
+
+    try:
+        runs = api(url, f"/issues/{issue_id}/dispatches") or []
+    except Exception:
+        runs = []  # 조회 실패 fail-open — decide 가드가 1차 방어(JWW0)
+    busy = {x.get("agent") for x in runs
+            if isinstance(x, dict) and x.get("run_state") in _ACTIVE_RUN_STATES}
+    for a in sorted(agents or [], key=band):
+        n = a.get("name")
+        if not n or n == a0 or n in NON_EXECUTORS:
+            continue
+        if not a.get("enabled") or not a.get("base_url"):
+            continue
+        if fam and agent_family(n) == fam:
+            continue
+        if n in busy:
+            continue
+        return n
+    return None
+
+
+def _rework_brief(assignee, act, cur, msg):
+    """M5283HM4-0SZP — 통합 발령문: 원 brief + 반려 판정 + 이전 보고 + PR.
+
+    대체 실행자는 원 세션 맥락이 없으므로 판정·보고를 발령문에 담는다(1200자 절단).
+    """
+    parts = [msg, "", "--- 반려 판정 ---"]
+    vcoms = [c for c in (cur.get("comments") or [])
+             if "review: request-changes" in (c.get("body") or "")]
+    if vcoms:
+        last = vcoms[-1]
+        parts.append(f"[{last.get('author') or '?'}] {(last.get('body') or '')[:1200]}")
+    else:
+        parts.append("(판정 코멘트를 카드에서 확인)")
+    cr = cur.get("completion_report") or ""
+    parts += ["", "--- 이전 보고 ---", (str(cr)[:1200] if cr else "(보고 없음)"), "",
+              "--- PR ---",
+              f"https://github.com/{act.get('repo')}/pull/{act['pr']} "
+              f"(branch {act.get('branch', '')}, head {(act.get('head_sha') or '')[:8]})"]
+    return "\n".join(parts)
+
+
 def pick_reviewer(assignee, agents, busy, rmap, fallback=None):
     """라우팅 + 미가용 폴백(순수). 전부 미가용이면 None — 레거시 폴백으로.
 
@@ -2291,6 +2350,7 @@ def execute(url, act):
             return
         assignee = cur.get("assignee") or ""
         delegated = False
+        rerouted = False
         if assignee:
             # R4(6XKC): assignee 발령자 식별코드(skshim@tp-13류)는 등록 러너명과 달라
             # dispatch 404가 누적됐다(42건) — PR#80 가족 해석(_resolve_agent)으로
@@ -2301,11 +2361,20 @@ def execute(url, act):
             agents = [a for a in api(url, "/agents") or []
                       if a.get("enabled") and a.get("base_url")]
             target = _resolve_executor(assignee, agents)
+            # M5283HM4-0SZP: 원작업자 고정 해제 — 미도달·실행 불가면 등록 실행자 중
+            # 대체 선정(동일 tier 우선)해서 새 dispatch로 재위임한다.
+            if target is None or target in NON_EXECUTORS:
+                fb = _pick_rework_executor(url, act["issue"], assignee, agents)
+                if fb is not None:
+                    rerouted = True
+                    target = fb
             msg = (f"[auto review-fix] PR #{act['pr']} 리뷰 request-changes — 리뷰 코멘트(PR/카드)를 "
                    f"읽고 같은 브랜치 {act.get('branch', '')} 위에서 수정 커밋. "
                    f"head {(act.get('head_sha') or '')[:8]}. push 후 즉시 종료 — "
                    f"재리뷰 요청·병합은 probe가 자동 진행하니 결과를 기다리거나 폴링하지 말 것"
                    f"(다음 단계 필요 시 보드가 재호출).")
+            if rerouted:
+                msg = _rework_brief(assignee, act, cur, msg)
             if target is None:
                 _ratt = cur.get("execution_attempt") or 0
                 _rm = f"[rework-relay #{act['pr']}/{(act.get('head_sha') or '')[:8]} a{_ratt}]"
@@ -2360,10 +2429,14 @@ def execute(url, act):
         except Exception:
             pass
         # PXCJ 리뷰 R1 — 위임 불가·실패인데 "수정 위임"으로 남기면 직전 통보와 모순
+        if delegated and rerouted:
+            _deleg = (f"review 반납+원작업자({assignee}) 미도달 — 등록 실행자 {target}"
+                      "에게 새 dispatch 재위임")
+        else:
+            _deleg = "review 반납+수정 위임" if delegated else "review 반납 — 수정 위임 없음, 사람 판단 대기"
         api(url, f"/issues/{act['issue']}/comments", "POST",
             {"author": "probe", "body": f"{act['marker']} PR#{act['pr']} request-changes — "
-                                        + ("review 반납+수정 위임" if delegated
-                                           else "review 반납 — 수정 위임 없음, 사람 판단 대기")})
+                                        + _deleg})
         return
     v = get_version(url, act["issue"])
     if kind == "review-note":

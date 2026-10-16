@@ -46,6 +46,7 @@ class Rec:
     def __init__(self, card, agents=(), dispatch_fail=False):
         self.card = card
         self.agents = list(agents)
+        self.runs = []  # 진행 중 dispatch 스냅샷 (M5283HM4-0SZP JWW0 테스트용)
         self.dispatches = []
         self.commented = []
         self.patched = []
@@ -55,6 +56,8 @@ class Rec:
     def __call__(self, url, path, method="GET", body=None):
         if method == "GET" and path.endswith("/agents"):
             return [dict(a) for a in self.agents]
+        if path.endswith("/dispatches") and method == "GET":
+            return list(self.runs)
         if method == "GET":
             return dict(self.card)
         if method == "PATCH":
@@ -479,3 +482,70 @@ def test_gh_head_조회_실패시_폐기한다(monkeypatch):
                         lambda *a: (_ for _ in ()).throw(RuntimeError("gh 실패")))
     probe_core.execute("u", dict(fb[0]))
     assert not rec.patched  # 조회 불가 — 회귀 폐기
+
+
+# --- M5283HM4-0SZP: 원작업자 고정 해제 — 등록 실행자 중 대체 선정 ---
+
+def _agents_pool():
+    return [
+        {"name": "kanban-adapter", "tier": "exec", "enabled": True, "base_url": "http://k"},
+        {"name": "codex", "tier": "impl", "enabled": True, "base_url": "http://c"},
+        {"name": "cursor", "tier": "exec", "enabled": True, "base_url": "http://u"},
+        {"name": "agy", "tier": "sota", "enabled": True, "base_url": "http://a"},
+    ]
+
+
+def _verdict_card(assignee, **kw):
+    """request-changes 판정 + 이전 보고가 붙은 review 카드."""
+    return _issue(state="review", assignee=assignee,
+                  comments=[{"author": "agy", "id": 9, "ts": "2026-10-16T22:00:00+0900",
+                             "body": f"review: request-changes\nTT#{CARD}@a1/x\n\n마이그레이션 누락"}],
+                  completion_report="이전 보고: 979 passed", **kw)
+
+
+def test_미등록_assignee는_등록_실행자에게_새_dispatch로_재위임된다(monkeypatch):
+    """review-fix 404 낙하 대신 — 미해석 assignee는 impl 밴드 실행자에게 통합 brief로."""
+    card = _verdict_card("skshim@skshimui-MacBookPro")
+    rec = Rec(card, agents=_agents_pool())
+    monkeypatch.setattr(probe_core, "api", rec)
+    probe_core.execute("u", _review_fix_act(att=1))
+    assert rec.dispatches and rec.dispatches[0]["agent"] == "codex"
+    body = rec.dispatches[0]["message"]
+    assert "request-changes" in body and "이전 보고" in body and "pull/9" in body
+    assert not any("[rework-relay" in (c.get("body") or "") for c in rec.commented)
+    assert not rec.messages  # 사람 통보 없음 — 자동 재위임 성공
+    assert not any("assignee" in (p or {}) for p in rec.patched)  # 할당 유지
+    assert any("codex" in (c.get("body") or "") for c in rec.commented
+               if c.get("author") == "probe")  # 재위임 기록
+
+
+def test_실행불가_assignee는_동일_tier_실행자가_우선한다(monkeypatch):
+    """정확명이 non-executor면 원 tier(exec) 실행자 → impl 순 — 어댑터 회귀 금지."""
+    card = _verdict_card("kanban-adapter")
+    rec = Rec(card, agents=_agents_pool())
+    monkeypatch.setattr(probe_core, "api", rec)
+    probe_core.execute("u", _review_fix_act(att=1))
+    assert rec.dispatches and rec.dispatches[0]["agent"] == "cursor"
+
+
+def test_진행중_dispatch_보유_후보는_건너뛴다(monkeypatch):
+    """JWW0 동일 판정 — 대체 후보도 이 카드에서 진행 중이면 다음 후보."""
+    card = _verdict_card("kanban-adapter")
+    rec = Rec(card, agents=_agents_pool())
+    rec.runs = [{"agent": "cursor", "run_state": "running"}]
+    monkeypatch.setattr(probe_core, "api", rec)
+    probe_core.execute("u", _review_fix_act(att=1))
+    assert rec.dispatches and rec.dispatches[0]["agent"] == "codex"
+
+
+def test_대체_후보가_없으면_기존대로_사람_통보한다(monkeypatch):
+    """실행자 전원 부재 — relay 마커+보드 플래그 유지(하위 호환)."""
+    card = _verdict_card("skshim@skshimui-MacBookPro")
+    rec = Rec(card, agents=[{"name": "kanban-adapter", "tier": "exec",
+                             "enabled": True, "base_url": "http://k"}])
+    monkeypatch.setattr(probe_core, "api", rec)
+    probe_core.execute("u", _review_fix_act(att=1))
+    assert not rec.dispatches
+    relayed = [c for c in rec.commented if c.get("author") == "probe"
+               and f"[rework-relay #9/{SHA8} a1]" in (c.get("body") or "")]
+    assert relayed and rec.messages
