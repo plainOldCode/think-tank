@@ -38,6 +38,16 @@ def _truncate_blocks(blocks):
 class VerificationStage(_V2Stage):
     commands: str = Field(min_length=1)
     evidence: str | list[dict] = Field(min_length=1)
+    # 84R6(M5283K1Q-84R6): 판정 단계 enum — 증거 수준을 리뷰어가 즉시 판단한다.
+    # "CI green은 판정이 아니다": result=passed는 행동 검증 단계(live/unit-test)에서만.
+    # v2.1 계약은 선택(하위 호환), v2.2 계약 보고는 필수.
+    verification_level: Literal["live-verified", "unit-test-verified",
+                                "type-check-only", "planned-only", "blocked"] | None = None
+
+
+def _is_structured_contract(cv: str) -> bool:
+    """v2.1 이상 계약 — verification.evidence 배열(구조화) 수용."""
+    return cv.startswith("tt-tdd-v2.1") or cv.startswith("tt-tdd-v2.2")
 
 
 class CompletionReport(BaseModel):
@@ -68,7 +78,7 @@ class CompletionReport(BaseModel):
         if stage is None or isinstance(stage.evidence, str):
             return self
         cv = self.contract_version
-        if not cv.startswith("tt-tdd-v2.1"):
+        if not _is_structured_contract(cv):
             raise ValueError("structured evidence requires tt-tdd-v2.1+")
         blocks = [EvidenceBlock(**b) for b in stage.evidence]
         if not blocks:
@@ -76,6 +86,27 @@ class CompletionReport(BaseModel):
         if self.result == "passed" and any(b.exit_code != 0 for b in blocks):
             raise ValueError("result=passed contradicts a failed exit_code in evidence")
         stage.evidence = _truncate_blocks(blocks)
+        return self
+
+    @model_validator(mode="after")
+    def verification_level_contract(self):
+        """84R6 — 판정 단계와 result의 정합 검증 + v2.2 계약 필수화.
+
+        passed는 행동 검증 단계(live-verified·unit-test-verified)에서만 허용 —
+        type-check-only/planned-only/blocked는 검증 수준이 부족하거나 미검증이다.
+        """
+        stage = self.verification
+        if stage is None or not self.contract_version.startswith("tt-tdd-v2"):
+            return self
+        level = stage.verification_level
+        if self.contract_version.startswith("tt-tdd-v2.2") and level is None:
+            raise ValueError("contract v2.2 reports require "
+                             "verification.verification_level "
+                             "(live-verified|unit-test-verified|type-check-only|planned-only|blocked)")
+        if level is not None and self.result == "passed" and \
+                level not in ("live-verified", "unit-test-verified"):
+            raise ValueError(f"result=passed requires live-verified or unit-test-verified, "
+                             f"not {level!r} — CI green은 판정이 아니다")
         return self
 
     @model_validator(mode="after")

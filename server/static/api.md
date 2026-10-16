@@ -134,6 +134,31 @@ independent verification results; whether work was actually performed and the tr
 are confirmed by project verifiers, CI, and reviewers.
 <!-- tt-work-contract-v2.1:end -->
 
+<!-- tt-work-contract-v2.2:start -->
+## Base methodology (contract v2.2 — required verification level)
+
+Follow all rules of contract v2.1 (three stages, structured evidence blocks, delivery selection,
+review landing, subject approval). What v2.2 adds is a **required verification level**.
+
+`verification.verification_level` is mandatory and must be one of:
+
+- `live-verified` — verified against the live/production system or real user-visible behavior
+- `unit-test-verified` — verified by executing the test suite (pytest etc.) with a passing result
+- `type-check-only` — type check / lint / static analysis only; **not** behavioral verification
+- `planned-only` — planned work without executed verification
+- `blocked` — work stopped before verification
+
+Consistency rule: `result: "passed"` is only accepted with `live-verified` or
+`unit-test-verified`. "CI green은 판정이 아니다" — a green check on someone else's runner
+does not attest your behavior; the report's own evidence blocks must carry it. `failed` and
+`inconclusive` reports may carry any level. The enum is advisory for v2.1 reports (optional,
+validated when present) and mandatory for v2.2.
+
+Flat top-level fields (`red_command`, `red_evidence`, `command`, `evidence`) remain forbidden
+for v2-family writes; reading legacy v1 reports stays supported. Submit with
+`tt submit ID --report report.json`.
+<!-- tt-work-contract-v2.2:end -->
+
 ## Standard workflow
 
 ```bash
