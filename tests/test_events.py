@@ -189,6 +189,8 @@ def test_release_ready_comment_event(client):
     dep = mk(client, title="의존 원본")
     i = mk(client, title="블록 카드")  # 의존은 blocked_detail 토큰으로 (부모관계 X — 부모 done은 409)
     client.patch(f"/issues/{i['id']}", json={"state": "blocked", "waiting_for": "dependency",
+                       "blocked_question": "의존 완료를 기다릴까요?", "blocked_options": ["대기", "해제"],
+                       "blocked_default": "대기",
                                              "blocked_detail": f"의존 {dep['id']}"})
     # review 진입 후 verify → done → notify_blocked_dependents (verify는 review 전용)
     client.patch(f"/issues/{dep['id']}", json={"state": "in_progress"})
@@ -266,6 +268,8 @@ def test_release_ready_notify_assignee(client, hook_server):
     client.post("/agents", json={"name": "rel-on", "base_url": hook_server, "notify_hook": True})
     client.post("/agents", json={"name": "rel-off", "base_url": hook_server, "notify_hook": False})
     client.patch(f"/issues/{i['id']}", json={"state": "blocked", "waiting_for": "dependency",
+                       "blocked_question": "의존 완료를 기다릴까요?", "blocked_options": ["대기", "해제"],
+                       "blocked_default": "대기",
                                              "blocked_detail": f"의존 {dep['id']}",
                                              "assignee": "rel-on"})
     Hook.received.clear()

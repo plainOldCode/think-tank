@@ -643,7 +643,7 @@ def test_dispatch_progress_blocked_comment_escalates(client, hook_server):
     d = client.post(f"/issues/{i['id']}/dispatch", json={"agent": "demo", "message": "m"}).json()
     # 카드를 blocked로 — waiting_for=human 마커 코멘트와 함께 통합 접수
     client.post(f"/issues/{i['id']}/comments", json={"author": "runner:x", "body": "blocked"})
-    client.patch(f"/issues/{i['id']}", json={"state": "blocked"})
+    client.patch(f"/issues/{i['id']}", json={"state": "blocked", "waiting_for": "human", "blocked_question": "계속할까요?", "blocked_options": ["계속", "중단"], "blocked_default": "계속"})
     client.post(f"/issues/{i['id']}/dispatches/{d['id']}/progress", json={
                                    "state": "failed", "exit": 2,
                                    "comment": "runner:tp13 dispatch#%d BLOCKED — 승인 요구 exit=2 session=s "
@@ -733,6 +733,10 @@ def test_dispatch_guards(client, hook_server):
 # ---- blocked 지능화 (M3BZS1FS-5722): waiting_for/why-blocked/reconcile/④ ----
 
 def to_blocked(client, iid, **kw):
+    kw.setdefault("waiting_for", "human")
+    kw.setdefault("blocked_question", "계속할까요?")
+    kw.setdefault("blocked_options", ["계속", "중단"])
+    kw.setdefault("blocked_default", "계속")
     client.patch(f"/issues/{iid}", json={"state": "in_progress", "assignee": "w@t"})
     r = client.patch(f"/issues/{iid}", json={"state": "blocked", **kw})
     assert r.status_code == 200, r.text
@@ -741,9 +745,12 @@ def to_blocked(client, iid, **kw):
 
 def test_waiting_for_fields_and_backcompat(client):
     i = mk(client)
-    # 미입력 blocked: 기존 동작 그대로 (필드 빈 값)
-    b = to_blocked(client, i["id"])
-    assert b["waiting_for"] == "" and b["waiting_actor"] == "" and b["blocked_detail"] == ""
+    # HDPB: 미입력 blocked 전이는 409 — 빈 waiting_for·게이트 필드 없는 진입 금지
+    r = client.patch(f"/issues/{i['id']}", json={"state": "blocked"})
+    assert r.status_code == 409 and "waiting_for" in r.json()["detail"]
+    b = to_blocked(client, i["id"], waiting_for="human", blocked_question="계속할까요?",
+                   blocked_options=["계속", "중단"], blocked_default="계속")
+    assert b["waiting_for"] == "human" and b["waiting_actor"] == "" and b["blocked_detail"] == ""
     # enum 검증
     assert client.patch(f"/issues/{i['id']}",
                         json={"waiting_for": "vibes"}).status_code == 422
@@ -766,7 +773,7 @@ def test_waiting_for_on_transition(client):
     assert b["waiting_for"] == "gate" and b["blocked_detail"] == "rm 패턴 게이트"
 
 
-def test_why_blocked_projection(client):
+def test_why_blocked_projection(client, tmp_path):
     dep = mk(client, title="선행 작업")
     i = mk(client, title="막힌 카드")
     to_blocked(client, i["id"], waiting_for="dependency",
@@ -784,8 +791,17 @@ def test_why_blocked_projection(client):
     assert "BLOCKED" in w["evidence"]
     # 비-blocked는 409, legacy 코멘트 추정, 의존 done → release_ready
     assert client.get(f"/issues/{dep['id']}/why-blocked").status_code == 409
+    # 레거시 blocked 행(HDPB 이전 데이터) — 필드 비어 있고 코멘트만 존재.
+    # 새 전이는 게이트 필드가 필수라 직접 시드로만 재현 가능.
     j = mk(client, title="레거시")
-    to_blocked(client, j["id"])
+    client.patch(f"/issues/{j['id']}", json={"state": "in_progress", "assignee": "l@x"})
+    client.patch(f"/issues/{j['id']}", json={"state": "blocked", "waiting_for": "external",
+                                             "blocked_question": "?", "blocked_options": ["a"],
+                                             "blocked_default": "a"})
+    import sqlite3 as _sq
+    _con = _sq.connect(str(tmp_path / "tt.db"))
+    _con.execute("UPDATE issues SET waiting_for='', blocked_question='', blocked_options='', blocked_default='' WHERE id=?", (j["id"],))
+    _con.commit(); _con.close()
     client.post(f"/issues/{j['id']}/comments",
                 json={"author": "runner:x", "body": "BLOCKED — waiting_for=human 발생"})
     w2 = client.get(f"/issues/{j['id']}/why-blocked").json()
@@ -1136,7 +1152,7 @@ def test_blocked_human_notify_level4(client, hook_server):
     # 같은 카드 재-blocked(notified 필드 유지) → 추가 발송 없음 (dedup)
     client.patch(f"/issues/{i['id']}", json={"state": "todo"})
     client.patch(f"/issues/{i['id']}", json={"state": "in_progress", "assignee": "w@t"})
-    client.patch(f"/issues/{i['id']}", json={"state": "blocked", "waiting_for": "human"})
+    client.patch(f"/issues/{i['id']}", json={"state": "blocked", "waiting_for": "human", "blocked_question": "계속할까요?", "blocked_options": ["계속", "중단"], "blocked_default": "계속"})
     # 이탈 시 notified 리셋 → 재알림은 '새 대기'이므로 1회 더 허용 (총 2), 중복 자체는 없음
     notes2 = [c["body"] for c in client.get(f"/issues/{i['id']}").json()["comments"]
               if c["author"] == "tt-server" and "[level4-notify]" in c["body"]]
@@ -1150,7 +1166,7 @@ def test_blocked_comment_marker_notify_legacy(client, hook_server):
     Hook.received, Hook.mode = [], "ok"
     client.post("/agents", json={"name": "notify-x", "base_url": hook_server, "notify_hook": True})
     i = mk(client, title="레거시 러너 보류")
-    to_blocked(client, i["id"])  # 사족 없는 blocked — 이 순간 알림 없음
+    to_blocked(client, i["id"], waiting_for="external", blocked_question="계속할까요?", blocked_options=["계속", "중단"], blocked_default="계속")  # human 아님 — 이 순간 알림 없음
     assert sum(1 for h, _ in Hook.received if h.get("x-tt-command") == "notify") == 0
     client.post(f"/issues/{i['id']}/comments",
                 json={"author": "runner:m2max", "body": "dispatch#9 BLOCKED — waiting_for=human 입력 대기"})
@@ -1165,7 +1181,7 @@ def test_notify_skips_agents_without_flag(client, hook_server):
     Hook.received, Hook.mode = [], "ok"
     client.post("/agents", json={"name": "plain", "base_url": hook_server})  # notify_hook off
     i = mk(client, title="알림 없음")
-    to_blocked(client, i["id"], waiting_for="human")
+    to_blocked(client, i["id"], waiting_for="human", blocked_question="계속할까요?", blocked_options=["계속", "중단"], blocked_default="계속")
     assert all(h.get("x-tt-command") != "notify" for h, _ in Hook.received)
 
 
@@ -1250,7 +1266,9 @@ def test_lease_released_on_all_exits(client):
         v = c1["version"]
         if target == "cancelled":  # state machine: in_progress→todo→cancelled
             v = client.patch(f"/issues/{i['id']}", json={"version": v, "state": "todo"}).json()["version"]
-        d = client.patch(f"/issues/{i['id']}", json={"version": v, "state": target})
+        extra = {"waiting_for": "human", "blocked_question": "계속할까요?",
+                 "blocked_options": ["계속", "중단"], "blocked_default": "계속"} if target == "blocked" else {}
+        d = client.patch(f"/issues/{i['id']}", json={"version": v, "state": target, **extra})
         assert d.status_code == 200, f"{target}: {d.text[:120]}"
         g = d.json()
         now = dt.datetime.strptime(dbmod.now(), "%Y-%m-%dT%H:%M:%S%z")

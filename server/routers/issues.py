@@ -127,6 +127,29 @@ def get_tree(issue_id: str, ctx: Ctx = Depends(get_ctx)):
         return build(issue_id, 0, c)
 
 
+def _validate_gate_fields(question, options, default):
+    """HDPB(M5283MWX-HDPB) — blocked 게이트 필수 필드 검증(pstack gates.md 형식).
+    정규화된 {blocked_question, blocked_options(JSON 문자열), blocked_default} 반환,
+    미충족 시 422."""
+    q = (question or "").strip()
+    opts = [o.strip() for o in (options or []) if (o or "").strip()]
+    dflt = (default or "").strip()
+    if not q:
+        raise HTTPException(422, "blocked 전이는 질문(blocked_question)이 필요합니다 — "
+                            "사람이 무엇을 판단해야 하는지 한 줄로")
+    if not opts:
+        raise HTTPException(422, "blocked 전이는 선택지(blocked_options)가 필요합니다 — "
+                            "빈 항목 없는 목록 1개 이상")
+    if not dflt:
+        raise HTTPException(422, "blocked 전이는 무응답 기본값(blocked_default)이 필요합니다 — "
+                            "선택지 중 하나")
+    if dflt not in opts:
+        raise HTTPException(422, f"blocked_default는 선택지 중 하나여야 합니다: {dflt!r} ∉ {opts}")
+    return {"blocked_question": q,
+            "blocked_options": json.dumps(opts, ensure_ascii=False),
+            "blocked_default": dflt}
+
+
 def _normalize_claim_agent(c, agent: str) -> str:
     """DX88(M5283J3A-DX88): 수령자 이름 정규화 — 공백 제거, 빈 값·숫자만 있는 값 422,
     Z1HP 별칭→등록명 치환. TT_REQUIRE_KNOWN_AGENT=1이면 미등록 이름 409.
@@ -499,12 +522,14 @@ def patch_issue(issue_id: str, p: IssuePatch, ctx: Ctx = Depends(get_ctx)):
                 fields.update({"lease_by": "", "lease_expires": None})
                 # blocked 사족은 blocked 이탈 시 자동 소거 (재-blocked 시 재입력)
                 fields.update({"waiting_for": "", "waiting_actor": "", "blocked_detail": "",
-                               "blocked_notified_at": None})
+                               "blocked_notified_at": None, "blocked_question": "",
+                               "blocked_options": "", "blocked_default": ""})
             if fields.get("state") == "review":
                 # review = done 강등 대기: worker lease 반납 + blocked 사족 리셋(재진입 시 재알림)
                 fields.update({"lease_by": "", "lease_expires": None,
                                "waiting_for": "", "waiting_actor": "", "blocked_detail": "",
-                               "blocked_notified_at": None})
+                               "blocked_notified_at": None, "blocked_question": "",
+                               "blocked_options": "", "blocked_default": ""})
         if p.acceptance is not None:
             # 기존 카드 점진 보완 경로 — 생성 게이트와 달리 PATCH는 강제하지 않는다
             if not p.acceptance.strip():
@@ -539,7 +564,22 @@ def patch_issue(issue_id: str, p: IssuePatch, ctx: Ctx = Depends(get_ctx)):
         if new_state not in ("done", "cancelled") and row["state"] in ("done", "cancelled"):
             fields["archived"] = 0
         # blocked 사족 (①): waiting_for는 4종 enum만, 상태가 blocked일 때만 유효.
-        # 미입력(미지정)이면 기존 동작 그대로 — 하위 호환.
+        # HDPB: blocked "전이"는 게이트 형식(질문·선택지·무응답 기본값)이 필수 —
+        # 빈 waiting_for는 409. 기존 blocked 카드 사족 갱신은 기존값과 병합 판정.
+        if p.state == "blocked" and row["state"] != "blocked":
+            if not (p.waiting_for or "").strip():
+                raise HTTPException(409, "blocked 전이는 waiting_for가 필요합니다 "
+                                    f"({sorted(dbmod.WAITING_FOR)} 중 하나)")
+            fields.update(_validate_gate_fields(p.blocked_question, p.blocked_options,
+                                                p.blocked_default))
+        elif row["state"] == "blocked" and (
+                p.blocked_question is not None or p.blocked_options is not None
+                or p.blocked_default is not None):
+            fields.update(_validate_gate_fields(
+                p.blocked_question if p.blocked_question is not None else row["blocked_question"],
+                p.blocked_options if p.blocked_options is not None
+                else json.loads(row["blocked_options"] or "[]"),
+                p.blocked_default if p.blocked_default is not None else row["blocked_default"]))
         if p.waiting_for is not None:
             wf = p.waiting_for
             if wf not in dbmod.WAITING_FOR:

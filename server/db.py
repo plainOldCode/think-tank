@@ -45,6 +45,9 @@ CREATE TABLE IF NOT EXISTS issues (
   waiting_for TEXT NOT NULL DEFAULT '',
   waiting_actor TEXT NOT NULL DEFAULT '',
   blocked_detail TEXT NOT NULL DEFAULT '',
+  blocked_question TEXT NOT NULL DEFAULT '',
+  blocked_options TEXT NOT NULL DEFAULT '',
+  blocked_default TEXT NOT NULL DEFAULT '',
   verified INTEGER NOT NULL DEFAULT 0,
   verified_at TEXT,
   verified_evidence TEXT NOT NULL DEFAULT '',
@@ -189,6 +192,10 @@ def connect(path):
                 "completion_report TEXT NOT NULL DEFAULT ''",
                 "submission_revision INTEGER NOT NULL DEFAULT 0",
                 "delivery_receipt TEXT NOT NULL DEFAULT ''",
+                # HDPB(M5283MWX-HDPB): blocked 전이 필수 게이트 필드 — 질문·선택지(JSON 배열)·기본값
+                "blocked_question TEXT NOT NULL DEFAULT ''",
+                "blocked_options TEXT NOT NULL DEFAULT ''",
+                "blocked_default TEXT NOT NULL DEFAULT ''",
                 # SRM1: 지연 표기 — todo 진입 시각(기존 todo 행은 created_at 백필)
                 "todo_since TEXT",
                 # M42KC1XR-2DD1: 리뷰어 점유 — review 카드에서 판정자 표기(assignee는 작업자 유지)
