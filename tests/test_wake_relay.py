@@ -240,3 +240,41 @@ def test_cursor_roundtrip(tmp_path, monkeypatch):
     assert R.read_cursor() == 0
     R.write_cursor(3239)
     assert R.read_cursor() == 3239
+
+
+# ---------- SRJY(2026-10-17): 리뷰 stale·홀드 신호 ----------
+
+def test_probe_delivery_hold_wakes_assignee():
+    """SRJY 사건 재현 — approve 후 head가 바뀌면 probe가 hold를 남긴다."""
+    row = _row(payload={"author": "probe",
+                        "preview": "[tt-delivery-hold-7473525f65cc TT#M-S@a1/x] "
+                                   "PR 대상/head/base 변경 — 현재 산출물로 보고 재제출·재리뷰 필요"})
+    prompt = R.handle_event(row, cache=_cache())
+    assert prompt is not None and "tt-delivery-hold" in prompt
+
+
+def test_probe_review_re_request_wakes_assignee():
+    """stale verdict → probe 재리뷰 요청도 신호다."""
+    row = _row(payload={"author": "probe",
+                        "preview": "[review-req #115/7941d573] 재판정 필요 → agy"})
+    assert R.handle_event(row, cache=_cache()) is not None
+
+
+def test_probe_needs_merge_and_high_risk_hold_wake():
+    for marker in ("[needs-merge a2] 병합 불가 — 사람 판단 요청",
+                   "[tt-high-risk-hold a1 #115/abc] 고위험 — 사람 병합 승인 대기"):
+        row = _row(payload={"author": "probe", "preview": marker})
+        assert R.handle_event(row, cache=_cache()) is not None, marker
+
+
+def test_probe_review_fix_dispatch_wakes_assignee():
+    row = _row(payload={"author": "probe",
+                        "preview": "[tt-review-fix TT#M-S@a1/x] 재작업 위임 — 반려 사유 반영"})
+    assert R.handle_event(row, cache=_cache()) is not None
+
+
+def test_probe_review_start_marker_does_not_wake():
+    """리뷰 '시작'은 신호가 아니다 — 완료·stale만 깨운다."""
+    row = _row(payload={"author": "probe",
+                        "preview": "[tt-review TT#M-S@a1/x] reviewer=agy"})
+    assert R.handle_event(row, cache=_cache()) is None

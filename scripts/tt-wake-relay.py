@@ -63,7 +63,12 @@ DRY_RUN = os.environ.get("TT_WAKE_DRY_RUN") == "1"
 DEBUG = os.environ.get("TT_WAKE_DEBUG") == "1"
 
 SIGNAL_RE = re.compile(
-    r"^(?:review:\s*(?:approve|request-changes)|verify → done|merge=|\[CI:fail\])",
+    r"^(?:review:\s*(?:approve|request-changes)|verify → done|merge=|\[CI:fail\]"
+    # SRJY(2026-10-17): 리뷰 stale·홀드·재작업 신호 — 리뷰 완료만큼 자주 필요하다.
+    # probe 마커는 코멘트 첫 줄에 온다(preview[:120] 잘림 대비).
+    r"|\[tt-delivery-hold|\[review-req #|\[review-retry a|\[needs-merge a"
+    r"|\[ci-fix a|\[ci-fix-ip a|\[tt-high-risk-hold|\[probe merge skip"
+    r"|\[tt-review-fix )",
     re.MULTILINE | re.IGNORECASE)
 # 시스템 발신자 접수 코멘트(보고 접수 안내에 "verify → done" 문구 포함)는 신호가 아니다.
 SYSTEM_AUTHORS = {"tt-server"}
