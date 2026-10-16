@@ -107,14 +107,16 @@ def _validate_receive_mode(mode, interval, current_interval=None):
 
 
 def _normalize_aliases(aliases):
-    """Z1HP(M4CKEJGX) — 별칭 형식 검증. 값 자체만 판정(충돌은 con 있는 callers에서)."""
+    """Z1HP(M4CKEJGX) — 별칭 형식 검증. 값 자체만 판정(충돌은 con 있는 callers에서).
+    DX88(M5283J3A-DX88): 내부 @는 허용(codex@m2pro류 수령자 표기→등록명 매핑용).
+    공백·쉼표·선행 @만 금지 — 멘션 토큰(@word)과의 충돌 방지가 원래 취지."""
     out = []
     for a in aliases or []:
         a = a.strip()
         if not a:
             raise HTTPException(422, "별칭은 비어 있을 수 없다")
-        if re.search(r"[\s@,]", a):
-            raise HTTPException(422, f"별칭 '{a}' — 공백·@·쉼표는 사용할 수 없다")
+        if a.startswith("@") or re.search(r"[\s,]", a):
+            raise HTTPException(422, f"별칭 '{a}' — 공백·쉼표·선행 @는 사용할 수 없다")
         if a in out:
             raise HTTPException(422, f"별칭 '{a}' 중복")
         out.append(a)

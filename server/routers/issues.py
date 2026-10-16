@@ -127,6 +127,24 @@ def get_tree(issue_id: str, ctx: Ctx = Depends(get_ctx)):
         return build(issue_id, 0, c)
 
 
+def _normalize_claim_agent(c, agent: str) -> str:
+    """DX88(M5283J3A-DX88): 수령자 이름 정규화 — 공백 제거, 빈 값·숫자만 있는 값 422,
+    Z1HP 별칭→등록명 치환. TT_REQUIRE_KNOWN_AGENT=1이면 미등록 이름 409.
+    claim/pull/claim-review/PATCH assignee 공통 관문."""
+    s = (agent or "").strip()
+    if not s or s.isdigit():
+        raise HTTPException(422, f"agent는 빈 값·숫자만 있는 값일 수 없습니다: {agent!r} "
+                                 f"[policy: assignee_invalid]")
+    resolved = service.resolve_agent_identity(c, s)
+    if resolved is not None:
+        return resolved
+    if config.require_known_agent():
+        raise HTTPException(409, f"cannot claim: agent {s!r} is not a registered agent or alias "
+                                 f"[policy: assignee_unregistered] — tt agent add 또는 "
+                                 f"tt agent set <name> aliases='[\"{s}\"]' 로 등록 후 시도")
+    return s
+
+
 def _receive_contract_guard(c, agent):
     """RQRT(M4MGV3CM): 수신 계약 — 등록 에이전트는 수신 모드 선언이 claim/pull 전제.
     비등록 세션은 암묵 relay(사람 전달)라 검증 대상 아님. claim/pull 공통 관문."""
@@ -142,6 +160,7 @@ def _receive_contract_guard(c, agent):
 @router.post("/issues/{issue_id}/claim")
 def claim(issue_id: str, p: ClaimIn, ctx: Ctx = Depends(get_ctx)):
     with ctx.con() as c:
+        p.agent = _normalize_claim_agent(c, p.agent)
         row = service.get_issue(c, issue_id)
         if row["state"] != "todo":
             # TT 개선#3b R2: 거부 응답에 단일 정책의 reason code를 실어 보낸다
@@ -278,6 +297,8 @@ def _archive_cutoff(days: int) -> str:
 def claim_review(issue_id: str, p: ReviewClaimIn, ctx: Ctx = Depends(get_ctx)):
     """리뷰어 claim — review 상태에서만. 상태·계약·attempt는 건드리지 않고 reviewer/lease만 기록."""
     with ctx.con() as c:
+        # DX88: 리뷰어 표기도 등록명으로 — cross-review 판정·lease 집계가 정규화 기준
+        p.agent = _normalize_claim_agent(c, p.agent)
         # R4: 한도 검사와 기록을 같은 write 트랜잭션으로 — 동시 claim 이중 통과 방지
         c.execute("BEGIN IMMEDIATE")
         row = service.get_issue(c, issue_id)
@@ -343,6 +364,7 @@ def ping(issue_id: str, p: LeaseIn, ctx: Ctx = Depends(get_ctx)):
 def pull(p: ClaimIn, ctx: Ctx = Depends(get_ctx)):
     ts = dbmod.now()
     with ctx.con() as c:
+        p.agent = _normalize_claim_agent(c, p.agent)
         held = c.execute("SELECT COUNT(*) n FROM issues WHERE lease_by=? AND lease_expires>?",
                          (p.agent, ts)).fetchone()["n"]
         if held >= config.max_leases():
@@ -495,9 +517,12 @@ def patch_issue(issue_id: str, p: IssuePatch, ctx: Ctx = Depends(get_ctx)):
         if p.labels is not None:
             fields["labels"] = ",".join(p.labels)
         if p.assignee is not None:
-            fields["assignee"] = p.assignee
             if p.assignee == "":
+                fields["assignee"] = ""
                 fields.update({"lease_by": "", "lease_expires": None})
+            else:
+                # DX88: 수동 지정도 정규화 — 별칭 치환·정크 거부·게이트 적용
+                fields["assignee"] = _normalize_claim_agent(c, p.assignee)
         if p.reviewer is not None:
             # lease는 probe가 조건부로 명시(R5) — reviewer 반납이 재작업자 lease를 덮지 않게 분리
             fields["reviewer"] = p.reviewer or None
