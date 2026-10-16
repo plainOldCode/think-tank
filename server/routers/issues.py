@@ -759,16 +759,25 @@ def verify_issue(issue_id: str, p: VerifyIn, ctx: Ctx = Depends(get_ctx)):
                 raise HTTPException(409, "verification cannot change selected PR delivery")
             if submitted_target["mode"] == "pr":
                 target = submitted_target
-        if target["mode"] == "unbound-pr" and p.review_subject is not None:
+        if target["mode"] == "unbound-pr" and p.review_subject is not None \
+                and p.delivery is None:
             raise HTTPException(409, "PR delivery must be bound in a resubmitted report")
+        # SRJY(M5283M00-SRJY): 자동 연결 — 보고에 delivery가 없어도 probe가 병합한
+        # PR 대상을 delivery로 제시하면 이것이 선택 대상이다(receipt와 대조 필수).
+        if target["mode"] != "pr" and p.delivery is not None and p.delivery_receipt is not None:
+            target = p.delivery.model_dump()
+            if target["mode"] != "pr":
+                raise HTTPException(422, "delivery must be a PR target when a receipt is present")
         if target["mode"] == "pr":
             receipt = p.delivery_receipt
             if receipt is None or any(getattr(receipt, k) != target[k] for k in TARGET_KEYS):
                 # SRJY(M5283M00-SRJY): rebase — 보고 head와 병합 head의 patch-id가
-                # 같으면 같은 산출물이다(base 동일 전제, probe가 비교 diff로 계산).
+                # 같으면 같은 산출물이다(base 동일, 동일 PR 전제 — 타 PR receipt 차단).
                 attest = {(a.get("repo"), a.get("sha")): (a.get("patch_id") or "")
                           for a in (p.patch_ids or []) if isinstance(a, dict)}
                 same = receipt is not None and target["base"] == receipt.base and \
+                    target["provider"] == receipt.provider and \
+                    target["repo"] == receipt.repo and target["number"] == receipt.number and \
                     receipt.head_sha and target["head_sha"] and \
                     attest.get((target["repo"], target["head_sha"])) and \
                     attest.get((target["repo"], target["head_sha"])) == \

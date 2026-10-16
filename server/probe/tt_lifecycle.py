@@ -172,6 +172,8 @@ def execute(core, url, act):
             "verifier": "probe", "completion_report": cur["completion_report"],
             "review_subject": act["subject"], "expected_version": cur["version"],
             **({"delivery_receipt": receipt} if receipt else {}),
+            # SRJY — 자동 연결 병합: 보고에 delivery가 없으므로 병합 대상을 증거로 제시
+            **({"delivery": target} if receipt and target.get("mode") == "pr" else {}),
             **({"patch_ids": [{"repo": k[0], "sha": k[1], "patch_id": v}
                               for k, v in (act.get("patch_ids") or {}).items()]}
                if receipt and act.get("patch_ids") else {}),

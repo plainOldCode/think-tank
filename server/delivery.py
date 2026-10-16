@@ -70,8 +70,11 @@ def readiness(spec, observed, patch_ids=None):
     if not observed or observed.get("state") == "UNKNOWN":
         return "PR 관측 불가 — 조회 실패/미지원 provider를 report 완료로 대체하지 않음"
     if any(spec.get(k) != observed.get(k) for k in TARGET_KEYS):
-        if spec.get("base") == observed.get("base") and patch_ids and \
-                spec.get("head_sha") and observed.get("head_sha") and \
+        # SRJY: patch-id 우회는 head 불일치 전용 — provider/repo/number/base가
+        # 하나라도 다르면 다른 대상이므로 재제출이 정답이다.
+        mismatched = {k for k in TARGET_KEYS if spec.get(k) != observed.get(k)}
+        if mismatched == {"head_sha"} and spec.get("base") == observed.get("base") and \
+                patch_ids and spec.get("head_sha") and observed.get("head_sha") and \
                 patch_ids.get((spec.get("repo"), spec.get("head_sha"))) and \
                 patch_ids.get((spec.get("repo"), spec.get("head_sha"))) == \
                 patch_ids.get((observed.get("repo"), observed.get("head_sha"))):

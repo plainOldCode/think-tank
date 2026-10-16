@@ -2,7 +2,7 @@
 from pydantic import BaseModel, field_validator, model_validator
 
 from verification import CompletionReport
-from delivery import MergeReceipt
+from delivery import Delivery, MergeReceipt
 
 
 class IssueCreate(BaseModel):
@@ -105,6 +105,9 @@ class VerifyIn(BaseModel):
     # SRJY(M5283M00-SRJY): rebase 허용 증거 — [{repo, sha, patch_id}] 목록.
     # 보고 head와 병합 head의 patch-id가 같으면 같은 산출물(rebase만으론 재검사 아님).
     patch_ids: list[dict] | None = None
+    # SRJY: 자동 연결 병합의 완료 증거 — 보고에 delivery가 없어도 probe가 병합한
+    # PR 대상을 제시하면 이것으로 receipt를 대조한다(신뢰 자동화, receipt 필수).
+    delivery: Delivery | None = None
 
 
 class CommentIn(BaseModel):

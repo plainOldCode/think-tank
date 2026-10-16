@@ -151,3 +151,36 @@ def test_리베이스된_PR_병합은_현재_head로_가드된다(client, monkey
     assert got["state"] == "done"
     rc = got["delivery_receipt"]
     assert rc["head_sha"] == H2  # receipt는 실제 병합된 head
+
+
+# --- 자동 연결 병합의 완료 E2E (agy 리뷰: verify 409 결함 재발 방지) ---
+
+def test_자동_연결_병합은_보고_delivery가_없어도_완료된다(client, monkeypatch):
+    """보고 delivery 없음 + 단일 PR 자동 연결 → 병합 → verify까지 done.
+    이 E2E가 없으면 /verify 409("unexpected delivery receipt") 결함을 못 본다."""
+    issue = approve(client, submitted(client))
+    obs_open = {**spec(issue), "state": "OPEN", "isDraft": False,
+                "checks": [{"state": "SUCCESS"}]}
+    obs_merged = {**obs_open, "state": "MERGED", "merge_commit": "b" * 40,
+                  "merged_at": "2026-10-17T00:00:00Z"}
+    seq = iter([obs_open, obs_merged])
+    monkeypatch.setattr(providers, "inspect_delivery",
+                        lambda s, q: dict(next(seq, obs_merged)))
+    monkeypatch.setattr(providers, "merge_delivery", lambda s, run, head=None: None)
+
+    def api(url, path, method="GET", body=None):
+        r = client.request(method, path, json=body)
+        if r.status_code >= 400:
+            print("API ERR", method, path, r.status_code, r.text[:200])
+        assert r.status_code < 400, r.text
+        return r.json()
+
+    monkeypatch.setattr(core, "api", api)
+    monkeypatch.setattr(core, "gh_json", lambda *a, **k: {})
+    acts = bound_actions(issue, spec(issue), obs_open)
+    assert [a["action"] for a in acts] == ["tt-deliver"], acts
+    core.execute("http://tt", acts[0])
+    got = client.get(f"/issues/{issue['id']}").json()
+    assert got["state"] == "done", got.get("verification_status")
+    rc = got["delivery_receipt"]
+    assert rc["head_sha"] == H1 and rc["number"] == 124
