@@ -764,7 +764,17 @@ def verify_issue(issue_id: str, p: VerifyIn, ctx: Ctx = Depends(get_ctx)):
         if target["mode"] == "pr":
             receipt = p.delivery_receipt
             if receipt is None or any(getattr(receipt, k) != target[k] for k in TARGET_KEYS):
-                raise HTTPException(409, "PR delivery requires matching merged head/base receipt")
+                # SRJY(M5283M00-SRJY): rebase — 보고 head와 병합 head의 patch-id가
+                # 같으면 같은 산출물이다(base 동일 전제, probe가 비교 diff로 계산).
+                attest = {(a.get("repo"), a.get("sha")): (a.get("patch_id") or "")
+                          for a in (p.patch_ids or []) if isinstance(a, dict)}
+                same = receipt is not None and target["base"] == receipt.base and \
+                    receipt.head_sha and target["head_sha"] and \
+                    attest.get((target["repo"], target["head_sha"])) and \
+                    attest.get((target["repo"], target["head_sha"])) == \
+                    attest.get((receipt.repo, receipt.head_sha))
+                if not same:
+                    raise HTTPException(409, "PR delivery requires matching merged head/base receipt")
         elif p.delivery_receipt is not None:
             raise HTTPException(409, "unexpected delivery receipt without selected PR")
         if service.requires_report(row) and not proof:

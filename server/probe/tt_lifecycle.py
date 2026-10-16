@@ -32,13 +32,19 @@ def marked(issue, key):
                for c in issue.get("comments") or [])
 
 
-def plan(core, issue, agents, busy, now, delivery_context=None, linked=False):
+def plan(core, issue, agents, busy, now, delivery_context=None, linked=False,
+         discovered=None, patch_ids=None):
     """No gh dependency. Only the stored submission and its TT verdict authorize done."""
     token = subject(issue)
     common = {"issue": issue["id"], "subject": token, "agent": "probe"}
     decision = verdict(issue)
     target = requirement(issue, linked)
-    delivery_problem = readiness(target, delivery_context)
+    # SRJY(M5283M00-SRJY): 보고에 delivery를 명시하지 않았고 조인되는 open PR이
+    # 정확히 1개면(run_once가 관측·검사해 전달), 그 PR을 산출물로 연결한다.
+    # 명시적 delivery(report/local/pr)는 절대 덮지 않는다.
+    if discovered and not (issue.get("completion_report") or {}).get("delivery"):
+        target = discovered
+    delivery_problem = readiness(target, delivery_context, patch_ids)
     if delivery_problem:
         # Keep the existing CI-fix delegation for a bound, unchanged open PR.
         # A failed check is repairable work, not permission to finish locally.
@@ -67,7 +73,9 @@ def plan(core, issue, agents, busy, now, delivery_context=None, linked=False):
         return []
     if decision == "approve":
         return [{**common, "action": "tt-deliver" if target["mode"] == "pr" else "tt-verify",
-                 "reason": "current TT submission approved"}]
+                 "reason": "current TT submission approved",
+                 **({"delivery": target, "patch_ids": dict(patch_ids or {})}
+                    if target["mode"] == "pr" else {})}]
     if issue.get("busy_agents"):
         return []
     if decision == "request-changes":
@@ -126,13 +134,14 @@ def execute(core, url, act):
     if kind in ("tt-verify", "tt-deliver"):
         if decision != "approve":
             return
-        target = requirement(cur)
+        target = act.get("delivery") or requirement(cur)
         receipt = None
         if kind == "tt-deliver":
             if target["mode"] != "pr":
                 return
             observed = providers.inspect_delivery(target, core.gh_json)
-            if readiness(target, observed):
+            pids = act.get("patch_ids") or {}  # SRJY — decide가 모은 patch-id 재사용
+            if readiness(target, observed, pids):
                 return
             # Fresh TT approval before the external write, then provider head CAS.
             fresh = core.api(url, f"/issues/{iid}")
@@ -149,9 +158,9 @@ def execute(core, url, act):
                             "body": f"{key} 고위험(risk:*) 라벨 — probe 자동병합 휴면, "
                                     "사람 병합 승인 대기"})
                     return
-                providers.merge_delivery(target, core.gh_exec)
+                providers.merge_delivery(target, core.gh_exec, head=observed.get("head_sha"))
                 observed = providers.inspect_delivery(target, core.gh_json)
-            if observed.get("state") != "MERGED" or readiness(target, observed):
+            if observed.get("state") != "MERGED" or readiness(target, observed, pids):
                 return  # queued/failed merge is not delivery evidence
             receipt = {k: observed[k] for k in (*TARGET_KEYS, "merge_commit", "merged_at")}
             cur = core.api(url, f"/issues/{iid}")
@@ -163,6 +172,9 @@ def execute(core, url, act):
             "verifier": "probe", "completion_report": cur["completion_report"],
             "review_subject": act["subject"], "expected_version": cur["version"],
             **({"delivery_receipt": receipt} if receipt else {}),
+            **({"patch_ids": [{"repo": k[0], "sha": k[1], "patch_id": v}
+                              for k, v in (act.get("patch_ids") or {}).items()]}
+               if receipt and act.get("patch_ids") else {}),
         })
         return
     if kind == "tt-review" and decision is not None:

@@ -997,7 +997,9 @@ def decide(snap):
             tt_actions = tt_lifecycle.plan(sys.modules[__name__], i, agents,
                                            busy_agents | claimed, now,
                                            delivery_context=(snap.get("delivery_context") or {}).get(i["id"]),
-                                           linked=any(pr_card_id(p) == i["id"] for p in snap.get("prs") or []))
+                                           linked=any(pr_card_id(p) == i["id"] for p in snap.get("prs") or []),
+                                           discovered=(snap.get("discovered_delivery") or {}).get(i["id"]),
+                                           patch_ids=snap.get("patch_ids"))
             actions.extend(tt_actions)
             claimed.update(a["agent"] for a in tt_actions if a["agent"] != "probe")
     gated = set(tt_cards)  # TT-submitted cards do not require PR discovery or merge
@@ -1697,6 +1699,34 @@ def gh_json(*args):
 
 def gh_exec(*args):
     return _gh(list(args))
+
+
+# SRJY — patch-id 프로세스 캐시: (repo, base, sha) → patch-id. 프로브 주기마다
+# 같은 head를 재계산하지 않게 한다(서버 재시작 시 재계산 — 무해).
+_PATCH_ID_CACHE = {}
+
+
+def patch_id_for(repo, base, sha):
+    """리뷰/병합 판정에 쓰는 git patch-id. 관측 실패는 None — 보류가 기본이다."""
+    from .providers import patch_id_of
+    if not repo or not base or not sha:
+        return None
+    key = (repo, base, sha)
+    if key not in _PATCH_ID_CACHE:
+        _PATCH_ID_CACHE[key] = patch_id_of(repo, base, sha, gh_exec)
+    return _PATCH_ID_CACHE[key]
+
+
+def patch_ids_for(repo, base, shas):
+    """readiness에 넘길 {(repo, sha): patch-id} 맵 — 실패 head는 생략(보류 유지)."""
+    out = {}
+    for sha in shas or []:
+        if not sha:
+            continue
+        pid = patch_id_for(repo, base, sha)
+        if pid:
+            out[(repo, sha)] = pid
+    return out
 
 
 REVIEW_STATUS_CTX = "tt/review-approved"
@@ -2611,11 +2641,49 @@ def run_once(url, dry=False):
     snap["pr_context"] = observe_linked(snap.get("issues") or [], snap["prs"], gh_json)
     from .providers import inspect_delivery
     from delivery import requirement
+
+    def _req(i):
+        return requirement(i, any(pr_card_id(p) == i["id"] for p in snap.get("prs") or []))
+
+    # SRJY(M5283M00-SRJY) — 제출 시점 PR 자동 연결: 보고에 delivery가 없는 review
+    # 카드 중 카드 ID(브랜치/제목)로 조인되는 open 비드래프트 PR이 정확히 1개면
+    # 그 PR을 산출물로 연결한다. 2개 이상이면 모호 — 기존 흐름(unbound-pr 노트) 유지.
+    joiners = {}
+    for p in snap.get("prs") or []:
+        if p.get("isDraft"):
+            continue
+        iid = pr_card_id(p)
+        if iid:
+            joiners.setdefault(iid, []).append(p)
+    snap["discovered_delivery"] = {}
+    for i in snap.get("issues") or []:
+        if i.get("state") != "review" or (i.get("completion_report") or {}).get("delivery"):
+            continue
+        cand = joiners.get(i["id"]) or []
+        if len(cand) == 1 and cand[0].get("head_sha"):
+            p = cand[0]
+            snap["discovered_delivery"][i["id"]] = {
+                "mode": "pr", "provider": "github", "repo": p["repo"],
+                "number": p["number"], "head_sha": p["head_sha"], "base": p.get("base") or "",
+            }
     snap["delivery_context"] = {
-        i["id"]: inspect_delivery(requirement(i), gh_json)
+        i["id"]: inspect_delivery(_req(i), gh_json)
         for i in snap.get("issues") or []
-        if i.get("state") == "review" and requirement(i)["mode"] == "pr"
+        if i.get("state") == "review" and _req(i)["mode"] == "pr"
     }
+    for iid, spec in snap["discovered_delivery"].items():
+        snap["delivery_context"][iid] = inspect_delivery(spec, gh_json)
+    # SRJY — patch-id 선계산: head 불일치가 의심되는 (repo, base, sha)만.
+    snap["patch_ids"] = {}
+    _pid_specs = [(iid, _req(i), snap["delivery_context"].get(iid))
+                  for i in snap.get("issues") or [] if i.get("state") == "review"]
+    for iid, spec, obs in _pid_specs:
+        if not spec or spec.get("mode") != "pr" or not obs:
+            continue
+        if spec.get("head_sha") and obs.get("head_sha") and \
+                spec["head_sha"] != obs["head_sha"] and spec.get("base") == obs.get("base"):
+            snap["patch_ids"].update(patch_ids_for(
+                spec["repo"], spec["base"], (spec["head_sha"], obs["head_sha"])))
     snap["cycle_id"] = uuid.uuid4().hex  # §8.1 판단 로그 사이클 식별자(리뷰 R4)
     acts = decide(snap)
     for a in acts:

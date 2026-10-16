@@ -102,6 +102,9 @@ class VerifyIn(BaseModel):
     review_subject: str | None = None  # Q614: atomic current-submission + TT verdict check
     delivery_receipt: MergeReceipt | None = None
     human: bool = False  # THNJ 약한 합의: 사람 자기선언 — 감사 표시 전용, 인증 아님
+    # SRJY(M5283M00-SRJY): rebase 허용 증거 — [{repo, sha, patch_id}] 목록.
+    # 보고 head와 병합 head의 patch-id가 같으면 같은 산출물(rebase만으론 재검사 아님).
+    patch_ids: list[dict] | None = None
 
 
 class CommentIn(BaseModel):
