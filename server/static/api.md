@@ -156,7 +156,11 @@ validated when present) and mandatory for v2.2.
 
 Flat top-level fields (`red_command`, `red_evidence`, `command`, `evidence`) remain forbidden
 for v2-family writes; reading legacy v1 reports stays supported. Submit with
-`tt submit ID --report report.json`.
+`tt submit ID --report report.json` (alias `tt done --report`); the submission lands in review.
+Read `review_subject` from the card. TT approval must quote that exact subject; probe then
+verifies the stored report. Resubmit after fixes even within the same attempt. PRs are optional;
+manual verify is the handover fallback.
+If the CLI does not support the option, PATCH `/issues/ID` with `{state:"done", completion_report:{...}}`.
 <!-- tt-work-contract-v2.2:end -->
 
 ## Standard workflow
