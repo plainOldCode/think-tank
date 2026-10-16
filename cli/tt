@@ -5,7 +5,7 @@ URL="${TT_URL:-http://127.0.0.1:7800}"  # serve-time 주입 계약 — 설치본
 AGENT="${TT_AGENT:-$USER@$(hostname -s)}"
 JQ="jq -r"
 # TT 개선#3f: CLI 버전 — 서버 openapi 해시와 함께 `tt version`으로 표기(드리프트 감지)
-TT_CLI_VERSION="2.5.3"
+TT_CLI_VERSION="2.6.0"
 jfilter() { if [[ "${JSON:-0}" == 1 ]]; then jq .; else jq -r "$@"; fi; }
 
 usage() {
@@ -317,17 +317,28 @@ case "$cmd" in
     <<<"$out" $JQ '"■ \(.id) → \(.state)"' ;;
 
   block)
-    [[ -z "${2:-}" ]] && { echo "usage: tt block ID <dependency|human|gate|external> [-a 책임액터] [-d 상세/의존ID]" >&2; exit 1; }
-    id="$1"; kind="$2"; actor=""; detail=""
-    shift 2
+    [[ -z "${2:-}" ]] && { echo "usage: tt block ID <dependency|human|gate|external> [-a 책임액터] [-d 상세/의존ID] [-q 질문] [-o 선택지1,선택지2] [-f 무응답기본값]" >&2; echo "  blocked 전이는 질문·선택지·기본값이 필수입니다(HDPB — 사람이 무엇을 판단할지 명시)" >&2; exit 1; }
+    id="$1"; kind=""; actor=""; detail=""; question=""; options=""; dflt=""
+    shift 1
     while [[ $# -gt 0 ]]; do case "$1" in
+      dependency|human|gate|external) kind="$1"; shift ;;
       -a) actor="${2:-}"; shift 2 ;;
       -d) detail="${2:-}"; shift 2 ;;
+      -q) question="${2:-}"; shift 2 ;;
+      -o) options="${2:-}"; shift 2 ;;
+      -f) dflt="${2:-}"; shift 2 ;;
       *) shift ;;
     esac; done
-    payload="$(jq -cn --arg w "$kind" --arg a "$actor" --arg d "$detail" '{state:"blocked",waiting_for:$w} + (if $a=="" then {} else {waiting_actor:$a} end) + (if $d=="" then {} else {blocked_detail:$d} end)')"
-    out="$(req -X PATCH "$URL/issues/$id" -d "$payload")" || { echo "실패: blocked 전이/필드 확인" >&2; exit 1; }
-    <<<"$out" $JQ '"■ \(.id) → blocked (waiting_for=\(.waiting_for) actor=\(.waiting_actor // "-"))"' ;;
+    [[ -z "$kind" ]] && { echo "실패: blocked 종류(dependency|human|gate|external) 필요" >&2; exit 1; }
+    payload="$(jq -cn --arg w "$kind" --arg a "$actor" --arg d "$detail" --arg q "$question" --arg o "$options" --arg f "$dflt" '
+      {state:"blocked",waiting_for:$w}
+      + (if $a=="" then {} else {waiting_actor:$a} end)
+      + (if $d=="" then {} else {blocked_detail:$d} end)
+      + (if $q=="" then {} else {blocked_question:$q} end)
+      + (if $o=="" then {} else {blocked_options:($o|split(","))} end)
+      + (if $f=="" then {} else {blocked_default:$f} end)')"
+    out="$(req -X PATCH "$URL/issues/$id" -d "$payload")" || { echo "실패: blocked 전이/필드 확인 — 질문(-q)·선택지(-o)·기본값(-f) 누락 여부 확인" >&2; exit 1; }
+    <<<"$out" $JQ '"■ \(.id) → blocked (waiting_for=\(.waiting_for) actor=\(.waiting_actor // "-"))  질문: \(.blocked_question // "-")  선택지: \(.blocked_options // "-")  기본값: \(.blocked_default // "-")"' ;;
 
   why)
     req "$URL/issues/$1/why-blocked" | $JQ '"gate: \(.gate.kind)  actor: \(.waiting_actor // "-")", "기준: \(.criteria)", (if (.dependencies|length)>0 then "의존: " + ([.dependencies[] | "\(.id)=\(.state)"]|join(", ")) + "  누락: " + (.missing|if length>0 then join(",") else "없음" end) + "  해제가능: \(.release_ready)" else empty end), "근거: \(.evidence // "-")", "권장: " + (.next_commands|join("  |  "))' ;;
