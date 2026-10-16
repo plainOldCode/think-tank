@@ -3,7 +3,7 @@
 import pathlib
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-MARKERS = ("tt-work-contract", "tt-work-contract-v2", "tt-work-contract-v2.1")
+MARKERS = ("tt-work-contract", "tt-work-contract-v2", "tt-work-contract-v2.1", "tt-work-contract-v2.2")
 
 
 def _blocks(path):

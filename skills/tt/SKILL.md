@@ -107,6 +107,12 @@ The legacy adapter's limitations are documented in
 - The report's `contract_version` and `attempt` are the issue's pinned contract and the current round's values.
   TDD adds `red_command` and `red_evidence`; `alternative` adds the alternative reason `reason`.
   Both record the actual `command`, `result`, `evidence`, and the verification limits `limitations`.
+- Contract v2.2 requires `verification.verification_level` — one of `live-verified`,
+  `unit-test-verified`, `type-check-only`, `planned-only`, `blocked`. `result: "passed"` is accepted
+  only with `live-verified` or `unit-test-verified` ("CI green은 판정이 아니다" — someone else's green
+  check does not attest your behavior; your own evidence blocks must). `failed`/`inconclusive` accept
+  any level. Under v2.1 the field is optional but validated when present. Flat top-level fields
+  (`red_*`/`command`/`evidence`) stay forbidden for v2-family reports.
 - To submit the completion report use `tt submit ID --report report.json --json`
   (alias `tt done`); manual `tt verify ID --report report.json --json` is only the
   review-state fallback (probe auto-verifies after current TT approval). Resolve unfinished children first.
