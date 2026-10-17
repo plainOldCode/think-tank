@@ -5,7 +5,7 @@ URL="${TT_URL:-http://127.0.0.1:7800}"  # serve-time 주입 계약 — 설치본
 AGENT="${TT_AGENT:-$USER@$(hostname -s)}"
 JQ="jq -r"
 # TT 개선#3f: CLI 버전 — 서버 openapi 해시와 함께 `tt version`으로 표기(드리프트 감지)
-TT_CLI_VERSION="2.6.0"
+TT_CLI_VERSION="2.7.0"
 jfilter() { if [[ "${JSON:-0}" == 1 ]]; then jq .; else jq -r "$@"; fi; }
 
 usage() {
@@ -17,7 +17,7 @@ tt — think-tank issue tracker ($URL)
   tt ping ID                    # alive만 즉시 갱신(선택. TTL·version 불변 — 유효 lease 자체가 보드 깜빡임)
   tt list [state] [--all] [--archived] [--label L]  # 목록 (--label: 라벨 필터, armour+2.0 같은 값 포함)
   tt search "쿼리" [--verification S]  # 제목+본문 검색(한글 URL-인코딩 자동) + 검증 상태 필터
-  tt show ID                 # 상세 + 하위 + 코멘트
+  tt show ID [--machine]     # 상세 + status 3줄(기계 코멘트는 --machine)
   tt tree ID                 # 부모-자식 트리
   tt claim ID [--hours N]      # 특정 이슈 명시적 수령
   tt claim-review ID [--hours N]  # 리뷰어 점유 (review 카드 한정, 본인 작업 409)
@@ -167,9 +167,38 @@ case "$cmd" in
       | $JQ 'def badge: if .delayed then " 🟡지연" elif .state=="done" and ((.verification_status // "unverified")=="unverified") then " ⚠unverified" elif .state=="done" and .verification_status=="legacy" then " ⚠legacy" else "" end; .[] | "\(.id)  [\(.state|.[0:4])]  \(.priority|if .==null then "-" else "p"+tostring end)  \(.title)  \(if .assignee!="" then "@"+.assignee else "" end)\(badge)"' ;;
 
   show)
-    req "$URL/issues/$1" | $JQ '"■ \(.id) [\(.state)] \(.title)",  ("  parent: \(.parent_id // "-")  prio: \(.priority // "-")  labels: \(.labels|join(","))  assignee: \(.assignee // "-")" + (if .reviewer then "  🔍reviewer: \(.reviewer)" else "" end) + "  v\(.version)" + (if .state=="done" then "  검증: \(.verification_status // "unverified")" else "" end) + (if .delayed then "  🟡지연(backlog로 내리기: tt state ID backlog)" else "" end)),  "  \(.body|gsub("\n"; "\n  "))",
+    sid="$1"; show_machine=0; shift
+    while [[ $# -gt 0 ]]; do case "$1" in
+      --machine) show_machine=1; shift ;;
+      *) shift ;;
+    esac; done
+    dj="$(req "$URL/issues/$sid/dispatches" 2>/dev/null || echo '[]')"
+    dtot="$($JQ -r 'length' <<<"$dj" 2>/dev/null || echo '?')"
+    dact="$($JQ -r '[.[] | select(.run_state == "running" or .run_state == "queued" or .run_state == "stalled")] | length' <<<"$dj" 2>/dev/null || echo '?')"
+    req "$URL/issues/$sid" | $JQ --arg m "$show_machine" --arg dt "$dtot" --arg da "$dact" '
+      def machine: test("^(probe|tt-server|tt-embedding-daemon|board)$|^runner@");
+      . as $i |
+      ([.comments[] | select(.author | machine)] | length) as $mc |
+      (.comments | length) as $tc |
+      ([.comments[] | select((.author | machine) and (.body | startswith("[tt-delivery-hold")))] | last) as $hold |
+      ([.comments[] | select(.author | machine)] | last) as $lastm |
+      "■ \(.id) [\(.state)] \(.title)",
+      ("  parent: \(.parent_id // "-")  prio: \(.priority // "-")  labels: \(.labels|join(","))  assignee: \(.assignee // "-")" + (if .reviewer then "  🔍reviewer: \(.reviewer)" else "" end) + "  v\(.version)" + (if .state=="done" then "  검증: \(.verification_status // "unverified")" else "" end) + (if .delayed then "  🟡지연(backlog로 내리기: tt state ID backlog)" else "" end)),
+      "  -- status --",
+      "  카운트: 코멘트 \($tc)건(기계 \($mc)) · dispatch \($dt)회(활성 \($da)) · attempt \(.execution_attempt // 0)",
+      (if $lastm then "  변화: \($lastm.body | split("\n")[0] | .[0:90]) (\($lastm.ts))" else empty end),
+      (if $hold and $hold.ts == $lastm.ts then "  ⛔gate: delivery-hold — \($hold.body | split("] ")[1] // "?") (\($hold.ts))" else empty end),
+      (if .state == "blocked" then "  ⛔gate: blocked — \(.waiting_for // "?") (why: \(.blocked_detail // "-"))" else empty end),
+      "  \(.body|gsub("\n"; "\n  "))",
       (if (.children|length)>0 then "-- 하위 --" else empty end), (.children[] | "  ↳ \(.id) [\(.state)] \(.title)"),
-      (if (.comments|length)>0 then "-- 코멘트 --" else empty end), (.comments[] | "  \(.ts) \(.author): \(.body)"),
+      (if (.comments|length)>0 then "-- 코멘트 --" else empty end),
+      (if $m == "1" then (.comments[] | "  \(.ts) \(.author): \(.body)")
+       else
+         ([.comments[] | select(.author | machine | not)]) as $hc |
+         ($tc - ($hc | length)) as $omitted |
+         ($hc[] | "  \(.ts) \(.author): \(.body)"),
+         (if $omitted > 0 then "  … 기계 코멘트 \($omitted)건 생략 — tt show \(.id) --machine" else empty end)
+       end),
       (if (.completion_report.verification.evidence|type)=="array" then
         "-- 구조화 증거 --", (.completion_report.verification.evidence[] | "  ✓ \(.command) (exit \(.exit_code)) \(.output_snippet | .[0:80])") else empty end)' ;;
 
