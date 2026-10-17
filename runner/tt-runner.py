@@ -1474,6 +1474,16 @@ def heartbeat_pass():
             continue
         session = cur.get("session") or ""
         fp = pane_fingerprint(session, key)
+        if fp is not None and run_stall_mode(cur) == "process":
+            # QN0H 결함 B: --print 계열(claude -p 등)은 종료까지 pane이 구조적으로
+            # 무음 — 지문 불변을 무음으로 세는 것은 오탐(20분 주기 필연 kill). 세션
+            # 생존 자체를 진행 신호로 간주해 무음을 누적하지 않는다. hang 처리는
+            # wall-clock TIMEOUT이 담당하므로 여기서 판정을 늦추지 않는다.
+            rec = {"ts": time.time(), "round": _round_id(cur), "ok": True,
+                   "dispatch_id": cur.get("dispatch_id"), "session": session,
+                   "pane_fp": "process", "pane_ts": time.time()}
+            write_heartbeat(key, rec)
+            continue
         prev = read_heartbeat(key) or {}
         if fp is None:
             # 관찰 불가(세션 부재 등) — 직전 관찰을 보존하되 ok=False로 기록한다(리뷰
@@ -1504,6 +1514,19 @@ def heartbeat_pass():
             if set_status_if_round(key, cur, "running", stall_notified=False):
                 log("STALL-RECOVER dispatch#%s session=%s — 진행 신호 재관찰, running 복귀"
                     % (cur.get("dispatch_id"), session))
+
+
+def run_stall_mode(ent):
+    """QN0H: 에이전트 stall 판정 모드. 기본 "pane"(지문 관찰), --print 드라이버류는
+    agents.json에 "stall_mode": "process"로 세션 생존을 진행 신호로 쓴다. 프로필
+    미해석은 보수적으로 기본 pane."""
+    try:
+        prof = resolve_profile({"agent": ent.get("agent")})
+    except Exception:
+        return "pane"
+    if not prof:
+        return "pane"
+    return prof.get("stall_mode") or "pane"
 
 
 def stall_check(key, ent, now):
