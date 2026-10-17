@@ -205,7 +205,11 @@ class TestWatchUpgrade(unittest.TestCase):
                                  "dispatch_id": 301, "session": "tt-x-301-r2", "round": 2}})
         self._hb("T-4#301", "fixedfp", now - R.STALL_SILENCE_S * 3, round_no=2)
         # round 1 스냅샷의 늦은 판정 → 스킵 (킬도 코멘트도 없음)
-        self.assertFalse(R.stall_check("T-4#301", stale_snap, now))
+        # S0BW: stall_check는 round 검사 전 session_work_state(실제 tmux)를 본다 —
+        # tmux 유무와 무관하게 같은 경로를 걷게 mock한다(CI ubuntu 회귀 방지).
+        from unittest.mock import patch
+        with patch.object(R, "session_work_state", return_value="busy"):
+            self.assertFalse(R.stall_check("T-4#301", stale_snap, now))
         self.assertEqual(R.get_run("T-4#301")["status"], "running")
 
     def test_stall_kill_write_round_guarded(self):
