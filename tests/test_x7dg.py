@@ -122,3 +122,30 @@ def test_reviewers_in_full_collect_output(tmp_path):
     m = _collect(events, issues)
     assert m["reviewers"]["rows"][0]["total"] == 1
     assert m["reviewers"]["rows"][0]["approve_pct"] == 0.0
+
+
+def test_word_boundary_rejects_lookalikes():
+    """agy RC — 'review: approved-by-x' 류 비정규 문구 오인 방지(첫 줄 완전 일치)."""
+    events = [{"seq": next(_seq), "entity_id": "C1", "ts": _ago(60), "kind": "comment.added",
+               "payload": json.dumps({"author": "agy", "preview": "review: approved-by-x\nTT#C1@a1/x"})},
+              {"seq": next(_seq), "entity_id": "C2", "ts": _ago(50), "kind": "comment.added",
+               "payload": json.dumps({"author": "agy", "preview": "review: request-changes-pending"})},
+              _verdict("C3", 40, "agy", "approve")]
+    m = _collect(events)
+    assert [_r["reviewer"] for _r in m["reviewers"]["rows"]] == ["agy"]
+    assert m["reviewers"]["rows"][0]["approve"] == 1
+
+
+def test_defect_rows_kept_by_recency_not_alphabet():
+    """agy RC — 결함 20건 초과 시 알파벳순이 아닌 rc_seq 최신순으로 슬라이스."""
+    events = []
+    for i in range(25):
+        approver = "aa" if i % 2 == 0 else "zz"
+        events.append(_verdict(f"C{i}", 600 - i * 2, approver, "approve"))
+        events.append(_verdict(f"C{i}", 599 - i * 2, "rr", "request-changes"))
+    m = _collect(events)
+    rows = m["reviewers"]["defect_rows"]
+    assert len(rows) == 20
+    seqs = [r["rc_seq"] for r in rows]
+    assert seqs == sorted(seqs)                      # rc_seq 오름차순 — 최신 20건 보존
+    assert {r["reviewer"] for r in rows} == {"aa", "zz"}  # 알파벳 앞글자(aa) 리뷰어도 보존

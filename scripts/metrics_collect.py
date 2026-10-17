@@ -115,7 +115,7 @@ def payload_of(e):
         return {}
 
 
-_VERDICT_RE = re.compile(r"review: (approve|request-changes)")
+_VERDICT_RE = re.compile(r"review: (approve|request-changes)\s*$", re.M)  # 첫 줄 완전 일치 — lookalike 오인 방지(X7DG RC)
 
 
 def reviewer_calibration(events, window_start):
@@ -164,7 +164,7 @@ def reviewer_calibration(events, window_start):
                       "승인 뒤 같은 카드에서 나중에 RC가 나오면 승인자 결함 1건(카드당 리뷰어 1회).",
         "rows": rows,
         "post_approval_defects_total": len(defect_pairs),
-        "defect_rows": [{"reviewer": a, "rc_seq": s, "card": c} for a, s, c in sorted(defect_pairs)][-20:],
+        "defect_rows": [{"reviewer": a, "rc_seq": s, "card": c} for a, s, c in sorted(defect_pairs, key=lambda t: (t[1], t[0], t[2]))][-20:],  # rc_seq 최신순 — 알파벳 슬라이스 방지(X7DG RC)
         "note": "별칭 미병합 — agy와 agy@m2max는 별개 리뷰어(레지스트리 aliases와 무관). "
                 "승인 후 RC는 재작업 사이클(정상 반려)과도 발생 — 결함률 낮을수록 좋으나 0이 정답은 아님.",
     }
