@@ -1,0 +1,23 @@
+{
+  "open": {},
+  "resolved": [
+    {
+      "id": "M4ZKSJP3-HBXY",
+      "first_seen": "2026-10-15T22:30:23+09:00",
+      "last_stalled": "2026-10-15T23:30:23+09:00",
+      "resolved_at": "2026-10-16T00:00:23+09:00",
+      "resolved_state": "done",
+      "outcome": "recovered",
+      "minutes_open": 90.0
+    },
+    {
+      "id": "M54AGANS-QN0H",
+      "first_seen": "2026-10-17T17:30:23+09:00",
+      "last_stalled": "2026-10-17T17:30:23+09:00",
+      "resolved_at": "2026-10-17T18:00:23+09:00",
+      "resolved_state": "review",
+      "outcome": "recovered",
+      "minutes_open": 30.0
+    }
+  ]
+}
