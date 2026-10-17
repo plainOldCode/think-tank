@@ -36,8 +36,10 @@ def migrate_assignees(c, apply: bool = True) -> dict:
     """issues 전수 순회 — assignee/lease_by 정규화. apply=False면 통계만(dry-run).
     apply=True면 호출 연결에 커밋까지 수행. 반환 통계는 실행 횟수와 무관하게 누적 감소."""
     stats = {"assignee_normalized": 0, "assignee_cleared": 0,
-             "lease_by_normalized": 0, "lease_by_cleared": 0}
-    rows = c.execute("SELECT id, state, assignee, lease_by FROM issues").fetchall()
+             "lease_by_normalized": 0, "lease_by_cleared": 0,
+             "reviewer_normalized": 0, "reviewer_cleared": 0,
+             "nominee_normalized": 0, "nominee_cleared": 0}
+    rows = c.execute("SELECT id, state, assignee, lease_by, reviewer, nominee FROM issues").fetchall()
     for r in rows:
         sets = {}
         na, act_a = _plan(c, r["assignee"])
@@ -57,6 +59,17 @@ def migrate_assignees(c, apply: bool = True) -> dict:
         elif act_l == "clear":
             sets.update({"lease_by": "", "lease_expires": None})
             stats["lease_by_cleared"] += 1
+        # R7Y4(M53PBDC0-R7Y4): reviewer·nominee도 같은 규칙 — 칸 누락으로 비정규화 값 잔존
+        for col, key in (("reviewer", "reviewer_normalized"),
+                         ("nominee", "nominee_normalized")):
+            nv, act_n = _plan(c, r[col])
+            if act_n == "normalize" and r[col] != nv:
+                sets[col] = nv
+                stats[key] += 1
+            elif act_n == "clear":
+                sets[col] = ""
+                stats[key.replace("normalized", "cleared")] = \
+                    stats.get(key.replace("normalized", "cleared"), 0) + 1
         if "state" in sets:
             # 재큐된 카드에 잔여 lease가 남지 않게 — 정규화 결과보다 우선
             sets.update({"lease_by": "", "lease_expires": None})
