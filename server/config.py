@@ -32,6 +32,10 @@ WAIT_CRITERIA = {
 
 RUN_STATES = {"queued", "running", "stalled", "finished", "failed"}
 ACTIVE_RUN_STATES = ("queued", "running", "stalled")  # 활성 = 미종료·실행정보 있음
+# 러너 장부 상태까지 포함한 확장 집합 — probe 점유 판정·release 대상(W0DF 정본).
+# runner/run_state.py ACTIVE와 대응: finalizing/held는 러너 장부가 소유하는 상태라
+# 서버 dispatch 투영에는 없지만, 점유 판정은 둘 다 봐야 한다.
+PROBE_ACTIVE_RUN_STATES = frozenset(ACTIVE_RUN_STATES) | {"finalizing", "held"}
 
 
 def done_gate() -> str:

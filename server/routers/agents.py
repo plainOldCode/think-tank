@@ -303,6 +303,12 @@ def dispatch(issue_id: str, p: DispatchIn, request: Request, ctx: Ctx = Depends(
         if issue["state"] in ("done", "cancelled") or issue["archived"]:
             raise HTTPException(409, f"issue {issue_id} 종료 상태 — dispatch 불가")
         ag = c.execute("SELECT * FROM agents WHERE name=?", (p.agent,)).fetchone()
+        if not ag:
+            # W0DF: 별칭 사전(agents.aliases)은 service.resolve_agent_identity 정본으로
+            # 해석 — probe와 서버가 같은 규칙을 쓴다.
+            _res = service.resolve_agent_identity(c, p.agent)
+            if _res:
+                ag = c.execute("SELECT * FROM agents WHERE name=?", (_res,)).fetchone()
         if not ag and "@" in p.agent:
             # 본명@호스트 형식 assignee(tt CLI 기본 신원)를 등록 에이전트 단축명으로
             # 폴백 — probe review-fix가 assignee에 재dispatch할 때 404로 무한 실패했던
