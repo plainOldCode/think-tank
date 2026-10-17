@@ -39,6 +39,22 @@ def _claim_redelivery(c, row):
     return {"context": row["context"] or ""}
 
 
+def _stale_dispatch(row, issue) -> bool:
+    """9PDD: 재전달 자격이 있어도 카드가 종료됐거나 행이 이전 회차면 안 된다.
+    (status ∈ error/queued는 _redeliver_wanted가 이미 검사.)"""
+    if issue["state"] in ("done", "cancelled") or issue["archived"]:
+        return True
+    at = row["attempt"]
+    return at is not None and at < issue["execution_attempt"]
+
+
+def _close_superseded_row(c, row, via: str) -> None:
+    """9PDD: 낡은 행을 superseded로 닫고 이벤트를 남긴다(증거 코멘트 없음)."""
+    c.execute("UPDATE dispatches SET status='superseded' WHERE id=?", (row["id"],))
+    service.log_event(c, "dispatch.updated", "dispatch", row["id"],
+                      {"status": "superseded", "via": via})
+
+
 def _redeliver_wanted(row) -> bool:
     """기수락 예외 판정 (R4): 재전달 자격(status ∈ error/queued)과 전달 lease
     신선도를 함께 본다. lease는 "전달 소유권" — 신선한 lease(복구 전달 진행 중인
@@ -269,6 +285,10 @@ def dispatch(issue_id: str, p: DispatchIn, request: Request, ctx: Ctx = Depends(
         raise HTTPException(422, "message 비어 있음")
     with ctx.con() as c:
         issue = service.get_issue(c, issue_id)
+        # 9PDD: 종료 카드에 대한 신규 dispatch도 차단 — 멱등키에 회차가 포함돼
+        # 기존 행 조회로는 못 걸러낸다(QN0H: 재전달이 신규 행으로 카드 재개장).
+        if issue["state"] in ("done", "cancelled") or issue["archived"]:
+            raise HTTPException(409, f"issue {issue_id} 종료 상태 — dispatch 불가")
         ag = c.execute("SELECT * FROM agents WHERE name=?", (p.agent,)).fetchone()
         if not ag and "@" in p.agent:
             # 본명@호스트 형식 assignee(tt CLI 기본 신원)를 등록 에이전트 단축명으로
@@ -287,6 +307,13 @@ def dispatch(issue_id: str, p: DispatchIn, request: Request, ctx: Ctx = Depends(
         idem = _idem_key(issue_id, p.agent, issue["execution_attempt"], p.message)
         existing = c.execute("SELECT * FROM dispatches WHERE idem_key=? "
                              "ORDER BY id DESC LIMIT 1", (idem,)).fetchone()
+        # 9PDD(M54X0X19-9PDD): 종료 카드(done/cancelled/archived)나 이전 회차 행은
+        # 재전달하지 않는다 — 받은 에이전트가 claim하면 종료 카드가 다시 열린다
+        # (QN0H 사건). 행은 superseded로 닫아 재전달 대상에서 제거하고 409로 응답.
+        if existing is not None and _stale_dispatch(existing, issue):
+            _close_superseded_row(c, existing, "stale-redeliver")
+            c.commit()
+            raise HTTPException(409, "dispatch superseded: 카드 종료 또는 회차 전진")
         if existing is not None and not _redeliver_wanted(existing):
             return JSONResponse(status_code=200, content=dict(existing))
         redeliver = existing is not None
@@ -331,6 +358,10 @@ def dispatch(issue_id: str, p: DispatchIn, request: Request, ctx: Ctx = Depends(
                                 "ORDER BY id DESC LIMIT 1", (idem,)).fetchone()
                 if row is None:
                     raise HTTPException(409, "dispatch idempotency race")
+                if _stale_dispatch(row, issue):
+                    _close_superseded_row(c, row, "stale-redeliver")
+                    c.commit()
+                    raise HTTPException(409, "dispatch superseded: 카드 종료 또는 회차 전진")
                 if not _redeliver_wanted(row):
                     return JSONResponse(status_code=200, content=dict(row))
                 # 충돌 승자 행도 동일 선점 경로로 (5차 리뷰 R4): lease 선점 없이
