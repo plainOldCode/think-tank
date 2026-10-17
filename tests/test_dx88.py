@@ -257,8 +257,11 @@ def test_마이그레이션은_멱등이다(client, tmp_path):
     s1 = migrate_assignees(con, apply=True)
     s2 = migrate_assignees(con, apply=True)
     assert s1["assignee_normalized"] == 1 and s1["assignee_cleared"] == 1
+    # R7Y4: reviewer/nominee 칸 추가 — 멱등 2회차는 전부 0
     assert s2 == {"assignee_normalized": 0, "assignee_cleared": 0,
-                  "lease_by_normalized": 0, "lease_by_cleared": 0}
+                  "lease_by_normalized": 0, "lease_by_cleared": 0,
+                  "reviewer_normalized": 0, "reviewer_cleared": 0,
+                  "nominee_normalized": 0, "nominee_cleared": 0}
 
 
 def test_마이그레이션_스크립트가_dry_run과_apply를_구분한다(client, tmp_path):

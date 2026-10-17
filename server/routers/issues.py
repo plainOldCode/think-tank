@@ -339,7 +339,9 @@ def claim_review(issue_id: str, p: ReviewClaimIn, ctx: Ctx = Depends(get_ctx)):
         if row["state"] != "review":
             raise HTTPException(409, f"claim-review is for review-state cards only (state is {row['state']})")
         # TT 개선#3c: 교차리뷰 원칙 — 본인 작업 카드는 리뷰 수령 불가(서버 강제)
-        if row["assignee"] and row["assignee"] == p.agent:
+        # R7Y4: 저장 assignee도 정규화 — 별칭 등록 후 등록명 수령으로 자가수령 우회 방지
+        stored_assignee = service.resolve_agent_identity(c, row["assignee"]) or row["assignee"]
+        if stored_assignee and stored_assignee == p.agent:
             raise HTTPException(409, "cross-review: 본인 작업 카드는 수령 불가 (TT 개선#3c)")
         if row["reviewer"] and row["reviewer"] != p.agent:
             # R3: lease가 만료된 점유는 인계 가능 — 리뷰어 교체·장애 인계 차단 방지
@@ -373,7 +375,9 @@ def heartbeat(issue_id: str, p: LeaseIn, ctx: Ctx = Depends(get_ctx)):
         # DX88: 별칭 수령 후 lease_by는 등록명 — 호출자 식별자도 같은 기준으로 비교
         p.agent = service.resolve_agent_identity(c, p.agent) or p.agent
         row = service.get_issue(c, issue_id)
-        if row["lease_by"] != p.agent:
+        # R7Y4: 저장 lease_by도 정규화 — 별칭 등록 전 수령분이 정당 보유자에게 409로 돌아오지 않게
+        held = service.resolve_agent_identity(c, row["lease_by"]) or row["lease_by"]
+        if held != p.agent:
             raise HTTPException(409, f"lease held by {row['lease_by'] or 'nobody'}")
         c.execute("UPDATE issues SET lease_expires=?, heartbeat_at=?, updated_at=? WHERE id=?",
                   (dbmod.future(p.safe_hours()), dbmod.now(), dbmod.now(), issue_id))
@@ -389,7 +393,9 @@ def ping(issue_id: str, p: LeaseIn, ctx: Ctx = Depends(get_ctx)):
         # DX88: heartbeat와 동일 — 별칭 호출자도 등록명 기준으로 판정
         p.agent = service.resolve_agent_identity(c, p.agent) or p.agent
         row = service.get_issue(c, issue_id)
-        if row["lease_by"] != p.agent:
+        # R7Y4: 저장 lease_by도 정규화 (heartbeat와 동일 사유)
+        held = service.resolve_agent_identity(c, row["lease_by"]) or row["lease_by"]
+        if held != p.agent:
             raise HTTPException(409, f"lease held by {row['lease_by'] or 'nobody'}")
         c.execute("UPDATE issues SET heartbeat_at=?, updated_at=? WHERE id=?",
                   (dbmod.now(), dbmod.now(), issue_id))
@@ -716,7 +722,10 @@ def verify_issue(issue_id: str, p: VerifyIn, ctx: Ctx = Depends(get_ctx)):
             raise HTTPException(409, f"state is {row['state']} — review만 verify 가능")
         # 자기승인 금지 — claim-review와 대칭 (M4S94AS4-8QY8). assignee가 자기 카드를
         # 직접 done으로 미는 종결 구멍을 막는다. human 경로는 감사 선언이라 유지.
-        if not p.human and row["assignee"] and row["assignee"] == p.verifier:
+        # R7Y4(M53PBDC0-R7Y4): 저장 assignee도 정규화해 비교 — 별칭 등록 전 원래 이름으로
+        # 수령된 카드가 등록명 verify로 자기승인 우회되는 것을 막는다.
+        stored_assignee = service.resolve_agent_identity(c, row["assignee"]) or row["assignee"]
+        if not p.human and stored_assignee and stored_assignee == p.verifier:
             raise HTTPException(409, "cross-review: 본인 작업 카드는 verify 불가 — 자기승인 금지")
         n_open = c.execute(
             "SELECT COUNT(*) n FROM issues WHERE parent_id=? AND state NOT IN ('done','cancelled')",
