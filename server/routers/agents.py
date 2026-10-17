@@ -18,7 +18,10 @@ from service import Ctx
 router = APIRouter()
 
 
-DELIVERY_RECOVER_S = 30  # webhook 타임아웃(10s)의 3배 — 전달 lease 만료 기준 (R4)
+DELIVERY_RECOVER_S = 30
+# TPRQ(M54X0XS8-TPRQ): 연속 실패 재전달 지수 backoff(30→60→… 상한)와 사람 통보 임계.
+DELIVERY_BACKOFF_CAP_S = 600
+DELIVERY_NOTIFY_FAILS = 5  # webhook 타임아웃(10s)의 3배 — 전달 lease 만료 기준 (R4)
 
 
 def _claim_redelivery(c, row):
@@ -27,6 +30,20 @@ def _claim_redelivery(c, row):
     context를 반환(R5 — 이후 다른 dispatch 유입과 무관), 실패 시 None(기수락:
     이미 전달됐거나 다른 caller가 전달 진행 중). 신규·충돌·기존 모든 재전달
     진입점이 이 함수 하나를 통과해야 동일 did 이중 웹훅이 불가능하다."""
+    # TPRQ: 연속 실패 error 행은 지수 backoff 경과 전에 선점하지 않는다
+    # (30s→60s→120s… 상한 600s). queued(크래시 잔재)는 기존 30s 회복 그대로.
+    if row["status"] == "error":
+        fc = (row["fail_count"] if "fail_count" in row.keys() else 0) or 0
+        lfa = row["last_fail_at"] if "last_fail_at" in row.keys() else None
+        if fc and lfa:
+            delay = min(DELIVERY_RECOVER_S * 2 ** (fc - 1), DELIVERY_BACKOFF_CAP_S)
+            try:
+                age = (datetime.now().astimezone()
+                       - datetime.fromisoformat(lfa)).total_seconds()
+            except ValueError:
+                age = delay
+            if age < delay:
+                return None
     res = c.execute(
         "UPDATE dispatches SET delivery_lease=? WHERE id=? AND "
         "status IN ('error','queued') AND "
@@ -46,11 +63,23 @@ def _redeliver_wanted(row) -> bool:
     선점 UPDATE와 동일 조건이라 경합에서도 한쪽만 웹훅을 친다."""
     if row["status"] not in ("error", "queued"):
         return False
+    if row["status"] == "error":
+        # TPRQ: backoff 미경과 재전송은 기수락 — _claim_redelivery와 동일 조건.
+        fc = (row["fail_count"] if "fail_count" in row.keys() else 0) or 0
+        lfa = row["last_fail_at"] if "last_fail_at" in row.keys() else None
+        if fc and lfa:
+            delay = min(DELIVERY_RECOVER_S * 2 ** (fc - 1), DELIVERY_BACKOFF_CAP_S)
+            try:
+                age = (datetime.now().astimezone()
+                       - datetime.fromisoformat(lfa)).total_seconds()
+            except ValueError:
+                age = delay
+            if age < delay:
+                return False
     lease = row["delivery_lease"]
     if not lease:
         return True
     try:
-        from datetime import datetime
         age = (datetime.now().astimezone() - datetime.fromisoformat(lease)).total_seconds()
     except ValueError:
         return True
@@ -379,21 +408,35 @@ def dispatch(issue_id: str, p: DispatchIn, request: Request, ctx: Ctx = Depends(
     with ctx.con() as c:
         # 실패(error) 시 context는 생성 시 상속값을 보존(R5) — 성공 시에만 응답 token으로 갱신
         if status == "ok":
-            c.execute("UPDATE dispatches SET status=?, detail=?, context=?, delivery_lease=NULL WHERE id=?",
-                      (status, detail, dctx, did))
+            # TPRQ: 성공 시 실패 카운터 초기화 — 다음 실패가 다시 첫 실패로 기록된다
+            c.execute("UPDATE dispatches SET status=?, detail=?, context=?, delivery_lease=NULL, "
+                      "fail_count=0, last_fail_at=NULL WHERE id=?", (status, detail, dctx, did))
         elif status == "error":
-            c.execute("UPDATE dispatches SET status=?, detail=?, delivery_lease=NULL WHERE id=?",
-                      (status, detail, did))
+            fail_n = c.execute("SELECT COALESCE(fail_count,0)+1 FROM dispatches WHERE id=?",
+                               (did,)).fetchone()[0]
+            c.execute("UPDATE dispatches SET status=?, detail=?, delivery_lease=NULL, "
+                      "fail_count=?, last_fail_at=? WHERE id=?",
+                      (status, detail, fail_n, dbmod.now(), did))
         if not poll_mode:
             c.execute("UPDATE agents SET last_ok=?, last_err=? WHERE name=?",
                       (dbmod.now() if status == "ok" else ag["last_ok"],
                        "" if status == "ok" else detail, ag["name"]))
         if status == "error":
-            fail_body = f"⚠ hook dispatch #{did} → {p.agent} 실패: {detail}"
-            c.execute("INSERT INTO comments (issue_id, author, body, ts) VALUES (?,?,?,?)",
-                      (issue_id, "tt-server", fail_body, dbmod.now()))
-            service.log_event(c, "comment.added", "issue", issue_id,
-                              {"author": "tt-server", "preview": fail_body[:120]})
+            # TPRQ: 같은 did의 재시도마다 댓글을 쌓지 않는다 — 첫 실패만 타임라인에 남기고
+            # 이후는 행의 fail_count·detail로 추적한다(30s 재시도 간격이면 수십 줄 폭주).
+            if fail_n == 1:
+                fail_body = f"⚠ hook dispatch #{did} → {p.agent} 실패: {detail}"
+                c.execute("INSERT INTO comments (issue_id, author, body, ts) VALUES (?,?,?,?)",
+                          (issue_id, "tt-server", fail_body, dbmod.now()))
+                service.log_event(c, "comment.added", "issue", issue_id,
+                                  {"author": "tt-server", "preview": fail_body[:120]})
+            if fail_n == DELIVERY_NOTIFY_FAILS:
+                human_body = (f"⚠ hook dispatch #{did} → {p.agent} {fail_n}회 연속 실패 — "
+                              f"사람 확인 필요: {detail}")
+                c.execute("INSERT INTO comments (issue_id, author, body, ts) VALUES (?,?,?,?)",
+                          (issue_id, "tt-server", human_body, dbmod.now()))
+                service.log_event(c, "comment.added", "issue", issue_id,
+                                  {"author": "tt-server", "preview": human_body[:120]})
         c.commit()
         row = c.execute("SELECT * FROM dispatches WHERE id=?", (did,)).fetchone()
     if redeliver:

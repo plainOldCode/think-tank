@@ -718,7 +718,10 @@ def test_dispatch_idem_new_attempt_after_bump(client, hook_server):
 
 
 def test_dispatch_idem_error_retry_redelivers_same_did(client, hook_server):
-    """전달 실패(error) 행에 대한 재전송 — 동일 did로 재전달, 신규 코멘트 없음."""
+    """전달 실패(error) 행에 대한 재전송 — 동일 did로 재전달, 신규 코멘트 없음.
+    TPRQ backoff: 경과 후 재시도라서 웹훅이 다시 친다(간격 안이면 기수락)."""
+    import sqlite3 as _sq
+    from datetime import datetime as _dt
     i = mk(client, title="재전달 카드")
     client.post("/agents", json={"name": "demo", "base_url": hook_server})
     Hook.mode = "fail"
@@ -726,6 +729,13 @@ def test_dispatch_idem_error_retry_redelivers_same_did(client, hook_server):
                      json={"agent": "demo", "message": "재시도 대상"}).json()
     assert d1["status"] == "error"
     Hook.mode = "ok"
+    # backoff 경과 시뮬레이션 — 첫 실패 delay(30s) 지남
+    con = _sq.connect(client.app.state.ctx.db_path)
+    con.execute("UPDATE dispatches SET last_fail_at=? WHERE id=?",
+                (_dt.now().astimezone().strftime("%Y-%m-%dT%H:%M:%S%z").replace("+0900", "-01:00:00")
+                 if False else "2020-01-01T00:00:00+0900", d1["id"]))
+    con.commit()
+    con.close()
     d2 = client.post(f"/issues/{i['id']}/dispatch", json={"agent": "demo", "message": "재시도 대상"})
     assert d2.status_code == 200
     assert d2.json()["id"] == d1["id"]  # 동일 did 재전달

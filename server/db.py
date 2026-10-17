@@ -118,7 +118,9 @@ CREATE TABLE IF NOT EXISTS dispatches (
   ended_at TEXT,
   model TEXT NOT NULL DEFAULT '',
   idem_key TEXT,
-  delivery_lease TEXT
+  delivery_lease TEXT,
+  fail_count INTEGER NOT NULL DEFAULT 0,
+  last_fail_at TEXT
 );
 CREATE TABLE IF NOT EXISTS events (
   -- 변경 이벤트 outbox (TT 개선#2): 단조 seq, 변경과 같은 트랜잭션에서 기록 —
@@ -263,7 +265,8 @@ def connect(path):
         pass
     # dispatch 실행 상태 투영 (TT M3EREF97-FXWQ): 기존 행은 '' = 비-tmux·러너 미수신.
     # status(웹훅 전달 상태)와 층위가 다르다 — 진행 상태의 단일 소스는 러너(서버 재계산 금지).
-    for col in ("run_state TEXT NOT NULL DEFAULT ''",
+    for col in ("fail_count INTEGER NOT NULL DEFAULT 0", "last_fail_at TEXT",
+                "run_state TEXT NOT NULL DEFAULT ''",
                 "machine TEXT NOT NULL DEFAULT ''",
                 "session TEXT NOT NULL DEFAULT ''",
                 "started_at TEXT",
