@@ -320,11 +320,15 @@ def dispatch(issue_id: str, p: DispatchIn, request: Request, ctx: Ctx = Depends(
             # 세션을 계속(reuse)하지 않게(러너는 빈 context에서 신규 세션으로 폴백).
             inh_ctx = (prev["context"] if prev else "") if not p.fresh else ""
             try:
-                did = c.execute("INSERT INTO dispatches (issue_id, agent, author, message, context, status, ts, model, idem_key, attempt, delivery_lease) "
-                                "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                # 3A0B(M54X0XDB-3A0B): poll 에이전트는 픽업 전까지 run_state=''라
+                # /agents/active·probe busy·stall·지표가 전부 못 봤다 — 발송 시점부터
+                # queued로 기록해 생명주기 추적을 시작한다.
+                _poll = (ag["receive_mode"] or "").strip().lower() == "poll"
+                did = c.execute("INSERT INTO dispatches (issue_id, agent, author, message, context, status, ts, model, idem_key, attempt, delivery_lease, run_state) "
+                                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                                 (issue_id, agent_name, p.author, p.message, inh_ctx, "queued", dbmod.now(),
                                  ag["model"] or "", idem, issue["execution_attempt"],
-                                 dbmod.now())).lastrowid
+                                 dbmod.now(), "queued" if _poll else "")).lastrowid
                 service.log_event(c, "dispatch.created", "dispatch", did,
                                   {"agent": agent_name, "issue_id": issue_id,
                                    "preview": p.message[:120]})
@@ -422,8 +426,14 @@ def pending_inbox(runner_name: str, request: Request, ctx: Ctx = Depends(get_ctx
                                 fresh=False, work_contract=None)
             out.append(_dispatch_payload(issue, ag, p, d["id"], d["issue_id"], request,
                                          ctx, d, tail, agent_name=d["agent"]))
+            # 3A0B(M54X0XDB-3A0B): 픽업 = 러너가 작업을 보유했다 — running으로 전환해
+            # /agents/active·probe busy·stall 감시가 본다. started_at·이벤트 동시 기록.
+            ts = dbmod.now()
             c.execute("UPDATE dispatches SET status='ok', detail='poll-delivered (M3B5JHGP)', "
-                      "delivery_lease=NULL WHERE id=?", (d["id"],))
+                      "delivery_lease=NULL, run_state='running', started_at=? WHERE id=?",
+                      (ts, d["id"]))
+            service.log_event(c, "dispatch.updated", "dispatch", d["id"],
+                              {"run_state": "running", "via": "poll-pickup"})
         if rows:
             c.execute(f"UPDATE agents SET last_ok=? WHERE name IN ({qs})", (dbmod.now(), *names))
             c.commit()
