@@ -19,7 +19,10 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 HASH=$(curl -sf "$TT_URL/openapi.json" | shasum -a 256 | cut -c1-8)
-VER=$(sed -n 's/^TT_CLI_VERSION="\?\([0-9.]*\)"\?/\1/p' cli/tt | head -1)
+# -E: BSD(macOS)·GNU 공용 — BRE \?는 GNU 확장이라 mini/m2max에서 VER이 빈 값이 됐다(a1 리뷰 R1)
+VER=$(sed -E -n 's/^TT_CLI_VERSION="?([0-9.]+)"?/\1/p' cli/tt | head -1)
+[ -n "$HASH" ] || { echo "OpenAPI 해시 측정 실패 — TT_URL 확인" >&2; exit 1; }
+[ -n "$VER" ] || { echo "CLI 버전 추출 실패 — cli/tt의 TT_CLI_VERSION 확인" >&2; exit 1; }
 DATE=$(date +%F)
 TAG="deploy-cli${VER}-openapi${HASH}"
 ROW="- ${DATE}: cli ${VER}, openapi **${HASH}** — ${NOTE}. 태그 \`${TAG}\`."
