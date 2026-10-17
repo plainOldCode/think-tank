@@ -72,7 +72,13 @@ def test_old_attempt_cleanup_accepts_closed_issue_but_not_old_comment(client, ho
     with sqlite3.connect(client.app.state.db_path) as c:
         assert c.execute("SELECT COUNT(*) FROM dispatch_reports WHERE dispatch_id=?", (did,)).fetchone()[0] == 0
         c.execute("UPDATE issues SET state='in_progress', archived=0 WHERE id=?", (i["id"],))
-    assert progress_post(client, i["id"], did, payload).status_code == 409
+    # 재개 후에도 구회차 종료는 투영만 갱신한다. 코멘트·접수 이력은 생기지 않는다.
+    reopened = progress_post(client, i["id"], did, payload)
+    assert reopened.status_code == 200, reopened.text
+    assert reopened.json()["run_state"] == terminal and not reopened.json()["report_session"]
+    assert not any(c["body"] == payload["comment"] for c in client.get(f"/issues/{i['id']}").json()["comments"])
+    with sqlite3.connect(client.app.state.db_path) as c:
+        assert c.execute("SELECT COUNT(*) FROM dispatch_reports WHERE dispatch_id=?", (did,)).fetchone()[0] == 0
 
 
 @pytest.mark.parametrize("state", ["queued", "running", "stalled"])

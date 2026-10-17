@@ -303,19 +303,27 @@ def test_dispatch_failure_system_comment(client, hook_server):
 
 
 def test_progress_terminal_cas_rejects_stale_round(client, hook_server):
-    """TT 개선#1 (M4DEDPK2-0VSF) 요구 2 — 서버 attempt CAS: 이전 회차의 늦은
-    종료 보고는 409로 거부된다(교차 머신 이전 회차 감시자 방어)."""
+    """TT 개선#1 (M4DEDPK2-0VSF) + M54E72RQ-SXGS — 이전 회차의 종료 보고는
+    그 dispatch를 닫는다. 완료 코멘트는 현재 회차 증거가 되지 않는다.
+    비종료 진행(running/stalled)은 그대로 last-write-wins."""
     i = mk(client, title="CAS 카드")
     reg_agent(client, hook_server)
     did = make_dispatch(client, i["id"])  # attempt 0에서 생성
     assert progress_post(client, i["id"], did, {"state": "running"}).status_code == 200
-    # 재claim — attempt 0→1 (이전 회차는 이제 stale)
+    before = [c["body"] for c in client.get(f"/issues/{i['id']}").json()["comments"]]
+    # 재claim — attempt 0→1. 이전 회차의 활성 투영은 회차 전진에서 닫힌다.
     client.post(f"/issues/{i['id']}/claim", json={"agent": "worker"})
-    r = progress_post(client, i["id"], did, {"state": "finished"})
-    assert r.status_code == 409, r.text
-    assert "stale round report" in r.text
-    # failed 종료 보고도 동일 거부
-    assert progress_post(client, i["id"], did, {"state": "failed"}).status_code == 409
+    assert one_dispatch(client, i["id"], did)["run_state"] == "finished"
+    late = "늦은 완료 보고 pytest 1 passed"
+    r = progress_post(client, i["id"], did, {"state": "finished", "comment": late,
+                                             "author": "runner@t", "session": "tt-old"})
+    assert r.status_code == 200, r.text
+    assert r.json()["run_state"] == "finished" and not r.json()["report_session"]
+    assert progress_post(client, i["id"], did, {"state": "failed", "comment": "늦은 실패",
+                                                "session": "tt-old-2"}).status_code == 200
+    assert late not in [c["body"] for c in client.get(f"/issues/{i['id']}").json()["comments"]]
+    assert "늦은 실패" not in [c["body"] for c in client.get(f"/issues/{i['id']}").json()["comments"]]
+    assert [c["body"] for c in client.get(f"/issues/{i['id']}").json()["comments"]] == before
     # 비종료 진행(running/stalled)은 CAS 대상 아님 — last-write-wins 그대로
     assert progress_post(client, i["id"], did, {"state": "stalled"}).status_code == 200
     # 신규 회차 dispatch(attempt 1)의 종료 보고는 정상 수락
@@ -334,11 +342,13 @@ def test_progress_comment_atomic_with_cas(client, hook_server):
     assert r.status_code == 200
     comments = client.get(f"/issues/{i['id']}").json()["comments"]
     assert any(c["body"] == body and c["author"] == "runner@t" for c in comments)
-    # 재claim 후 같은 did로 코멘트付き 종료 보고 → 409 + 코멘트 미기록
+    # 재claim 후 같은 did로 코멘트付き 종료 보고 → 투영은 닫히고 코멘트는 미기록
     client.post(f"/issues/{i['id']}/claim", json={"agent": "worker"})
     r2 = progress_post(client, i["id"], did, {"state": "failed",
-                                              "comment": "늦은 실패 보고", "author": "runner@t"})
-    assert r2.status_code == 409
+                                              "comment": "늦은 실패 보고", "author": "runner@t",
+                                              "session": "tt-late"})
+    assert r2.status_code == 200, r2.text
+    assert r2.json()["run_state"] == "failed" and not r2.json()["report_session"]
     comments = client.get(f"/issues/{i['id']}").json()["comments"]
     assert not any(c["body"] == "늦은 실패 보고" for c in comments)
 
@@ -365,8 +375,10 @@ def test_progress_cas_conditional_update_atomic(client, hook_server):
     row = con.execute("SELECT run_state FROM dispatches WHERE id=?", (did,)).fetchone()
     assert row[0] == ""  # 훼손 없음
     con.close()
-    # 엔드포인트 경로에서도 409로 관측
-    assert progress_post(client, i["id"], did, {"state": "finished"}).status_code == 409
+    # 엔드포인트는 구회차 투영을 닫는다. 코멘트는 없으므로 증거는 늘지 않는다.
+    r = progress_post(client, i["id"], did, {"state": "finished"})
+    assert r.status_code == 200, r.text
+    assert r.json()["run_state"] == "finished"
 
 
 def test_dispatch_crashed_queued_recovery(client, hook_server):
