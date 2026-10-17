@@ -6,6 +6,8 @@ metadata:
   base_url: "http://tt-server.example.ts.net:7800"
   api_contract: "/api.md"
   openapi: "/openapi.json"
+  cli_version: "2.7.2"
+  openapi_hash: "3161dede"
 ---
 
 # Think Tank work and completion reporting
