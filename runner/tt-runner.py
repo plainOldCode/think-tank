@@ -1550,6 +1550,11 @@ def stall_check(key, ent, now):
         finalize(None, key, ent, 143, "session %s without exit marker" % physical)
         cleanup_terminal_session(key, ent)
         return True
+    if run_stall_mode(ent) == "process":
+        # QN0H 리뷰 ④: process 모드(--print 드라이버)는 pane 무음 판정 자체를
+        # 하지 않는다 — 관찰자가 잠시 멈춰 pane_ts가 임계를 넘어도 stale 판정으로
+        # kill하지 않게 판정 지점에서 이중 차단한다. hang은 wall-clock TIMEOUT 담당.
+        return False
     hb = read_heartbeat(key)
     if hb is None or not hb.get("ok", True) or hb.get("pane_fp") is None:
         return False  # 무관찰/관찰 실패 순회 — 판정 스킵 (리뷰 R6)
