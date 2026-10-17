@@ -86,7 +86,7 @@ def test_checks_관측_불가_None은_판정_대상이_아니다(monkeypatch):
     # 리뷰 R1 — CI 조회 실패(checks=None)는 0건과 다르다: 병합 우회 금지
     monkeypatch.setenv("TT_REVIEW_AGENT", "fallback@t")
     i = _i(reviewer="fallback@t",
-           comments=[_pc("review: approve PR#9@bbbbbbbb — ok", author="fallback@t")])
+           comments=[_pc("review: approve\nPR#9@bbbbbbbb — ok", author="fallback@t")])
     acts = dispatchd.decide(_snap([i], [{"number": 9, "repo": "plainOldCode/think-tank",
                                          "checks": None, "isDraft": False,
                                          "branch": "tt/M4ABCDEF-GH12-x", "title": "",
@@ -110,7 +110,7 @@ def test_행별_처리_구분_골든():
 
 def test_checks_0건_승인_판정이면_병합_후보다():
     i = _i(reviewer="fallback@t",
-           comments=[_pc("review: approve PR#9@bbbbbbbb — ok", author="fallback@t")])
+           comments=[_pc("review: approve\nPR#9@bbbbbbbb — ok", author="fallback@t")])
     acts = dispatchd.decide(_snap([i], _pr(checks=[]), [_agent("a2@t")]))
     m = [a for a in acts if a["action"] == "merge"]
     assert len(m) == 1 and "checks 0건" in m[0]["reason"]

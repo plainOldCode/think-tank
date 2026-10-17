@@ -103,7 +103,7 @@ def test_정상_판정이_있으면_재발령하지_않는다():
     i = _i(reviewer="fallback@t",
            comments=[_pc(REQ),
                      {"author": "fallback@t", "created_at": OLD,
-                      "body": "review: approve PR#9@bbbbbbbb — ok"}])
+                      "body": "review: approve\nPR#9@bbbbbbbb — ok"}])
     acts = dispatchd.decide(_snap([i], _pr(), [_agent("a2@t")]))
     assert not [a for a in acts if a["action"] == "review-retry"]
     assert [a for a in acts if a["action"] == "merge"]

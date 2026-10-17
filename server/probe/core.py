@@ -17,6 +17,7 @@ import urllib.request
 import uuid
 
 from .providers import inspect_delivery  # noqa: F401 — _prepare_delivery_context 모듈 스코프용
+from verdicts import classify_rejection as _classify_rejection, first_line_verdict  # 9WWK 단일 파서
 from datetime import datetime, timedelta
 
 import failure_rules
@@ -154,7 +155,6 @@ def _stale_act(i, att, now):
             "reason": f"PR 없음 {int(age // 60)}시간 지속 — 사람 판단 대기 공지"}
 
 
-REVIEW_LINE = re.compile(r"^review:\s*(approve|request-changes)\b", re.I)
 PR_SHA = re.compile(r"PR#(\d+)@([0-9a-fA-F]{8})")
 
 
@@ -173,9 +173,9 @@ def review_verdict(comments, reviewer, pr_no, sha8):
         m = PR_SHA.search(body)
         if not m or int(m.group(1)) != pr_no or m.group(2).lower() != (sha8 or "").lower():
             continue
-        v = REVIEW_LINE.search(body.strip())
+        v = first_line_verdict(body)
         if v:
-            verdict = v.group(1).lower()
+            verdict = v
     return verdict
 
 
@@ -399,31 +399,11 @@ def _resolve_executor(cand, agents):
 
 # 반려 사유 버킷(키워드 분류 — 대소문자 무시, 순서 민감: migration이 contract의
 # '스키마' 키워드보다 우선). 미분류는 general — 구조화 대상에서 뺀다.
-REJECT_BUCKETS = {
-    "migration": ("마이그레이션", "migration", "컬럼", "column"),
-    "test": ("테스트", "test", "회귀", "red", "커버리지", "coverage"),
-    "contract": ("계약", "contract", "스키마", "schema", "api.md", "패리티",
-                 "문서", "docs", "패러티"),
-    "security": ("보안", "security", "secret", "인증", "auth", "권한"),
-    "style": ("스타일", "style", "네이밍", "naming", "컨벤션", "lint", "포맷"),
-}
-
-
-def _classify_rejection(body):
-    """반려 판정 본문 → 버킷. 가장 먼저 걸린 버킷 하나만(다중 지적은 반복 카운트가 흡수)."""
-    text = (body or "").lower()
-    for bucket, kws in REJECT_BUCKETS.items():
-        if any(k.lower() in text for k in kws):
-            return bucket
-    return "general"
-
-
 def _rejection_verdicts(cur):
     """카드의 request-changes 판정 코멘트(시간순). TT·레거시 PR 경로 공용 형식."""
     out = []
     for c in cur.get("comments") or []:
-        lines = (c.get("body") or "").strip().splitlines()
-        if lines and lines[0].strip().lower().startswith("review: request-changes"):
+        if first_line_verdict(c.get("body")) == "request-changes":
             out.append(c)
     return out
 
