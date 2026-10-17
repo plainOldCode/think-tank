@@ -88,11 +88,21 @@ def get_ctx(request: Request) -> Ctx:
     return request.app.state.ctx
 
 
+def _agent_out(r):
+    """K4Q7(M53XP2ZA-K4Q7) — 에이전트 직렬화에서 secret을 완전히 제거.
+
+    webhook secret은 소유자(에이전트·러너 설정)만 보유한다. 읽기 경로가 없으므로
+    마스킹이 아니라 키 자체를 뺀다 — 오탈 유출·로그·캐시 경로를 동시에 끊는다."""
+    d = {**dict(r), "aliases": _aliases_out(r)}
+    d.pop("secret", None)
+    return d
+
+
 @router.get("/agents")
 def list_agents(ctx: Ctx = Depends(get_ctx)):
     with ctx.con() as c:
         rows = c.execute("SELECT * FROM agents ORDER BY created_at").fetchall()
-    return [{**dict(r), "aliases": _aliases_out(r)} for r in rows]
+    return [_agent_out(r) for r in rows]
 
 
 def _validate_receive_mode(mode, interval, current_interval=None):
@@ -169,9 +179,8 @@ def add_agent(p: AgentIn, ctx: Ctx = Depends(get_ctx)):
                    json.dumps(aliases, ensure_ascii=False) if aliases else "", dbmod.now()))
         c.commit()
         row = c.execute("SELECT * FROM agents WHERE name=?", (name,)).fetchone()
-    d = dict(row)
-    d["aliases"] = _aliases_out(row)
-    return d
+    # K4Q7(M53XP2ZA-K4Q7): 등록 응답도 직렬화 관문 — secret 원문 반환 차단
+    return _agent_out(row)
 
 
 @router.patch("/agents/{name}")
@@ -224,9 +233,9 @@ def patch_agent(name: str, p: AgentPatch, ctx: Ctx = Depends(get_ctx)):
             c.execute(f"UPDATE agents SET {sets} WHERE name=?", (*fields.values(), name))
             c.commit()
         row = c.execute("SELECT * FROM agents WHERE name=?", (name,)).fetchone()
-    d = dict(row)
-    d["aliases"] = _aliases_out(row)
-    return d
+    # K4Q7(M53XP2ZA-K4Q7): PATCH 응답도 직렬화 관문 — 비-secret 변경만으로도
+    # 저장된 secret 원문이 응답에 실리는 우회를 막는다(agy P1).
+    return _agent_out(row)
 
 
 @router.delete("/agents/{name}")
