@@ -355,6 +355,65 @@ def _resolve_executor(cand, agents):
     return None
 
 
+# --- 369Y(M5283JJH-369Y): 같은 지적 반복은 구조로 막기 — /correct 루프 차단 ---
+
+# 반려 사유 버킷(키워드 분류 — 대소문자 무시, 순서 민감: migration이 contract의
+# '스키마' 키워드보다 우선). 미분류는 general — 구조화 대상에서 뺀다.
+REJECT_BUCKETS = {
+    "migration": ("마이그레이션", "migration", "컬럼", "column"),
+    "test": ("테스트", "test", "회귀", "red", "커버리지", "coverage"),
+    "contract": ("계약", "contract", "스키마", "schema", "api.md", "패리티",
+                 "문서", "docs", "패러티"),
+    "security": ("보안", "security", "secret", "인증", "auth", "권한"),
+    "style": ("스타일", "style", "네이밍", "naming", "컨벤션", "lint", "포맷"),
+}
+
+
+def _classify_rejection(body):
+    """반려 판정 본문 → 버킷. 가장 먼저 걸린 버킷 하나만(다중 지적은 반복 카운트가 흡수)."""
+    text = (body or "").lower()
+    for bucket, kws in REJECT_BUCKETS.items():
+        if any(k.lower() in text for k in kws):
+            return bucket
+    return "general"
+
+
+def _rejection_verdicts(cur):
+    """카드의 request-changes 판정 코멘트(시간순). TT·레거시 PR 경로 공용 형식."""
+    out = []
+    for c in cur.get("comments") or []:
+        lines = (c.get("body") or "").strip().splitlines()
+        if lines and lines[0].strip().lower().startswith("review: request-changes"):
+            out.append(c)
+    return out
+
+
+def _correct_loop_sections(cur):
+    """369Y — 발령문에 붙일 섹션 목록. 반복 유형 구조화 + 3회 반려 premise 강제.
+
+    같은 유형 2회 이상 → 구조화 체크 승격 지시. 카드 누적 반려 3회 이상 →
+    premise 재검토("같은 premise의 수정이 두 번 실패하면 premise부터 시험").
+    """
+    verdicts = _rejection_verdicts(cur)
+    if not verdicts:
+        return []
+    from collections import Counter
+    buckets = Counter(_classify_rejection(c.get("body") or "") for c in verdicts)
+    sections = []
+    repeated = sorted(((b, n) for b, n in buckets.items() if n >= 2 and b != "general"),
+                      key=lambda kv: (-kv[1], kv[0]))
+    if repeated:
+        lines = [f"- {b} 지적 {n}회 반복 — 수정 후 이 유형은 lint/테스트/계약 체크로 "
+                 "전환해 같은 지적이 재발하지 않게 한다" for b, n in repeated]
+        sections.append("--- 구조화 체크 승격 (369Y) ---\n" + "\n".join(lines))
+    if len(verdicts) >= 3:
+        sections.append(
+            "--- premise 재검토 (369Y) ---\n"
+            f"반려 {len(verdicts)}회 — 같은 premise의 수정이 두 번 실패했다면 premise부터 시험하라. "
+            "acceptance 정의와 접근 방식 자체를 재검토하고, 유지 근거를 카드 노트로 남긴다.")
+    return sections
+
+
 def _pick_rework_executor(url, issue_id, assignee, agents):
     """M5283HM4-0SZP — 원작업자 고정 해제: 등록 실행자 중 대체 선정.
 
@@ -411,6 +470,8 @@ def _rework_brief(assignee, act, cur, msg):
               "--- PR ---",
               f"https://github.com/{act.get('repo')}/pull/{act['pr']} "
               f"(branch {act.get('branch', '')}, head {(act.get('head_sha') or '')[:8]})"]
+    # 369Y — 반복 지적 구조화 + premise 강제 섹션(레거시 PR 경로도 동일 적용)
+    parts += _correct_loop_sections(cur)
     return "\n".join(parts)
 
 
