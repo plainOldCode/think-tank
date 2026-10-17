@@ -112,8 +112,13 @@ def finish_issue_dispatches(c, issue_id):
                   {"run_state": "finished", "via": "issue-terminal"})
     # 9PDD(M54X0X19-9PDD): 카드 종료 시 전달 상태 error/queued 행도 닫는다 —
     # 안 그러면 낡은 error 행이 재전달 대상으로 남아 종료 카드를 재청구시킨다(QN0H).
+    # 주의: bump()가 활성 카드 PATCH마다 호출되므로 종료 상태 EXISTS 가드가 필수다
+    # (a1 리뷰 R1) — 없으면 poll 에이전트의 queued 행이 픽업 전에 닫혀 영원히
+    # 전달되지 않고, error 행도 재전달 대기 중 조기 종료된다.
     rows = c.execute(
-        "SELECT id FROM dispatches WHERE issue_id=? AND status IN ('error','queued')",
+        "SELECT id FROM dispatches WHERE issue_id=? AND status IN ('error','queued') "
+        "AND EXISTS (SELECT 1 FROM issues i WHERE i.id=dispatches.issue_id "
+        "AND (i.state IN ('done','cancelled') OR i.archived=1))",
         (issue_id,)).fetchall()
     for row in rows:
         c.execute("UPDATE dispatches SET status='superseded', ended_at=? WHERE id=?",

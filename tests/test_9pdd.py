@@ -87,7 +87,7 @@ def test_done_카드의_error_행_재전달은_차단된다(client, hook_server,
     assert got["state"] == "done"
     a_final = got["execution_attempt"]
 
-    # 동일 회차 error 행 재전달 — 종료 카드라서 차단
+    # 동일 회차 error 행은 done 전이 시점에 이미 superseded — 재전송도 종료 카드라 409
     r = client.post(f"/issues/{issue['id']}/dispatch", json=payload)
     assert r.status_code == 409, r.text
     assert len(Hook.received) == 0  # 웹훅 없음 — 카드 재청구 없음
@@ -148,3 +148,21 @@ def test_회차_전진_시_error_queued_행이_닫힌다(client, hook_server):
     r = client.post(f"/issues/{issue['id']}/claim", json={"agent": "worker"})
     assert r.status_code == 200, r.text  # a1→a2 전진
     assert _row_status(client, did)["status"] == "superseded"
+
+
+def test_활성_카드_속성_수정은_error_queued_행을_닫지_않는다(client, hook_server):
+    """a1 리뷰 R1 회귀 — finish_issue_dispatches의 status 정리에 종료 가드가 없으면
+    활성 카드 PATCH마다 재전달 대기 error 행·poll queued 행이 조기 종료됐다."""
+    client.post("/agents", json={"name": "demo", "base_url": hook_server})
+    issue, did = _mk_errored_row(client, "활성 카드 정리 금지")
+    client.post("/agents", json={"name": "poller", "receive_mode": "poll", "runner_name": "opencode-tp13"})
+    r = client.post(f"/issues/{issue['id']}/dispatch",
+                    json={"agent": "poller", "message": "poll 대기"})
+    assert r.status_code in (200, 201), r.text
+    poll_did = r.json()["id"]
+
+    r = client.patch(f"/issues/{issue['id']}", json={"priority": 2})
+    assert r.status_code == 200, r.text
+
+    assert _row_status(client, did)["status"] == "error"      # 재전달 대기 유지
+    assert _row_status(client, poll_did)["status"] == "queued"  # poll 픽업 대기 유지
