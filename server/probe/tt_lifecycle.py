@@ -226,6 +226,15 @@ def execute(core, url, act):
             "새 review_subject가 발급되므로 이전 승인은 재사용되지 않는다. "
             "PR은 선택적 보조 수단이며 저장소별 절차를 따른다. 제출 후 기다리지 말고 종료하라."
         )
+        # 369Y(M5283JJH-369Y): 반복 지적 구조화 + 3회 반려 premise 재검토 강제
+        _secs = core._correct_loop_sections(cur)
+        if _secs:
+            message = message + "\n\n" + "\n\n".join(_secs)
+            _att = cur.get("execution_attempt") or 0
+            act["loop_notes"] = [
+                ("[correct-loop premise a%s]" % _att if "premise 재검토" in s
+                 else "[correct-loop structure a%s]" % _att, s)
+                for s in _secs]
     # Re-read at the dispatch boundary, not just at the planning boundary.
     fresh = core.api(url, f"/issues/{iid}")
     if not eligible(fresh) or subject(fresh) != act["subject"]:
@@ -241,3 +250,8 @@ def execute(core, url, act):
     core.api(url, f"/issues/{iid}/comments", "POST", {
         "author": "probe", "body": f"{act['marker']} reviewer={target}",
     })
+    # 369Y — 루프 신호를 카드에 기록(dedup: 같은 키는 회차당 1회). 발령 실패 시 미기록.
+    for _key, _sec in act.get("loop_notes") or []:
+        if not marked(cur, _key):
+            core.api(url, f"/issues/{iid}/comments", "POST", {
+                "author": "probe", "body": f"{_key} {_sec[:300]}"})
