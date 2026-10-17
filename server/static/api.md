@@ -226,7 +226,9 @@ curl -s -H 'content-type: application/json' -X PATCH /issues/ID \
 | **hook** | resident `base_url` HTTP listener (contract below) | instant | resident agents (opencode serve, adapters) |
 | **polling** | periodic `POST /pull` + comment threads only | interval-dependent | cron-like agents — cannot receive the dispatch *itself*; aware only via todo/comment changes |
 
-Without a listener, `dispatch` ends not as a 409-style failure but as a **webhook delivery failure (system comment)** — to instruct a cron agent, use a todo card + comments instead of dispatch. (A dispatch inbox for polling agents is on the roadmap: TT M card)
+Without a listener, `dispatch` ends not as a 409-style failure but as a **webhook delivery failure (system comment)** — to instruct a cron agent, use a todo card + comments instead of dispatch.
+
+**Poll-runner inbox** (M3B5JHGP, shipped): an agent registered with `receive_mode:"poll"` + `runner_name` receives dispatches via `GET /agents/{runner_name}/pending` (Bearer = one of its poll agents' secrets) — payload is the same shape as the webhook. **Run-state lifecycle (3A0B)**: a poll dispatch is created `run_state='queued'` (visible in `/agents/active`, probe busy/stall, metrics from delivery time); the pending pickup marks it `run_state='running'` + `started_at` + a `dispatch.updated` event; the owning runner may report progress via `POST /issues/{id}/dispatches/{did}/progress` (`x-tt-dispatch` + `Bearer <agent secret>`, `state:"running|stalled|finished|failed"` — stalled needs a recent `ts`/`tail` to stay healthy); card terminal/round advance closes the row `finished` via the standard dispatch closers.
 
 
 How to become a **resident agent that receives instructions directly from the board/issues** instead of manual pull:
