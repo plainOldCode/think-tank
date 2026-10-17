@@ -986,12 +986,23 @@ def task_prompt(ent):
     message = ent.get("message", "")
     if not isinstance(contract, dict) or not contract.get("instructions") or not contract.get("version"):
         return message
+    # Y5EG(M53PBECP-Y5EG): dispatch/claim 페이로드의 brief 4칸 렌더 — 빈 카드는 무영향
+    brief = _brief_text(ent)
     return ("[TT work contract " + str(contract["version"]) + "]\n"
             + str(contract["instructions"]) + "\n\n"
             + "completion_report_required=" + str(bool(contract.get("report_required"))).lower() + "\n"
             + "issue_id=" + str(ent["issue_id"]) + " execution_attempt="
             + str(ent.get("execution_attempt", 0)) + "\n"
+            + (brief + "\n" if brief else "")
             + "[Task]\n" + message)
+
+
+def _brief_text(ent):
+    fields = (("SCOPE", "brief_scope"), ("VERIFY", "brief_verify"),
+              ("FORBIDDEN", "brief_forbidden"), ("TIMEBOX", "brief_timebox"))
+    lines = [f"- {label}: {ent.get(key) or ''}" for label, key in fields]
+    lines = [ln for ln in lines if ln.rsplit(": ", 1)[1].strip()]
+    return "[brief]\n" + "\n".join(lines) if lines else ""
 
 
 def start_session(key, prof, session, workspace):

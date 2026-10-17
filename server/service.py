@@ -266,6 +266,24 @@ def standing_orders(c, issue):
     return m.group(1).strip() if m else ""
 
 
+def brief_block(issue):
+    """Y5EG(M53PBECP-Y5EG) — 카드의 brief 4칸을 작업자 지시문용 섹션으로. 순수 함수.
+
+    dict와 sqlite3.Row 모두 받는다. 비어 있으면 빈 문자열 — 섹션 자체를 붙이지 않는다."""
+    def _v(row, key):
+        try:
+            return row[key] or ""
+        except (KeyError, IndexError):
+            return ""
+    fields = (("SCOPE", "brief_scope"), ("VERIFY", "brief_verify"),
+              ("FORBIDDEN", "brief_forbidden"), ("TIMEBOX", "brief_timebox"))
+    lines = [f"- {label}: {_v(issue, key)}" for label, key in fields]
+    lines = [ln for ln in lines if ln.rsplit(": ", 1)[1].strip()]
+    if not lines:
+        return ""
+    return "[brief]\n" + "\n".join(lines)
+
+
 def find_evidence(c, issue_id, row) -> str:
     # Failed structured submissions require a fresh report or explicit verify evidence.
     if row["completion_report"]:

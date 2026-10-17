@@ -5,7 +5,7 @@ URL="${TT_URL:-http://127.0.0.1:7800}"  # serve-time 주입 계약 — 설치본
 AGENT="${TT_AGENT:-$USER@$(hostname -s)}"
 JQ="jq -r"
 # TT 개선#3f: CLI 버전 — 서버 openapi 해시와 함께 `tt version`으로 표기(드리프트 감지)
-TT_CLI_VERSION="2.7.1"
+TT_CLI_VERSION="2.7.2"
 jfilter() { if [[ "${JSON:-0}" == 1 ]]; then jq .; else jq -r "$@"; fi; }
 
 usage() {
@@ -116,9 +116,12 @@ case "$cmd" in
 
   new)
     title=""; parent=""; body=""; prio="null"; labels="[]"; state="todo"; acceptance=""; body_file=""
+    scope=""; verify=""; forbidden=""; timebox=""
     while [[ $# -gt 0 ]]; do case "$1" in
       -p) parent="$2"; shift 2;; -b) body="$2"; shift 2;; -a) acceptance="$2"; shift 2;;
       --body-file) body_file="$2"; shift 2;;
+      --scope) scope="$2"; shift 2;; --verify) verify="$2"; shift 2;;
+      --forbidden) forbidden="$2"; shift 2;; --timebox) timebox="$2"; shift 2;;
       -P) prio="$(tr -d pP <<<"$2")"; shift 2;; -l) labels="$(jq -cn --arg L "$2" '$L|split(",")')"; shift 2;;
       -s) state="$2"; shift 2;; *) title="$1"; shift;; esac; done
     [[ -z "$title" ]] && { echo "제목 필요"; exit 1; }
@@ -137,6 +140,11 @@ case "$cmd" in
     acc_esc="$(printf '%s' "$acceptance" | jq -Rs .)"
     payload="$(jq -cn --arg t "$title" --arg s "$state" --argjson p "$PARENT_JSON" --argjson pr "$prio" --argjson l "$labels" --argjson b "$body_esc" --argjson a "$acc_esc" \
       '{title:$t,state:$s,parent_id:$p,priority:$pr,labels:$l,body:$b,acceptance:$a}')"
+    # Y5EG(M53PBECP-Y5EG): brief 4칸 입력 — 지정한 칸만 싣는다
+    for pair in "brief_scope:$scope" "brief_verify:$verify" "brief_forbidden:$forbidden" "brief_timebox:$timebox"; do
+      k="${pair%%:*}"; v="${pair#*:}"
+      [[ -n "$v" ]] && payload="$(jq -cn --argjson p "$payload" --arg k "$k" --arg v "$v" '$p + {($k):$v}')"
+    done
     req -X POST "$URL/issues" -d "$payload" | $JQ '.id + " [" + .state + "] " + .title' ;;
 
   list)
@@ -393,6 +401,10 @@ case "$cmd" in
       -P) payload="$(jq -cn --argjson p "$payload" --arg v "${2#p}" '$p + {priority:($v|tonumber)}')"; shift 2 ;;
       -p) payload="$(jq -cn --argjson p "$payload" --arg v "$2" '$p + {parent_id:$v}')"; shift 2 ;;
       --assignee) payload="$(jq -cn --argjson p "$payload" --arg v "$2" '$p + {assignee:$v}')"; shift 2 ;;
+      --scope) payload="$(jq -cn --argjson p "$payload" --arg v "$2" '$p + {brief_scope:$v}')"; shift 2 ;;
+      --verify) payload="$(jq -cn --argjson p "$payload" --arg v "$2" '$p + {brief_verify:$v}')"; shift 2 ;;
+      --forbidden) payload="$(jq -cn --argjson p "$payload" --arg v "$2" '$p + {brief_forbidden:$v}')"; shift 2 ;;
+      --timebox) payload="$(jq -cn --argjson p "$payload" --arg v "$2" '$p + {brief_timebox:$v}')"; shift 2 ;;
       --labels) payload="$(jq -cn --argjson p "$payload" --arg v "$2" '$p + {labels:($v|split(",")|map(select(.!="")))}')"; shift 2 ;;
       --state) payload="$(jq -cn --argjson p "$payload" --arg v "$2" '$p + {state:$v}')"; shift 2 ;;
       --if-match) payload="$(jq -cn --argjson p "$payload" --arg v "$2" '$p + {expected_version:($v|tonumber)}')"; shift 2 ;;
