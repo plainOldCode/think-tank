@@ -43,9 +43,6 @@ python -m pytest -q -p no:cacheprovider tests runner/test_tt_runner.py
 python -m pytest -q -p no:cacheprovider tests/test_work_contract.py tests/test_api.py::test_transitions
 # 38 passed (including additional validation of report-required warn/off and policy pinning after restart)
 
-SMOKE_TELEGRAM=0 python scripts/smoke_9f0s.py
-# PASS: real Uvicorn + CLI + loopback notification listener; no Telegram sends
-
 TT_REPO="$PWD" TT_TMUX_SOCKET=tt-contract-smoke-20260926 python runner/smoke_tt_runner.py
 # PASS: 22/22 observations true. New/resumed input delivery, dedup, gates,
 # failure/waiting classification, env isolation, stall termination included. Uses an echo/fake CLI instead of a real LLM.
