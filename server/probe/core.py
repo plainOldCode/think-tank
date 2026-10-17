@@ -24,6 +24,7 @@ import failure_rules
 import judge
 
 from service import REVIEW_CONTRACT
+from config import PROBE_ACTIVE_RUN_STATES  # W0DF — 활성 run 상태 단일 정의
 import policy
 
 PULL_HINT = "tt claim ID {agent} 후 dispatch — pull(풀) 사용 금지(30KP/W1DP)"
@@ -220,9 +221,9 @@ DEFAULT_REVIEW_MAP = {"codex": "claude", "claude": "codex",
 # 설정(settings/review-routing, 웹 편집)이 이 기본값을 덮는다 — 재배포 불필요.
 # 1순위는 카운터파트 표(DEFAULT_REVIEW_MAP)가 정하고, 이 체인은 그 뒤를 잇는다.
 REVIEW_FALLBACK = ("agy", "cursor-review", "codex", "claude")
-# 진행 중 run 상태(runner run_state.ACTIVE 동기) — 이 상태의 dispatch가 있으면
-# 같은 카드에 리뷰/수정 dispatch를 추가로 스폰하지 않는다(M4N469TR-JWW0).
-_ACTIVE_RUN_STATES = frozenset({"queued", "running", "stalled", "finalizing", "held"})
+# 진행 중 run 상태 — config.PROBE_ACTIVE_RUN_STATES 단일 정의를 쓴다(W0DF).
+# 서버 dispatch 투영(queued/running/stalled) + 러너 장부 상태(finalizing/held).
+_ACTIVE_RUN_STATES = PROBE_ACTIVE_RUN_STATES
 
 
 def _occupies_card(row, execution_attempt=None):
@@ -358,8 +359,17 @@ def route_reviewer(assignee, rmap):
     return "codex"
 
 
+def _alias_resolve(cand, agents):
+    """별칭 사전(agent.aliases) 해석 — 서버 resolve_agent_identity의 스냅샷판(W0DF).
+    decide()는 DB가 없는 순수 함수라 스냅샷 agents의 aliases 필드로 같은 규칙을 적용."""
+    for a in agents or []:
+        if cand and cand in (a.get("aliases") or []):
+            return a.get("name")
+    return None
+
+
 def _resolve_agent(cand, agents):
-    """후보 → 실제 dispatch 대상 등록 에이전트 이름. 정확 일치 우선, 다음 가족 매칭.
+    """후보 → 실제 dispatch 대상 등록 에이전트 이름. 정확 일치 → 별칭 → 가족 매칭.
 
     등록 에이전트 스냅샷(decide의 enabled+base_url 필터 통과 집합)에 없으면
     None — 오프라인 판정의 기준.
@@ -368,6 +378,9 @@ def _resolve_agent(cand, agents):
     for a in agents or []:
         if a.get("name") == cand:
             return cand
+    hit = _alias_resolve(cand, agents)
+    if hit:
+        return hit
     for a in agents or []:
         if fam and agent_family(a.get("name")) == fam:
             return a.get("name")
@@ -386,6 +399,9 @@ def _resolve_executor(cand, agents):
     for a in agents or []:
         if a.get("name") == cand:
             return cand
+    hit = _alias_resolve(cand, agents)
+    if hit:
+        return hit
     fam = agent_family(cand)
     for a in agents or []:
         if a.get("name") in NON_EXECUTORS:

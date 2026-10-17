@@ -38,7 +38,9 @@ async function refreshActive() {
     return;
   }
   ACTIVE_ERR = false;
-  ACTIVE_ROWS = Array.isArray(rows) ? rows.filter(a => ["queued","running","stalled"].includes(a.run_state)) : [];
+  // W0DF: 활성 집합의 단일 정의는 서버(config.ACTIVE_RUN_STATES) — /agents/active가
+  // 이미 필터링해 주므로 JS는 run_state 유무만 본다(하드코딩 금지).
+  ACTIVE_ROWS = Array.isArray(rows) ? rows.filter(a => a.run_state) : [];
   renderBanner();
 }
 function renderBanner() {
