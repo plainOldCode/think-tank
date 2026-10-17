@@ -102,3 +102,19 @@ def test_unresolvable_profile_falls_back_to_pane_mode(runner, monkeypatch):
     runner.heartbeat_pass()
     hb2 = runner.read_heartbeat("TEST#1")
     assert hb2["pane_ts"] == hb1["pane_ts"], "기본 모드는 지문 불변 시 무음을 승계한다"
+
+
+def test_process_mode_ignores_stale_heartbeat_beyond_threshold(runner, monkeypatch):
+    """QN0H 리뷰 ④ — 관찰자 정지로 pane_ts가 임계를 넘어도 process 모드는 kill하지 않는다."""
+    entry(runner)
+    profile(monkeypatch, runner, driver="plain", stall_mode="process")
+    monkeypatch.setattr(runner, "pane_fingerprint", lambda s, k: "fp-static")
+    runner.heartbeat_pass()
+    hb = runner.read_heartbeat("TEST#1")
+    runner.write_heartbeat("TEST#1", dict(hb, pane_ts=time.time() - 700))
+    comments = []
+    monkeypatch.setattr(runner, "tt_comment", lambda i, b: comments.append(b))
+    monkeypatch.setattr(runner, "session_work_state", lambda s: "busy", raising=False)
+    assert runner.stall_check("TEST#1", runner.get_run("TEST#1"), time.time()) is False
+    assert comments == [], "stale heartbeat라도 process 모드는 pane 무음 판정을 하지 않는다"
+    assert runner.get_run("TEST#1")["status"] == "running"
