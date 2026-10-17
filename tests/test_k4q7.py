@@ -22,9 +22,28 @@ def test_secret_변경_후에도_노출되지_않는다(client):
     client.post("/agents", json={"name": "worker", "base_url": "http://127.0.0.1:1"})
     r = client.patch("/agents/worker", json={"secret": "rotated-value"})
     assert r.status_code == 200, r.text
+    # agy P1: PATCH 응답 자체에도 secret이 없어야 한다 — 비-secret 변경만으로 우회 조회 가능
+    assert "secret" not in r.json(), "PATCH 응답에 secret 노출"
     out = json.dumps(_agents(client))
     assert "rotated-value" not in out
     assert "secret" not in out
+
+
+def test_비secret_패치로_저장된_secret을_몰래볼_수_없다(client):
+    client.post("/agents", json={"name": "worker", "base_url": "http://127.0.0.1:1",
+                                 "secret": "stored-value"})
+    r = client.patch("/agents/worker", json={"enabled": False})
+    assert r.status_code == 200, r.text
+    assert "secret" not in r.json()
+    assert "stored-value" not in json.dumps(r.json())
+
+
+def test_등록_응답에도_secret이_없다(client):
+    r = client.post("/agents", json={"name": "w2", "base_url": "http://127.0.0.1:1",
+                                     "secret": "fresh-secret"})
+    assert r.status_code in (200, 201), r.text
+    assert "secret" not in r.json()
+    assert "fresh-secret" not in json.dumps(r.json())
 
 
 def test_진행_투영_인증은_새_secret을_받는다(client):

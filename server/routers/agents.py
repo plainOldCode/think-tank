@@ -179,9 +179,8 @@ def add_agent(p: AgentIn, ctx: Ctx = Depends(get_ctx)):
                    json.dumps(aliases, ensure_ascii=False) if aliases else "", dbmod.now()))
         c.commit()
         row = c.execute("SELECT * FROM agents WHERE name=?", (name,)).fetchone()
-    d = dict(row)
-    d["aliases"] = _aliases_out(row)
-    return d
+    # K4Q7(M53XP2ZA-K4Q7): 등록 응답도 직렬화 관문 — secret 원문 반환 차단
+    return _agent_out(row)
 
 
 @router.patch("/agents/{name}")
@@ -234,9 +233,9 @@ def patch_agent(name: str, p: AgentPatch, ctx: Ctx = Depends(get_ctx)):
             c.execute(f"UPDATE agents SET {sets} WHERE name=?", (*fields.values(), name))
             c.commit()
         row = c.execute("SELECT * FROM agents WHERE name=?", (name,)).fetchone()
-    d = dict(row)
-    d["aliases"] = _aliases_out(row)
-    return d
+    # K4Q7(M53XP2ZA-K4Q7): PATCH 응답도 직렬화 관문 — 비-secret 변경만으로도
+    # 저장된 secret 원문이 응답에 실리는 우회를 막는다(agy P1).
+    return _agent_out(row)
 
 
 @router.delete("/agents/{name}")

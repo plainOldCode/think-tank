@@ -64,13 +64,14 @@ def main() -> int:
             continue
         _req(a.base, f"/agents/{name}", "PATCH", {"secret": new})
         print(f"PATCHed {name} — 러너/리스너 설정 갱신 필요: {'예(재시작)' if name in RUNNER_SIDED else '즉시 유효'}")
+        # agy P3: 중간 실패 시 앞서 교체한 값이 유실되지 않게 — 매 PATCH 후 즉시 기록
+        existing.update(results)
+        fd = os.open(out_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
+            json.dump(existing, f, ensure_ascii=False, indent=1, sort_keys=True)
+        os.chmod(out_path, stat.S_IRUSR | stat.S_IWUSR)
     if a.dry_run or not results:
         return 0
-    existing.update(results)
-    fd = os.open(out_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as f:
-        json.dump(existing, f, ensure_ascii=False, indent=1, sort_keys=True)
-    os.chmod(out_path, stat.S_IRUSR | stat.S_IWUSR)
     print(f"새 값 기록: {out_path} (0600) — 각 머신 설정에 반영 후 이 파일에서 삭제 권장")
     return 0
 

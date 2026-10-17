@@ -250,7 +250,8 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 def test_agent_crud(client):
     assert client.post("/agents", json={"name": "h", "base_url": "ftp://x"}).status_code == 422
     a = client.post("/agents", json={"name": "hermes", "base_url": "http://x/hook", "secret": "s"}).json()
-    assert a["enabled"] == 1 and a["secret"] == "s"
+    # K4Q7(M53XP2ZA-K4Q7): secret은 응답 어디에도 실리지 않는다 — 소유자만 보유
+    assert a["enabled"] == 1 and "secret" not in a
     assert client.post("/agents", json={"name": "hermes", "base_url": "http://x"}).status_code == 409
     assert client.patch("/agents/hermes", json={"enabled": False}).json()["enabled"] == 0
     assert client.patch("/agents/hermes", json={"enabled": True}).json()["enabled"] == 1
