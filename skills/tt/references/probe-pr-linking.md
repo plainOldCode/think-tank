@@ -60,3 +60,16 @@ probe's review-req marker is deduplicated once per sha, so it cannot re-request.
 
 ## Measured incident (2026-10-06)
 Attaching 3 PRs (different repos) to one card prevented pool entry entirely, producing a "no PR" verdict. Solved by splitting into 1 card = 1 PR with a `repo:` marker on each body's first line and (TT ID) in each PR title.
+
+## SRJY (2026-10-17): submission-time PR auto-attach + patch-id reuse
+
+- A review card whose report has **no explicit delivery** and exactly **one** open non-draft PR
+  joining by the standard branch/title rule gets that PR observed and bound automatically —
+  probe merges it on approval (`tt-deliver`), no resubmission needed. Two or more joining PRs
+  stay ambiguous (existing `unbound-pr` note). An explicit `delivery` (report/local/pr) is
+  never overridden.
+- **Rebase tolerance**: the merge gate compares `git patch-id --stable` of the compare diff
+  (`Accept: application/vnd.github.diff`), not the head SHA. Same patch-id + same base =
+  same artifact — probe merges with `--match-head-commit` on the **observed** head and the
+  receipt records that head. `/verify` accepts a `patch_ids` attestation list for this.
+  Different patch-id, changed base, or unattestable heads still hold delivery.

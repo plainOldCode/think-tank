@@ -10,22 +10,23 @@ import re
 def collect_github(repos, query):
     out = []
     for repo in dict.fromkeys(repos):
-        try:
-            prs = query("pr", "list", "--repo", repo, "--state", "open",
-                        "--json", "number,headRefName,headRefOid,title,isDraft,labels") or []
-        except Exception:
-            continue
-        for p in prs:
             try:
-                checks = query("pr", "checks", p["number"], "--repo", repo, "--json", "name,state")
-                checks = list(checks) if checks is not None else []
+                prs = query("pr", "list", "--repo", repo, "--state", "open",
+                            "--json", "number,headRefName,headRefOid,baseRefName,title,isDraft,labels") or []
             except Exception:
-                checks = None  # observation failure is not confirmed zero checks
-            out.append({"number": p["number"], "repo": repo, "branch": p.get("headRefName", ""),
-                        "title": p.get("title", ""), "head_sha": p.get("headRefOid", ""),
-                        "isDraft": bool(p.get("isDraft")),
-                        "labels": [l.get("name", "") for l in p.get("labels") or []],
-                        "checks": checks})
+                continue
+            for p in prs:
+                try:
+                    checks = query("pr", "checks", p["number"], "--repo", repo, "--json", "name,state")
+                    checks = list(checks) if checks is not None else []
+                except Exception:
+                    checks = None  # observation failure is not confirmed zero checks
+                out.append({"number": p["number"], "repo": repo, "branch": p.get("headRefName", ""),
+                            "title": p.get("title", ""), "head_sha": p.get("headRefOid", ""),
+                            "base": p.get("baseRefName", ""),
+                            "isDraft": bool(p.get("isDraft")),
+                            "labels": [l.get("name", "") for l in p.get("labels") or []],
+                            "checks": checks})
     return out
 
 
@@ -89,9 +90,34 @@ def inspect_delivery(spec, query):
         return unknown
 
 
-def merge_delivery(spec, run):
-    """Provider's atomic head guard closes the query→push race; no force/admin."""
+def merge_delivery(spec, run, head=None):
+    """Provider's atomic head guard closes the query→push race; no force/admin.
+
+    head(SRJY): patch-id 재사용으로 rebase된 PR을 병할 때 CAS할 실제 head —
+    기본은 보고의 head_sha다.
+    """
     if spec.get("provider") != "github" or os.getenv("TT_PR_PROVIDER", "github") != "github":
         raise ValueError("selected PR provider cannot merge automatically")
     return run("pr", "merge", spec["number"], "--repo", spec["repo"],
-               "--squash", "--delete-branch", "--match-head-commit", spec["head_sha"])
+               "--squash", "--delete-branch", "--match-head-commit",
+               head or spec["head_sha"])
+
+
+def patch_id_of(repo, base, sha, query):
+    """SRJY — (repo, base, sha) 비교 diff의 git patch-id. 실패 시 None(보류 유지).
+
+    GitHub compare API의 .diff 미디어 타입으로 임의 커밋의 diff를 얻는다 —
+    rebase로 PR head가 움직여도 이전 커밋의 diff는 repo에 남아 있다.
+    """
+    import subprocess
+    try:
+        diff = query("api", f"repos/{repo}/compare/{base}...{sha}",
+                     "-H", "Accept: application/vnd.github.diff")
+        if not diff or not diff.strip():
+            return None
+        out = subprocess.run(["git", "patch-id", "--stable"], input=diff,
+                             capture_output=True, text=True, timeout=30)
+        pid = (out.stdout or "").strip().split(" ")[0]
+        return pid or None
+    except Exception:
+        return None

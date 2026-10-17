@@ -57,8 +57,12 @@ def requirement(issue, linked=False):
     return {"mode": "local"}
 
 
-def readiness(spec, observed):
-    """None = a matching open/merged target is ready for review/delivery."""
+def readiness(spec, observed, patch_ids=None):
+    """None = a matching open/merged target is ready for review/delivery.
+
+    patch_ids(SRJY): {(repo, sha): git patch-id} — rebase로 head가 바뀌어도
+    patch-id가 같으면 같은 산출물이다(base 동일 전제). head만 재검사를 건너뛴다.
+    """
     if spec.get("mode") == "unbound-pr":
         return "PR 연결 보고에 delivery(provider/repo/number/head_sha/base)를 명시해 재제출 필요"
     if spec.get("mode") != "pr":
@@ -66,7 +70,17 @@ def readiness(spec, observed):
     if not observed or observed.get("state") == "UNKNOWN":
         return "PR 관측 불가 — 조회 실패/미지원 provider를 report 완료로 대체하지 않음"
     if any(spec.get(k) != observed.get(k) for k in TARGET_KEYS):
-        return "PR 대상/head/base 변경 — 현재 산출물로 보고 재제출·재리뷰 필요"
+        # SRJY: patch-id 우회는 head 불일치 전용 — provider/repo/number/base가
+        # 하나라도 다르면 다른 대상이므로 재제출이 정답이다.
+        mismatched = {k for k in TARGET_KEYS if spec.get(k) != observed.get(k)}
+        if mismatched == {"head_sha"} and spec.get("base") == observed.get("base") and \
+                patch_ids and spec.get("head_sha") and observed.get("head_sha") and \
+                patch_ids.get((spec.get("repo"), spec.get("head_sha"))) and \
+                patch_ids.get((spec.get("repo"), spec.get("head_sha"))) == \
+                patch_ids.get((observed.get("repo"), observed.get("head_sha"))):
+            pass  # SRJY: rebase — patch-id 동일, 같은 변경이므로 재제출 불필요
+        else:
+            return "PR 대상/head/base 변경 — 현재 산출물로 보고 재제출·재리뷰 필요"
     if observed.get("state") not in ("OPEN", "MERGED"):
         return "PR 미병합 폐기 — 반영 경로 확인 필요"
     if observed.get("isDraft"):
