@@ -235,6 +235,17 @@ def execute(core, url, act):
                 ("[correct-loop premise a%s]" % _att if "premise 재검토" in s
                  else "[correct-loop structure a%s]" % _att, s)
                 for s in _secs]
+            # RPXH(M53PBDWJ-RPXH): 3회+ 반려는 상태로 남긴다 — best-effort 기록,
+            # 실패해도 dispatch는 계속(지시문 섹션이 1차 방어).
+            if any("premise 재검토" in s for s in _secs):
+                try:
+                    core.api(url, f"/issues/{iid}", "PATCH", {"premise_rework": True})
+                except Exception:
+                    pass
+        # RPXH — 카드 간 반복 유형 전환 권장(실패·미배포 서버는 조용히 생략)
+        _cs = core._conversion_section(core._rejection_summary(url), cur)
+        if _cs:
+            message = message + "\n\n" + _cs
     # Re-read at the dispatch boundary, not just at the planning boundary.
     fresh = core.api(url, f"/issues/{iid}")
     if not eligible(fresh) or subject(fresh) != act["subject"]:

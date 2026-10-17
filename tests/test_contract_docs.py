@@ -30,3 +30,13 @@ def test_tt_submission_identity_is_delivered_in_every_contract():
         assert "review_subject" in text
         assert "PRs are optional" in text
         assert "after merge" not in text
+
+
+def test_계약_블록은_docs_정본과도_일치한다():
+    """RPXH(M53PBDWJ-RPXH) — 반복 지적(계약 문서 동기화 누락)의 테스트 전환.
+    최신 계약 버전 마커는 정본(docs)·서버·스킬 사본 모두에 언급돼야 한다."""
+    latest = MARKERS[-1]
+    for f in ("docs/API.md", "server/static/api.md", "skills/tt/references/api.md",
+              "skills/tt/SKILL.md"):
+        s = (ROOT / f).read_text()
+        assert latest in s, f"{f}: 최신 계약 {latest} 언급 없음 — 문서 동기화 누락(리뷰 지적 반복 유형)"
