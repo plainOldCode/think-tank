@@ -119,7 +119,8 @@ class CommentIn(BaseModel):
 
 class AgentIn(BaseModel):
     name: str
-    base_url: str
+    # M3B5JHGP: poll 에이전트는 base_url 없이 등록(러너 inbox 수령)
+    base_url: str | None = None
     secret: str = ""
     enabled: bool = True
     release_hook: bool = False  # reconcile release 명령 수신 능력 (M3BZS1FS-5722 ③)
@@ -130,6 +131,8 @@ class AgentIn(BaseModel):
     # 비등록 세션은 암묵 relay(사람 전달) — 검증 대상 아님.
     receive_mode: str | None = None
     watcher_interval: int | None = None  # 분 — watcher 모드에서 필수
+    # M3B5JHGP: pending inbox 폴링 수신 주체 러너 — receive_mode=poll에서 필수.
+    runner_name: str | None = None
     # M3ER6G3S-RZ20: 실행 모델 메타데이터 — 선언(declaration)일 뿐 실행 보장이 아니다.
     # model/reasoning은 자유 문자열(검증 없음), tier는 정규화된 계층 enum.
     model: str | None = None
@@ -169,6 +172,7 @@ class AgentPatch(BaseModel):
     notify_hook: bool | None = None
     receive_mode: str | None = None
     watcher_interval: int | None = None
+    runner_name: str | None = None  # M3B5JHGP: poll 수신 주체 러너
     model: str | None = None
     reasoning: str | None = None
     tier: str | None = None

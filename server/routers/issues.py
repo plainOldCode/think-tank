@@ -452,6 +452,7 @@ def pull(p: ClaimIn, ctx: Ctx = Depends(get_ctx)):
                 reset = service.reset_evidence(c, iid)
                 c.execute("UPDATE issues SET " + ", ".join(f"{k}=?" for k in reset) + " WHERE id=?",
                           (*reset.values(), iid))
+                service.close_superseded_dispatches(c, iid)
                 service.log_event(c, "issue.updated", "issue", iid,
                                   {"state": "in_progress", "assignee": p.agent, "via": "pull"})
                 c.commit()

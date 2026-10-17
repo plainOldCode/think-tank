@@ -221,6 +221,22 @@ REVIEW_FALLBACK = ("agy", "cursor-review", "codex", "claude")
 # 진행 중 run 상태(runner run_state.ACTIVE 동기) — 이 상태의 dispatch가 있으면
 # 같은 카드에 리뷰/수정 dispatch를 추가로 스폰하지 않는다(M4N469TR-JWW0).
 _ACTIVE_RUN_STATES = frozenset({"queued", "running", "stalled", "finalizing", "held"})
+
+
+def _occupies_card(row, execution_attempt=None):
+    """True when this dispatch should block a new review or fix spawn.
+
+    Terminal rows do not. An attempt strictly behind the card's current
+    execution_attempt is a leftover from an earlier round (M54E72RQ-SXGS) and
+    does not either — a killed session whose close was rejected used to sit here
+    forever and starve reviewer assignment. A missing attempt stays blocking.
+    """
+    if not isinstance(row, dict) or row.get("run_state") not in _ACTIVE_RUN_STATES:
+        return False
+    attempt = row.get("attempt")
+    if execution_attempt is not None and attempt is not None and attempt < execution_attempt:
+        return False
+    return True
 # 실행 불가 에이전트 — dispatch를 보드 트리아지 변환·판정 전용으로 소비한다(코드 작업 불가).
 # work/resume/review-fix 배정 대상에서 제외(M4NCNNRW-PXCJ) — 2026-10-11 RTZ1: auto 풀이
 # kanban-adapter에 review-fix를 배정해 트리아지 카드만 만들고 정체(#343).
@@ -245,6 +261,28 @@ def parse_review_map(raw):
 def effective_review_map():
     """기본 카운터파트 표 + env override — decide가 사이클당 1회 산출."""
     return {**DEFAULT_REVIEW_MAP, **parse_review_map(os.getenv("TT_REVIEW_MAP", ""))}
+
+
+def _receivable(a):
+    """등록 에이전트가 dispatch 전달 가능한 상태인지(전달 사다리·재위임용).
+
+    hook/watcher/relay는 base_url(관찰·전달 기준 주소)가 필요하고, poll(M3B5JHGP)은
+    runner_name 선언만으로 러너 pending inbox를 통해 수령한다 — 포트 없는
+    CLI 에이전트(codex·claude류)의 배정 배제를 막는다. receive_mode 미선언
+    hook 에이전트는 구 등록분 호환으로 base_url만으로 전달 가능(선언 강제는 배정 단계).
+    """
+    if not a.get("enabled"):
+        return False
+    if (a.get("receive_mode") or "").strip() == "poll":
+        return bool((a.get("runner_name") or "").strip())
+    return bool(a.get("base_url"))
+
+
+def _assignable(a):
+    """자동 배정 후보 — RQRT 수신 계약 선언까지 요구(미선언 claim 409 루프 예방)."""
+    if not (a.get("receive_mode") or "").strip():
+        return False
+    return _receivable(a)
 
 
 def parse_host_family_map(raw):
@@ -468,13 +506,17 @@ def _pick_rework_executor(url, issue_id, assignee, agents):
         runs = api(url, f"/issues/{issue_id}/dispatches") or []
     except Exception:
         runs = []  # 조회 실패 fail-open — decide 가드가 1차 방어(JWW0)
+    try:
+        current_attempt = (api(url, f"/issues/{issue_id}") or {}).get("execution_attempt")
+    except Exception:
+        current_attempt = None
     busy = {x.get("agent") for x in runs
-            if isinstance(x, dict) and x.get("run_state") in _ACTIVE_RUN_STATES}
+            if _occupies_card(x, current_attempt) and x.get("agent")}
     for a in sorted(agents or [], key=band):
         n = a.get("name")
         if not n or n == a0 or n in NON_EXECUTORS:
             continue
-        if not a.get("enabled") or not a.get("base_url"):
+        if not _receivable(a):
             continue
         if fam and agent_family(n) == fam:
             continue
@@ -983,9 +1025,7 @@ def decide(snap):
     # RQRT: 수신 계약 미선언 등록 에이전트는 배정 후보 제외 — claim 409 반복으로
     # 사이클 전체가 중단되는 것을 배정 단계에서 원천 차단. 비등록 세션은
     # 스냅샷 agents에 없으므로 영향 없다(암묵 relay).
-    agents = [a for a in (snap.get("agents") or [])
-              if a.get("enabled") and a.get("base_url")
-              and (a.get("receive_mode") or "").strip()]
+    agents = [a for a in (snap.get("agents") or []) if _assignable(a)]
     now = snap.get("now") or ""
     actions = []
     claimed = set()
@@ -2198,8 +2238,8 @@ def execute(url, act):
             except Exception:
                 # 조회 실패는 [] fail-open — decide 가드가 1차 방어(의도된 동작)
                 _d = []
-            _busy = {x.get("agent") for x in _d if isinstance(x, dict)
-                     and x.get("run_state") in _ACTIVE_RUN_STATES and x.get("agent")}
+            _busy = {x.get("agent") for x in _d
+                     if _occupies_card(x, cur.get("execution_attempt")) and x.get("agent")}
             _had_cands = bool(cands)
             cands = [c for c in cands if c not in _busy]
             if _had_cands and not cands:
@@ -2290,8 +2330,7 @@ def execute(url, act):
             _dfx = api(url, f"/issues/{act['issue']}/dispatches") or []
         except Exception:
             _dfx = []
-        if any(isinstance(x, dict) and x.get("run_state") in _ACTIVE_RUN_STATES
-               for x in _dfx):
+        if any(_occupies_card(x, cur.get("execution_attempt")) for x in _dfx):
             return
         _rmdt = _iso(act.get("remind_ts") or "")
         if _rmdt and any((x.get("author") or "") not in _RELAY_OBSERVERS
@@ -2350,8 +2389,7 @@ def execute(url, act):
             return  # 실제 PR head 변경·조회 불가 — 구 head 대상 스폰 금지(R3)
         _dfix_all = api(url, f"/issues/{act['issue']}/dispatches") or [] if True else []
         assignee = cur.get("assignee") or ""
-        agents = [a for a in api(url, "/agents") or []
-                  if a.get("enabled") and a.get("base_url")]
+        agents = [a for a in api(url, "/agents") or [] if _receivable(a)]
         # 전달 사다리(리뷰 R4) — 정확명 우선, hook 전달 실패 시 실행 가능한
         # 같은 가족 수신처 재시도, 전부 실패면 사람 릴레이로 종결.
         target = _resolve_executor(assignee, agents)
@@ -2372,13 +2410,12 @@ def execute(url, act):
             except Exception:
                 _dfix = []  # 조회 실패 fail-open — decide 가드가 1차 방어(JWW0)
         # 후보별이 아니라 카드 전체 가드 — 다른 실행자의 수동 dispatch도 동시 스폰 금지(R3)
-        if _dfix and ladder and any(isinstance(x, dict)
-                                    and x.get("run_state") in _ACTIVE_RUN_STATES
+        if _dfix and ladder and any(_occupies_card(x, cur.get("execution_attempt"))
                                     for x in _dfix):
             return
         for cand in ladder:
-            if any(isinstance(x, dict) and x.get("agent") == cand
-                   and x.get("run_state") in _ACTIVE_RUN_STATES for x in _dfix):
+            if any(_occupies_card(x, cur.get("execution_attempt")) and x.get("agent") == cand
+                   for x in _dfix):
                 if cand == target:
                     return  # 진행 중 — 다음 사이클(JWW0)
                 continue  # 가족 후보 진행 중 — 다음 후보
@@ -2429,8 +2466,7 @@ def execute(url, act):
             _dfb = api(url, f"/issues/{act['issue']}/dispatches") or []
         except Exception:
             _dfb = []
-        if any(isinstance(x, dict) and x.get("run_state") in _ACTIVE_RUN_STATES
-               for x in _dfb):
+        if any(_occupies_card(x, cur.get("execution_attempt")) for x in _dfb):
             return
         _rdtv = _iso(act.get("relay_ts") or "")
         _rid = act.get("relay_id") or 0
@@ -2486,8 +2522,7 @@ def execute(url, act):
             # 해석 실패 시 사람 통보 노트(마커 포함)로 종결 — 같은 head 무음 반복 방지.
             # PXCJ: review-fix 발령은 실행자 한정 해석(_resolve_executor) — 가족 매칭이
             # 어댑터를 돌려 수정 정체를 만들지 않는다.
-            agents = [a for a in api(url, "/agents") or []
-                      if a.get("enabled") and a.get("base_url")]
+            agents = [a for a in api(url, "/agents") or [] if _receivable(a)]
             target = _resolve_executor(assignee, agents)
             # M5283HM4-0SZP: 원작업자 고정 해제 — 미도달·실행 불가면 등록 실행자 중
             # 대체 선정(동일 tier 우선)해서 새 dispatch로 재위임한다.
@@ -2529,8 +2564,8 @@ def execute(url, act):
                 except Exception:
                     # 조회 실패는 [] fail-open — decide 가드가 1차 방어(의도된 동작)
                     _dfix = []
-                if any(isinstance(x, dict) and x.get("agent") == target
-                       and x.get("run_state") in _ACTIVE_RUN_STATES for x in _dfix):
+                if any(_occupies_card(x, cur.get("execution_attempt"))
+                       and x.get("agent") == target for x in _dfix):
                     return
                 try:
                     _resp = api(url, f"/issues/{act['issue']}/dispatch", "POST",
@@ -2696,8 +2731,7 @@ def snapshot(url):
             i["dispatches"] = len(d) if isinstance(d, list) else 0
             # 진행 중 dispatch의 에이전트 집합 — decide가 리뷰/수정 중복 스폰을 막는다(JWW0)
             i["busy_agents"] = sorted({x.get("agent") for x in (d or [])
-                                       if isinstance(x, dict)
-                                       and x.get("run_state") in _ACTIVE_RUN_STATES
+                                       if _occupies_card(x, i.get("execution_attempt"))
                                        and x.get("agent")})
         if i["state"] == "review":
             # review-note dedup 판정용 — review 카드는 상세(코멘트 포함)를 별도 취득

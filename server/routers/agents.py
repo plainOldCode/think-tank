@@ -4,6 +4,7 @@ import json
 import re
 import sqlite3
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -95,6 +96,9 @@ def _agent_out(r):
     마스킹이 아니라 키 자체를 뺀다 — 오탈 유출·로그·캐시 경로를 동시에 끊는다."""
     d = {**dict(r), "aliases": _aliases_out(r)}
     d.pop("secret", None)
+    # M3B5JHGP: poll 에이전트의 빈 base_url은 '없음'으로 직렬화(구 스키마 NOT NULL 호환)
+    if d.get("base_url") == "":
+        d["base_url"] = None
     return d
 
 
@@ -105,15 +109,17 @@ def list_agents(ctx: Ctx = Depends(get_ctx)):
     return [_agent_out(r) for r in rows]
 
 
-def _validate_receive_mode(mode, interval, current_interval=None):
+def _validate_receive_mode(mode, interval, current_interval=None, runner_name=None):
     """RQRT(M4MGV3CM) — 수신 계약 선언 검증. mode가 None이면 판정도 없다."""
     if mode is None:
         return
     m = (mode or "").strip().lower()
-    if m and m not in ("hook", "watcher", "relay"):
-        raise HTTPException(422, "receive_mode은 hook|watcher|relay 중 하나")
+    if m and m not in ("hook", "watcher", "relay", "poll"):
+        raise HTTPException(422, "receive_mode은 hook|watcher|relay|poll 중 하나")
     if m == "watcher" and not ((interval and interval >= 1) or (current_interval and current_interval >= 1)):
         raise HTTPException(422, "watcher 모드는 watcher_interval(분) 필수 — 주기 폴링 계약의 명시 의무(RQRT)")
+    if m == "poll" and not (runner_name or "").strip():
+        raise HTTPException(422, "poll 모드는 runner_name 필수 — pending inbox를 폴링할 소속 러너 선언(M3B5JHGP)")
 
 
 def _normalize_aliases(aliases):
@@ -159,9 +165,11 @@ def _aliases_out(row):
 @router.post("/agents", status_code=201, summary="Register a webhook agent (receives dispatch POSTs at base_url)", description="base_url must be a reachable HTTP endpoint (hook mode). Agents without a listener cannot receive dispatch — see /api.md integration table. release_hook=true 선언 시 카드 terminalize 시 release 명령(x-tt-command: release)도 수신 — runner류만 켠다. notify_hook=true 시 blocked(waiting_for=human) Level4 알림(x-tt-command: notify) 수신 — 알림 주입 어댑터(Hermes)용. RQRT: receive_mode 필수 선언(hook|watcher+watcher_interval|relay) — 미선언 claim 409.")
 def add_agent(p: AgentIn, ctx: Ctx = Depends(get_ctx)):
     name = p.name.strip()
-    if not name or not service.valid_url(p.base_url):
-        raise HTTPException(422, "name 필수, base_url은 http(s)만 허용")
-    _validate_receive_mode(p.receive_mode, p.watcher_interval)
+    _validate_receive_mode(p.receive_mode, p.watcher_interval, runner_name=p.runner_name)
+    # M3B5JHGP: poll 에이전트는 base_url이 없다(러너 inbox로 수령).
+    is_poll = ((p.receive_mode or "").strip().lower() == "poll")
+    if not name or (not is_poll and not service.valid_url(p.base_url)) or (p.base_url and not service.valid_url(p.base_url)):
+        raise HTTPException(422, "name 필수, base_url은 http(s)만 허용(poll 모드는 생략)")
     with ctx.con() as c:
         if c.execute("SELECT 1 FROM agents WHERE name=?", (name,)).fetchone():
             raise HTTPException(409, f"agent {name} 이미 등록됨")
@@ -172,10 +180,11 @@ def add_agent(p: AgentIn, ctx: Ctx = Depends(get_ctx)):
                 raise HTTPException(422, f"이름 '{name}'은(는) {r['name']}의 별칭이다")
         aliases = _normalize_aliases(p.aliases)
         _check_alias_conflicts(c, aliases, self_name=name)
-        c.execute("INSERT INTO agents (name, base_url, secret, enabled, release_hook, notify_hook, model, reasoning, tier, receive_mode, watcher_interval, aliases, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                  (name, p.base_url, p.secret, 1 if p.enabled else 0, 1 if p.release_hook else 0,
+        c.execute("INSERT INTO agents (name, base_url, secret, enabled, release_hook, notify_hook, model, reasoning, tier, receive_mode, watcher_interval, runner_name, aliases, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                  (name, p.base_url or ("" if is_poll else None), p.secret, 1 if p.enabled else 0, 1 if p.release_hook else 0,
                    1 if p.notify_hook else 0, p.model, p.reasoning, p.tier,
                    (p.receive_mode or "").strip().lower() or None, p.watcher_interval,
+                   (p.runner_name or "").strip() or None,
                    json.dumps(aliases, ensure_ascii=False) if aliases else "", dbmod.now()))
         c.commit()
         row = c.execute("SELECT * FROM agents WHERE name=?", (name,)).fetchone()
@@ -215,19 +224,23 @@ def patch_agent(name: str, p: AgentPatch, ctx: Ctx = Depends(get_ctx)):
         # RQRT(M4MGV3CM): 수신 계약 — watcher로 바꿀 때 기존 간격이 있으면 유지.
         # 명시적 삭제는 fields_set으로 구분(RZ20-F1 패턴) — None PATCH = 선언 취소.
         if p.receive_mode is not None or "receive_mode" in p.model_fields_set \
-                or p.watcher_interval is not None:
+                or p.watcher_interval is not None or "runner_name" in p.model_fields_set:
             row = c.execute("SELECT watcher_interval FROM agents WHERE name=?",
                             (name,)).fetchone()
             _validate_receive_mode(p.receive_mode, p.watcher_interval,
                                    current_interval=(row or {}).get("watcher_interval")
                                    if isinstance(row, dict) else
-                                   (row["watcher_interval"] if row else None))
+                                   (row["watcher_interval"] if row else None),
+                                   runner_name=(p.runner_name if "runner_name" in p.model_fields_set
+                                                else None) or "")
             if "receive_mode" in p.model_fields_set:
                 fields["receive_mode"] = (p.receive_mode or "").strip().lower() or None
             if p.watcher_interval is not None:
                 if p.watcher_interval < 1:
                     raise HTTPException(422, "watcher_interval은 1분 이상")
                 fields["watcher_interval"] = p.watcher_interval
+            if "runner_name" in p.model_fields_set:
+                fields["runner_name"] = (p.runner_name or "").strip() or None
         if fields:
             sets = ", ".join(f"{k}=?" for k in fields)
             c.execute(f"UPDATE agents SET {sets} WHERE name=?", (*fields.values(), name))
@@ -344,24 +357,29 @@ def dispatch(issue_id: str, p: DispatchIn, request: Request, ctx: Ctx = Depends(
         c.commit()
     payload = _dispatch_payload(issue, ag, p, did, issue_id, request, ctx, prev, tail,
                                 agent_name=agent_name)
-    status, detail, dctx = "ok", "", ""
-    try:
-        code, dctx = service.deliver(ag["base_url"], ag["secret"], payload)
-        if code >= 300:
-            status, detail = "error", f"HTTP {code}"
-    except Exception as e:
-        status, detail = "error", f"{type(e).__name__}: {e}"[:300]
+    # M3B5JHGP: poll 에이전트는 훅 POST가 없다 — 큐에 남고 소속 러너의 pending
+    # 폴링이 꺼내 간다(단일 채널, 이중 전달 없음).
+    poll_mode = (ag["receive_mode"] or "").strip().lower() == "poll"
+    status, detail, dctx = ("queued", "", "") if poll_mode else ("ok", "", "")
+    if not poll_mode:
+        try:
+            code, dctx = service.deliver(ag["base_url"], ag["secret"], payload)
+            if code >= 300:
+                status, detail = "error", f"HTTP {code}"
+        except Exception as e:
+            status, detail = "error", f"{type(e).__name__}: {e}"[:300]
     with ctx.con() as c:
         # 실패(error) 시 context는 생성 시 상속값을 보존(R5) — 성공 시에만 응답 token으로 갱신
         if status == "ok":
             c.execute("UPDATE dispatches SET status=?, detail=?, context=?, delivery_lease=NULL WHERE id=?",
                       (status, detail, dctx, did))
-        else:
+        elif status == "error":
             c.execute("UPDATE dispatches SET status=?, detail=?, delivery_lease=NULL WHERE id=?",
                       (status, detail, did))
-        c.execute("UPDATE agents SET last_ok=?, last_err=? WHERE name=?",
-                  (dbmod.now() if status == "ok" else ag["last_ok"],
-                   "" if status == "ok" else detail, ag["name"]))
+        if not poll_mode:
+            c.execute("UPDATE agents SET last_ok=?, last_err=? WHERE name=?",
+                      (dbmod.now() if status == "ok" else ag["last_ok"],
+                       "" if status == "ok" else detail, ag["name"]))
         if status == "error":
             fail_body = f"⚠ hook dispatch #{did} → {p.agent} 실패: {detail}"
             c.execute("INSERT INTO comments (issue_id, author, body, ts) VALUES (?,?,?,?)",
@@ -375,11 +393,55 @@ def dispatch(issue_id: str, p: DispatchIn, request: Request, ctx: Ctx = Depends(
     return dict(row)
 
 
+@router.get("/agents/{runner_name}/pending",
+            summary="M3B5JHGP: poll-runner inbox — 소속 poll 에이전트의 queued dispatch를 훅 없이 꺼낸다",
+            description="러너가 자기 RUNNER_NAME으로 폴링(60s). 인증은 소속 poll 에이전트의 "
+                        "secret 중 하나와 일치하는 Bearer. 반환과 동시에 status=ok로 마킹해 "
+                        "이중 전달을 원천 차단한다. payload는 webhook과 동일한 형태.")
+def pending_inbox(runner_name: str, request: Request, ctx: Ctx = Depends(get_ctx)):
+    auth = (request.headers.get("authorization") or "").replace("Bearer ", "")
+    with ctx.con() as c:
+        agents = c.execute("SELECT name, secret FROM agents WHERE runner_name=? "
+                           "AND enabled=1 AND receive_mode='poll'", (runner_name,)).fetchall()
+        if not agents or not any((a["secret"] or "") and auth == a["secret"] for a in agents):
+            raise HTTPException(401, "pending inbox: 소속 러너 시크릿 불일치")
+        names = [a["name"] for a in agents]
+        qs = ",".join("?" * len(names))
+        rows = c.execute(f"SELECT * FROM dispatches WHERE agent IN ({qs}) AND status='queued' "
+                         "ORDER BY id", names).fetchall()
+        out = []
+        for d in rows:
+            issue = service.get_issue(c, d["issue_id"])
+            ag = c.execute("SELECT * FROM agents WHERE name=?", (d["agent"],)).fetchone()
+            tail = dbmod.comments_of(c, d["issue_id"])[-20:]
+            p = SimpleNamespace(author=d["author"], message=d["message"],
+                                fresh=False, work_contract=None)
+            out.append(_dispatch_payload(issue, ag, p, d["id"], d["issue_id"], request,
+                                         ctx, d, tail, agent_name=d["agent"]))
+            c.execute("UPDATE dispatches SET status='ok', detail='poll-delivered (M3B5JHGP)', "
+                      "delivery_lease=NULL WHERE id=?", (d["id"],))
+        if rows:
+            c.execute(f"UPDATE agents SET last_ok=? WHERE name IN ({qs})", (dbmod.now(), *names))
+            c.commit()
+    return out
+
+
 @router.get("/issues/{issue_id}/dispatches")
 def list_dispatches(issue_id: str, ctx: Ctx = Depends(get_ctx)):
+    """Dispatch rows for one card.
+
+    Old-round active rows are finished in this read (M54E72RQ-SXGS). Cards already
+    stuck before the round-advance close shipped are healed the next time the probe
+    or the board lists dispatches — no manual edit. The response is the healed set.
+    Comments and report receipts are not created.
+    """
     with ctx.con() as c:
+        c.execute("BEGIN IMMEDIATE")
         service.get_issue(c, issue_id)
-        rows = c.execute("SELECT * FROM dispatches WHERE issue_id=? ORDER BY id", (issue_id,)).fetchall()
+        service.close_superseded_dispatches(c, issue_id)
+        rows = c.execute("SELECT * FROM dispatches WHERE issue_id=? ORDER BY id",
+                         (issue_id,)).fetchall()
+        c.commit()
     return [dict(r) for r in rows]
 
 
@@ -419,9 +481,11 @@ def dispatch_progress(issue_id: str, dispatch_id: int, p: DispatchProgress, requ
             # 완료 전환 최종 판정 — 서버 attempt CAS (TT 개선#1 요구 2, if-match).
             # 종료 상태(finished/failed)는 비교와 갱신을 단일 조건부 UPDATE로 원자화한다
             # (R2: SELECT 후 UPDATE 사이 claim 끼워들기 창 제거) — dispatch가 생성된
-            # 회차(attempt 스냅샷)보다 이슈의 현재 execution_attempt가 앞서면 갱신
-            # 자체가 이뤄지지 않고 409로 거부된다. 이미 done/cancelled/archived인
-            # 카드의 물리 종료 투영만 예외이며 구회차 코멘트는 받지 않는다.
+            # 회차(attempt 스냅샷)보다 이슈의 현재 execution_attempt가 앞서면
+            # 투영은 닫되(kill/timeout/failed/done) 코멘트·report_session·
+            # dispatch_reports는 남기지 않는다. 현재 회차 보고가 CAS에 지면 409.
+            # 이미 done/cancelled/archived인 카드의 물리 종료도 같은 예외이며
+            # 구회차 코멘트는 받지 않는다.
             # attempt 스냅샷이 없는 구형 행(NULL)은 기존 동작 유지.
             # running/stalled 등 비종료 진행은 last-write-wins 그대로(러너 stall_check
             # 소유 — 서버 재계산 금지).
@@ -432,51 +496,68 @@ def dispatch_progress(issue_id: str, dispatch_id: int, p: DispatchProgress, requ
                         (dispatch_id, p.session)).fetchone()
                     if receipt:
                         return dict(row)  # previously accepted retry, projection unchanged
-                # 보고 선점 선(先)결제 (6차 리뷰 R13 — 원자성): 접수 이력 (dispatch,
-                # session) 유니크 INSERT OR IGNORE가 그 자체로 게이트다. 이력 SELECT와
-                # 투영 갱신을 분리하면 경합 창(이력 부재 판독 → 타 요청 접수 → 재개)에서
-                # 이전 세션 재시도가 새 회차 running 투영을 종료로 덮는다. 승자만 아래
-                # 투영 갱신·코멘트 접수로 진행하고, 패자는 이미 접수된 보고의 재시도로
-                # 투영(run_state/ended_at/session) 무변경 기수락 200. 세션 없는 보고는
-                # 회차 식별 불가 — 선점 없이 기존 동작(CAS + 매 접수).
-                claimed = None
-                if accept_comment and p.session:
-                    claimed = c.execute(
-                        "INSERT OR IGNORE INTO dispatch_reports (dispatch_id, session, ts) "
-                        "VALUES (?,?,?)", (dispatch_id, p.session, dbmod.now()))
-                    if claimed.rowcount == 0:
-                        row = c.execute("SELECT * FROM dispatches WHERE id=?", (dispatch_id,)).fetchone()
+                if not current_attempt:
+                    # M54E72RQ-SXGS: a kill/timeout/failed/done from the round this
+                    # dispatch was created in must close the projection. The comment
+                    # is not evidence for the current round — no comment, no
+                    # report_session, no dispatch_reports row. A different live
+                    # session already on this row is a newer projection; an older
+                    # kill must not overwrite it.
+                    if (p.session and row["session"] and p.session != row["session"]
+                            and row["run_state"] in config.ACTIVE_RUN_STATES):
                         return dict(row)
-                # report_session은 코멘트 접수와만 연결한다(5차 리뷰 R11) — STALL-kill·
-                # TIMEOUT·release 등 코멘트 없는 종료 투영은 접수 증거가 아니므로
-                # 기록하면 _terminal_recorded가 오패정한다.
-                sets = ("run_state=?, ended_at=?, report_session=?"
-                        if (accept_comment and p.session) else "run_state=?, ended_at=?")
-                args = ((p.state, ts, p.session) if (accept_comment and p.session)
-                        else (p.state, ts))
-                res = c.execute(
-                    "UPDATE dispatches SET %s WHERE id=? AND "
-                    "(attempt IS NULL OR attempt >= "
-                    "(SELECT i.execution_attempt FROM issues i WHERE i.id=dispatches.issue_id) "
-                    "OR EXISTS (SELECT 1 FROM issues i WHERE i.id=dispatches.issue_id "
-                    "AND (i.state IN ('done','cancelled') OR i.archived=1)))" % sets,
-                    (*args, dispatch_id))
-                if res.rowcount == 1:
-                    service.log_event(c, "dispatch.updated", "dispatch", dispatch_id,
-                                      {"run_state": p.state})
-                if res.rowcount != 1:
-                    # 409 — with 블록 예외 롤백으로 방금 선점한 보고 이력도 함께 취소된다
-                    # (미접수 보고의 이력 잔재 방지). 코멘트도 접수되지 않는다.
-                    raise HTTPException(
-                        409, f"stale round report: dispatch#{dispatch_id} attempt={row['attempt']} "
-                             f"< issue current execution_attempt — 이전 회차 종료 보고 거부")
-                if accept_comment:
-                    # 종료 투영과 완료 보고를 같은 트랜잭션에 접수 (R3: CAS 통과 후
-                    # 별도 /comments 사이 회차 변경 창 제거 — 409면 코멘트도 없다).
-                    # 접수 코어 공유로 버전 갱신·blocked 알림 부수효과 보존 (R9)
-                    service.record_comment(c, issue_id,
-                                           (p.author or "runner").strip() or "runner",
-                                           p.comment[:4000])
+                    res = c.execute(
+                        "UPDATE dispatches SET run_state=?, ended_at=? WHERE id=?",
+                        (p.state, ts, dispatch_id))
+                    if res.rowcount == 1:
+                        service.log_event(c, "dispatch.updated", "dispatch", dispatch_id,
+                                          {"run_state": p.state, "via": "stale-round"})
+                else:
+                    # 보고 선점 선(先)결제 (6차 리뷰 R13 — 원자성): 접수 이력 (dispatch,
+                    # session) 유니크 INSERT OR IGNORE가 그 자체로 게이트다. 이력 SELECT와
+                    # 투영 갱신을 분리하면 경합 창(이력 부재 판독 → 타 요청 접수 → 재개)에서
+                    # 이전 세션 재시도가 새 회차 running 투영을 종료로 덮는다. 승자만 아래
+                    # 투영 갱신·코멘트 접수로 진행하고, 패자는 이미 접수된 보고의 재시도로
+                    # 투영(run_state/ended_at/session) 무변경 기수락 200. 세션 없는 보고는
+                    # 회차 식별 불가 — 선점 없이 기존 동작(CAS + 매 접수).
+                    if accept_comment and p.session:
+                        claimed = c.execute(
+                            "INSERT OR IGNORE INTO dispatch_reports (dispatch_id, session, ts) "
+                            "VALUES (?,?,?)", (dispatch_id, p.session, dbmod.now()))
+                        if claimed.rowcount == 0:
+                            row = c.execute("SELECT * FROM dispatches WHERE id=?",
+                                            (dispatch_id,)).fetchone()
+                            return dict(row)
+                    # report_session은 코멘트 접수와만 연결한다(5차 리뷰 R11) — STALL-kill·
+                    # TIMEOUT·release 등 코멘트 없는 종료 투영은 접수 증거가 아니므로
+                    # 기록하면 _terminal_recorded가 오패정한다.
+                    sets = ("run_state=?, ended_at=?, report_session=?"
+                            if (accept_comment and p.session) else "run_state=?, ended_at=?")
+                    args = ((p.state, ts, p.session) if (accept_comment and p.session)
+                            else (p.state, ts))
+                    res = c.execute(
+                        "UPDATE dispatches SET %s WHERE id=? AND "
+                        "(attempt IS NULL OR attempt >= "
+                        "(SELECT i.execution_attempt FROM issues i WHERE i.id=dispatches.issue_id) "
+                        "OR EXISTS (SELECT 1 FROM issues i WHERE i.id=dispatches.issue_id "
+                        "AND (i.state IN ('done','cancelled') OR i.archived=1)))" % sets,
+                        (*args, dispatch_id))
+                    if res.rowcount == 1:
+                        service.log_event(c, "dispatch.updated", "dispatch", dispatch_id,
+                                          {"run_state": p.state})
+                    if res.rowcount != 1:
+                        # 409 — with 블록 예외 롤백으로 방금 선점한 보고 이력도 함께 취소된다
+                        # (미접수 보고의 이력 잔재 방지). 코멘트도 접수되지 않는다.
+                        raise HTTPException(
+                            409, f"stale round report: dispatch#{dispatch_id} attempt={row['attempt']} "
+                                 f"< issue current execution_attempt — 이전 회차 종료 보고 거부")
+                    if accept_comment:
+                        # 종료 투영과 완료 보고를 같은 트랜잭션에 접수 (R3: CAS 통과 후
+                        # 별도 /comments 사이 회차 변경 창 제거 — 409면 코멘트도 없다).
+                        # 접수 코어 공유로 버전 갱신·blocked 알림 부수효과 보존 (R9)
+                        service.record_comment(c, issue_id,
+                                               (p.author or "runner").strip() or "runner",
+                                               p.comment[:4000])
             else:
                 fields["run_state"] = p.state
                 if p.state in ("running", "stalled"):

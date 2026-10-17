@@ -92,6 +92,7 @@ def bump(c, issue_id, fields, expected_version=None):
     if res.rowcount != 1:
         raise HTTPException(409, "concurrent update, retry")
     finish_issue_dispatches(c, issue_id)
+    close_superseded_dispatches(c, issue_id)
     c.commit()
 
 
@@ -109,6 +110,28 @@ def finish_issue_dispatches(c, issue_id):
                   (ts, row["id"]))
         log_event(c, "dispatch.updated", "dispatch", row["id"],
                   {"run_state": "finished", "via": "issue-terminal"})
+
+
+def close_superseded_dispatches(c, issue_id):
+    """Finish active dispatches from earlier rounds. No comment, receipt, or report_session.
+
+    Round advance (claim, pull, resubmit, scope change) used to leave the previous
+    round's queued/running/stalled row in place. A later kill/timeout was then
+    rejected, and the probe treated that leftover as busy. Closing it here does
+    not record completion evidence. NULL attempt rows are legacy and stay as they are.
+    """
+    ph = ",".join("?" * len(config.ACTIVE_RUN_STATES))
+    rows = c.execute(
+        f"SELECT d.id FROM dispatches d JOIN issues i ON i.id=d.issue_id "
+        f"WHERE d.issue_id=? AND d.run_state IN ({ph}) "
+        f"AND d.attempt IS NOT NULL AND d.attempt < i.execution_attempt",
+        (issue_id, *config.ACTIVE_RUN_STATES)).fetchall()
+    ts = dbmod.now()
+    for row in rows:
+        c.execute("UPDATE dispatches SET run_state='finished', ended_at=? WHERE id=?",
+                  (ts, row["id"]))
+        log_event(c, "dispatch.updated", "dispatch", row["id"],
+                  {"run_state": "finished", "via": "stale-round"})
 
 
 def reset_evidence(c, issue_id):

@@ -155,20 +155,23 @@ def machine_name():
 
 # ---------- TT 클라이언트 (브리지 미import, 자체 최소) ----------
 
-def tt_http(method, path, payload=None, timeout=15):
+def tt_http(method, path, payload=None, timeout=15, auth=False):
     if not TT:
         raise RuntimeError("TT_URL not set")
     data = json.dumps(payload, ensure_ascii=False).encode() if payload is not None else None
-    req = urllib.request.Request(TT + path, data=data, method=method,
-                                 headers={"content-type": "application/json"})
+    headers = {"content-type": "application/json"}
+    if auth:
+        # M3B5JHGP: pending inbox 등 소유 채널은 Bearer 러너 시크릿 — 공개 읽기와 구분
+        headers["authorization"] = "Bearer " + load_secret()
+    req = urllib.request.Request(TT + path, data=data, method=method, headers=headers)
     with urllib.request.urlopen(req, timeout=timeout) as r:
         body = r.read()
         return json.loads(body) if body else None
 
 
-def tt_http_raw(method, path, payload=None):
+def tt_http_raw(method, path, payload=None, auth=False):
     try:
-        return tt_http(method, path, payload)
+        return tt_http(method, path, payload, auth=auth)
     except urllib.error.HTTPError as e:
         return {"HTTP": e.code, "detail": e.read().decode("utf-8", "replace")[:200]}
     except Exception as e:
@@ -1672,7 +1675,7 @@ _inbox_warned = [0.0]
 
 
 def poll_once():
-    r = tt_http_raw("GET", "/agents/%s/pending" % urllib.parse.quote(RUNNER_NAME))
+    r = tt_http_raw("GET", "/agents/%s/pending" % urllib.parse.quote(RUNNER_NAME), auth=True)
     if isinstance(r, dict) and r.get("HTTP") == 404:
         if time.time() - _inbox_warned[0] > 3600:
             _inbox_warned[0] = time.time()

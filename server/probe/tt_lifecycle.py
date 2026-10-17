@@ -194,7 +194,7 @@ def execute(core, url, act):
     if kind == "tt-review-fix" and (decision != "request-changes" or marked(cur, act["marker"])):
         return
     dispatches = core.api(url, f"/issues/{iid}/dispatches") or []
-    if any(d.get("run_state") in core._ACTIVE_RUN_STATES for d in dispatches):
+    if any(core._occupies_card(d, cur.get("execution_attempt")) for d in dispatches):
         return
     target = act["agent"]
     if kind == "tt-review":
