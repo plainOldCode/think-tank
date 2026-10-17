@@ -175,6 +175,16 @@ def tt_http_raw(method, path, payload=None):
         return {"HTTP": 0, "detail": "%s: %s" % (type(e).__name__, e)}
 
 
+def _status_comment(issue_id, body):
+    """VMS0(M53PBEWX-VMS0) — 반복 상태 댓글은 카드 타임라인 대신 러너 로그로.
+    시작/계속 같은 정기 상태는 progress 투영(dispatches 레코드)이 이미 기록한다.
+    실패 등 종단 상태는 여전히 tt_comment로 카드에 남긴다. 되돌림: TT_RUNNER_STATUS_COMMENTS=1"""
+    if os.environ.get("TT_RUNNER_STATUS_COMMENTS", "0") == "1":
+        return tt_comment(issue_id, body)
+    log("CARD-COMMENT-SUPPRESSED %s" % mask(body)[:160])
+    return None
+
+
 def tt_comment(issue_id, body):
     author = os.environ.get("TT_AGENT", "runner@" + machine_name())
     r = tt_http_raw("POST", "/issues/%s/comments" % issue_id,
@@ -1185,8 +1195,8 @@ def execute_once(p, session):
             and continue_session(prof, ctx_session, message, key):
         set_status(key, "running", mode="continue", started=time.time())
         progress_projection(ent, "running")  # 계속 재지시도 실행 개시 — 동일 투영
-        tt_comment(ent["issue_id"], "runner:%s dispatch#%s → tmux %s 계속 (send-keys)"
-                   % (machine_name(), p["dispatch_id"], ctx_session))
+        _status_comment(ent["issue_id"], "runner:%s dispatch#%s → tmux %s 계속 (send-keys)"
+                        % (machine_name(), p["dispatch_id"], ctx_session))
         log("CONTINUE dispatch#%s session=%s" % (p["dispatch_id"], ctx_session))
         return
     # 신규 세션 (계속 실패/세션 소멸 시 자동 폴백)
@@ -1204,8 +1214,8 @@ def execute_once(p, session):
     progress_projection(ent, "running")  # 세션 기동 확인(tmux new-session rc=0) 후
     reround = (" 재검토 재실행: 대상 %s→%s" % (ent["prev_sha"], ent["target_sha"])
                if ent.get("prev_sha") else "")
-    tt_comment(ent["issue_id"], "runner:%s dispatch#%s → tmux %s (queued, ws=%s)%s"
-               % (machine_name(), p["dispatch_id"], ent["session"], workspace, reround))
+    _status_comment(ent["issue_id"], "runner:%s dispatch#%s → tmux %s (queued, ws=%s)%s"
+                    % (machine_name(), p["dispatch_id"], ent["session"], workspace, reround))
     log("START dispatch#%s session=%s ws=%s" % (p["dispatch_id"], ent["session"], workspace))
 
 
