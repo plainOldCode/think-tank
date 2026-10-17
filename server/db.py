@@ -74,7 +74,7 @@ CREATE INDEX IF NOT EXISTS idx_issues_state ON issues(state);
 CREATE INDEX IF NOT EXISTS idx_issues_parent ON issues(parent_id);
 CREATE TABLE IF NOT EXISTS agents (
   name TEXT PRIMARY KEY,
-  base_url TEXT NOT NULL,
+  base_url TEXT,
   secret TEXT NOT NULL DEFAULT '',
   enabled INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL,
@@ -232,6 +232,8 @@ def connect(path):
                 # RQRT(M4MGV3CM): 수신 계약 — hook|watcher|relay, watcher는 간격(분) 필수
                 "receive_mode TEXT",
                 "watcher_interval INTEGER",
+                # M3B5JHGP: pending inbox 폴링 수신 주체 러너 — receive_mode=poll에 필수
+                "runner_name TEXT",
                 # M3ER6G3S-RZ20: 모델 메타데이터 — 선언(declaration)이지 실행 보장이 아님
                 "model TEXT",
                 # Z1HP(M4CKEJGX): 멘션 별칭 사전 — JSON 배열 문자열('' = 미선언)

@@ -220,7 +220,7 @@ def test_execute_review_fix는_식별코드_assignee를_등록명으로_dispatch
     card = {"id": "M428RMBY-XC0K", "state": "in_progress", "version": 5,
             "assignee": "skshim@tp-13", "comments": []}
     rec = Rec(card, agents=[{"name": "opencode-tp13", "enabled": True,
-                             "base_url": "http://x"}])
+                             "base_url": "http://x", "receive_mode": "hook"}])
     monkeypatch.setattr(probe.core, "api", rec)
     probe.core.execute("u", _review_fix_act())
     assert rec.dispatches[0]["agent"] == "opencode-tp13"
@@ -267,7 +267,7 @@ def test_execute_review_fix는_비활성_에이전트로_해석하지_않는다(
     card = {"id": "M428RMBY-XC0K", "state": "in_progress", "version": 5,
             "assignee": "skshim@tp-13", "comments": []}
     rec = Rec(card, agents=[{"name": "opencode-tp13", "enabled": False,
-                             "base_url": "http://x"}])
+                             "base_url": "http://x", "receive_mode": "hook"}])
     monkeypatch.setattr(probe.core, "api", rec)
     probe.core.execute("u", _review_fix_act())
     assert not rec.dispatches

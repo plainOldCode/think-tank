@@ -263,6 +263,28 @@ def effective_review_map():
     return {**DEFAULT_REVIEW_MAP, **parse_review_map(os.getenv("TT_REVIEW_MAP", ""))}
 
 
+def _receivable(a):
+    """등록 에이전트가 dispatch 전달 가능한 상태인지(전달 사다리·재위임용).
+
+    hook/watcher/relay는 base_url(관찰·전달 기준 주소)가 필요하고, poll(M3B5JHGP)은
+    runner_name 선언만으로 러너 pending inbox를 통해 수령한다 — 포트 없는
+    CLI 에이전트(codex·claude류)의 배정 배제를 막는다. receive_mode 미선언
+    hook 에이전트는 구 등록분 호환으로 base_url만으로 전달 가능(선언 강제는 배정 단계).
+    """
+    if not a.get("enabled"):
+        return False
+    if (a.get("receive_mode") or "").strip() == "poll":
+        return bool((a.get("runner_name") or "").strip())
+    return bool(a.get("base_url"))
+
+
+def _assignable(a):
+    """자동 배정 후보 — RQRT 수신 계약 선언까지 요구(미선언 claim 409 루프 예방)."""
+    if not (a.get("receive_mode") or "").strip():
+        return False
+    return _receivable(a)
+
+
 def parse_host_family_map(raw):
     """TT_HOST_FAMILY_MAP='tp-13->opencode,foo->claude' → dict. 빈 칸·불량 항목은 무시."""
     out = {}
@@ -494,7 +516,7 @@ def _pick_rework_executor(url, issue_id, assignee, agents):
         n = a.get("name")
         if not n or n == a0 or n in NON_EXECUTORS:
             continue
-        if not a.get("enabled") or not a.get("base_url"):
+        if not _receivable(a):
             continue
         if fam and agent_family(n) == fam:
             continue
@@ -1003,9 +1025,7 @@ def decide(snap):
     # RQRT: 수신 계약 미선언 등록 에이전트는 배정 후보 제외 — claim 409 반복으로
     # 사이클 전체가 중단되는 것을 배정 단계에서 원천 차단. 비등록 세션은
     # 스냅샷 agents에 없으므로 영향 없다(암묵 relay).
-    agents = [a for a in (snap.get("agents") or [])
-              if a.get("enabled") and a.get("base_url")
-              and (a.get("receive_mode") or "").strip()]
+    agents = [a for a in (snap.get("agents") or []) if _assignable(a)]
     now = snap.get("now") or ""
     actions = []
     claimed = set()
@@ -2369,8 +2389,7 @@ def execute(url, act):
             return  # 실제 PR head 변경·조회 불가 — 구 head 대상 스폰 금지(R3)
         _dfix_all = api(url, f"/issues/{act['issue']}/dispatches") or [] if True else []
         assignee = cur.get("assignee") or ""
-        agents = [a for a in api(url, "/agents") or []
-                  if a.get("enabled") and a.get("base_url")]
+        agents = [a for a in api(url, "/agents") or [] if _receivable(a)]
         # 전달 사다리(리뷰 R4) — 정확명 우선, hook 전달 실패 시 실행 가능한
         # 같은 가족 수신처 재시도, 전부 실패면 사람 릴레이로 종결.
         target = _resolve_executor(assignee, agents)
@@ -2503,8 +2522,7 @@ def execute(url, act):
             # 해석 실패 시 사람 통보 노트(마커 포함)로 종결 — 같은 head 무음 반복 방지.
             # PXCJ: review-fix 발령은 실행자 한정 해석(_resolve_executor) — 가족 매칭이
             # 어댑터를 돌려 수정 정체를 만들지 않는다.
-            agents = [a for a in api(url, "/agents") or []
-                      if a.get("enabled") and a.get("base_url")]
+            agents = [a for a in api(url, "/agents") or [] if _receivable(a)]
             target = _resolve_executor(assignee, agents)
             # M5283HM4-0SZP: 원작업자 고정 해제 — 미도달·실행 불가면 등록 실행자 중
             # 대체 선정(동일 tier 우선)해서 새 dispatch로 재위임한다.

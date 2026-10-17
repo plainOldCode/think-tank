@@ -109,7 +109,7 @@ def test_fix_stall을_소비해_원_워커를_재발령한다(monkeypatch):
     assert len(r) == 1 and r[0]["pr"] == 9 and r[0]["att"] == 1
     card = card | {"assignee": "opencode-tp13"}  # 정확명 — 가족 해석 경로는 R4 테스트가 담당
     rec = Rec(card, agents=[{"name": "opencode-tp13", "enabled": True,
-                             "base_url": "http://x"}])
+                             "base_url": "http://x", "receive_mode": "hook"}])
     monkeypatch.setattr(probe_core, "api", rec)
     monkeypatch.setattr(probe_core, "_gh_pr_head", lambda repo, n: SHA8)
     probe_core.execute("u", dict(r[0]))
@@ -461,7 +461,7 @@ def test_gh_head_조회_성공시_relay가_실제_진행된다(monkeypatch):
     r = [a for a in acts if a["action"] == "review-fix-relay"]
     assert len(r) == 1
     rec = Rec(card, agents=[{"name": "opencode-tp13", "enabled": True,
-                             "base_url": "http://x"}])
+                             "base_url": "http://x", "receive_mode": "hook"}])
     monkeypatch.setattr(probe_core, "api", rec)
     monkeypatch.setattr(probe_core, "gh_json",
                         lambda *a: {"headRefOid": "b" * 40})  # CLI transport 모의
@@ -488,10 +488,10 @@ def test_gh_head_조회_실패시_폐기한다(monkeypatch):
 
 def _agents_pool():
     return [
-        {"name": "kanban-adapter", "tier": "exec", "enabled": True, "base_url": "http://k"},
-        {"name": "codex", "tier": "impl", "enabled": True, "base_url": "http://c"},
-        {"name": "cursor", "tier": "exec", "enabled": True, "base_url": "http://u"},
-        {"name": "agy", "tier": "sota", "enabled": True, "base_url": "http://a"},
+        {"name": "kanban-adapter", "tier": "exec", "enabled": True, "base_url": "http://k", "receive_mode": "hook"},
+        {"name": "codex", "tier": "impl", "enabled": True, "base_url": "http://c", "receive_mode": "hook"},
+        {"name": "cursor", "tier": "exec", "enabled": True, "base_url": "http://u", "receive_mode": "hook"},
+        {"name": "agy", "tier": "sota", "enabled": True, "base_url": "http://a", "receive_mode": "hook"},
     ]
 
 
@@ -542,7 +542,7 @@ def test_대체_후보가_없으면_기존대로_사람_통보한다(monkeypatch
     """실행자 전원 부재 — relay 마커+보드 플래그 유지(하위 호환)."""
     card = _verdict_card("skshim@skshimui-MacBookPro")
     rec = Rec(card, agents=[{"name": "kanban-adapter", "tier": "exec",
-                             "enabled": True, "base_url": "http://k"}])
+                             "enabled": True, "base_url": "http://k", "receive_mode": "hook"}])
     monkeypatch.setattr(probe_core, "api", rec)
     probe_core.execute("u", _review_fix_act(att=1))
     assert not rec.dispatches

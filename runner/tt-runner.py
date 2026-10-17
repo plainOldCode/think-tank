@@ -155,20 +155,23 @@ def machine_name():
 
 # ---------- TT 클라이언트 (브리지 미import, 자체 최소) ----------
 
-def tt_http(method, path, payload=None, timeout=15):
+def tt_http(method, path, payload=None, timeout=15, auth=False):
     if not TT:
         raise RuntimeError("TT_URL not set")
     data = json.dumps(payload, ensure_ascii=False).encode() if payload is not None else None
-    req = urllib.request.Request(TT + path, data=data, method=method,
-                                 headers={"content-type": "application/json"})
+    headers = {"content-type": "application/json"}
+    if auth:
+        # M3B5JHGP: pending inbox 등 소유 채널은 Bearer 러너 시크릿 — 공개 읽기와 구분
+        headers["authorization"] = "Bearer " + load_secret()
+    req = urllib.request.Request(TT + path, data=data, method=method, headers=headers)
     with urllib.request.urlopen(req, timeout=timeout) as r:
         body = r.read()
         return json.loads(body) if body else None
 
 
-def tt_http_raw(method, path, payload=None):
+def tt_http_raw(method, path, payload=None, auth=False):
     try:
-        return tt_http(method, path, payload)
+        return tt_http(method, path, payload, auth=auth)
     except urllib.error.HTTPError as e:
         return {"HTTP": e.code, "detail": e.read().decode("utf-8", "replace")[:200]}
     except Exception as e:
@@ -1474,6 +1477,16 @@ def heartbeat_pass():
             continue
         session = cur.get("session") or ""
         fp = pane_fingerprint(session, key)
+        if fp is not None and run_stall_mode(cur) == "process":
+            # QN0H 결함 B: --print 계열(claude -p 등)은 종료까지 pane이 구조적으로
+            # 무음 — 지문 불변을 무음으로 세는 것은 오탐(20분 주기 필연 kill). 세션
+            # 생존 자체를 진행 신호로 간주해 무음을 누적하지 않는다. hang 처리는
+            # wall-clock TIMEOUT이 담당하므로 여기서 판정을 늦추지 않는다.
+            rec = {"ts": time.time(), "round": _round_id(cur), "ok": True,
+                   "dispatch_id": cur.get("dispatch_id"), "session": session,
+                   "pane_fp": "process", "pane_ts": time.time()}
+            write_heartbeat(key, rec)
+            continue
         prev = read_heartbeat(key) or {}
         if fp is None:
             # 관찰 불가(세션 부재 등) — 직전 관찰을 보존하되 ok=False로 기록한다(리뷰
@@ -1504,6 +1517,19 @@ def heartbeat_pass():
             if set_status_if_round(key, cur, "running", stall_notified=False):
                 log("STALL-RECOVER dispatch#%s session=%s — 진행 신호 재관찰, running 복귀"
                     % (cur.get("dispatch_id"), session))
+
+
+def run_stall_mode(ent):
+    """QN0H: 에이전트 stall 판정 모드. 기본 "pane"(지문 관찰), --print 드라이버류는
+    agents.json에 "stall_mode": "process"로 세션 생존을 진행 신호로 쓴다. 프로필
+    미해석은 보수적으로 기본 pane."""
+    try:
+        prof = resolve_profile({"agent": ent.get("agent")})
+    except Exception:
+        return "pane"
+    if not prof:
+        return "pane"
+    return prof.get("stall_mode") or "pane"
 
 
 def stall_check(key, ent, now):
@@ -1644,7 +1670,7 @@ _inbox_warned = [0.0]
 
 
 def poll_once():
-    r = tt_http_raw("GET", "/agents/%s/pending" % urllib.parse.quote(RUNNER_NAME))
+    r = tt_http_raw("GET", "/agents/%s/pending" % urllib.parse.quote(RUNNER_NAME), auth=True)
     if isinstance(r, dict) and r.get("HTTP") == 404:
         if time.time() - _inbox_warned[0] > 3600:
             _inbox_warned[0] = time.time()
