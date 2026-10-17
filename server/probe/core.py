@@ -15,6 +15,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+
+from .providers import inspect_delivery  # noqa: F401 — _prepare_delivery_context 모듈 스코프용
 from datetime import datetime, timedelta
 
 import failure_rules
@@ -2760,23 +2762,11 @@ def _sleep(seconds, stop=None):
     return not stop.wait(seconds)
 
 
-def run_once(url, dry=False):
-    """1회 스캔→판정→집행. 내장화(서버 스레드)와 standalone이 공유."""
-    snap = snapshot(url)
-    repos = list(_repos_default())
-    for r in collect_repos(snap.get("issues") or []):
-        repos.append(r)
-    snap["prs"] = collect_prs(repos)
-    # 게이트 unset 여부와 무관 — in_progress 자동화(JXYS)도 코멘트 dedup이 필요.
-    hydrate_reviews(url, snap)
-    from .providers import observe_linked
-    snap["pr_context"] = observe_linked(snap.get("issues") or [], snap["prs"], gh_json)
-    from .providers import inspect_delivery
-    from delivery import requirement
+def _prepare_delivery_context(snap: dict, _req, gh_json) -> dict:
+    """SRJY(M5283M00-SRJY) — 제출 시점 PR 자동 연결·delivery 관측·patch-id 선계산.
 
-    def _req(i):
-        return requirement(i, any(pr_card_id(p) == i["id"] for p in snap.get("prs") or []))
-
+    snap을 갱신해 반환한다(discovered_delivery·delivery_context·patch_ids).
+    """
     # SRJY(M5283M00-SRJY) — 제출 시점 PR 자동 연결: 보고에 delivery가 없는 review
     # 카드 중 카드 ID(브랜치/제목)로 조인되는 open 비드래프트 PR이 정확히 1개면
     # 그 PR을 산출물로 연결한다. 2개 이상이면 모호 — 기존 흐름(unbound-pr 노트) 유지.
@@ -2807,7 +2797,7 @@ def run_once(url, dry=False):
         snap["delivery_context"][iid] = inspect_delivery(spec, gh_json)
     # SRJY — patch-id 선계산: head 불일치가 의심되는 (repo, base, sha)만.
     snap["patch_ids"] = {}
-    _pid_specs = [(iid, _req(i), snap["delivery_context"].get(iid))
+    _pid_specs = [(i["id"], _req(i), snap["delivery_context"].get(i["id"]))
                   for i in snap.get("issues") or [] if i.get("state") == "review"]
     for iid, spec, obs in _pid_specs:
         if not spec or spec.get("mode") != "pr" or not obs:
@@ -2816,6 +2806,28 @@ def run_once(url, dry=False):
                 spec["head_sha"] != obs["head_sha"] and spec.get("base") == obs.get("base"):
             snap["patch_ids"].update(patch_ids_for(
                 spec["repo"], spec["base"], (spec["head_sha"], obs["head_sha"])))
+    return snap
+
+
+def run_once(url, dry=False):
+    """1회 스캔→판정→집행. 내장화(서버 스레드)와 standalone이 공유."""
+    snap = snapshot(url)
+    repos = list(_repos_default())
+    for r in collect_repos(snap.get("issues") or []):
+        repos.append(r)
+    snap["prs"] = collect_prs(repos)
+    # 게이트 unset 여부와 무관 — in_progress 자동화(JXYS)도 코멘트 dedup이 필요.
+    hydrate_reviews(url, snap)
+    from .providers import observe_linked
+    snap["pr_context"] = observe_linked(snap.get("issues") or [], snap["prs"], gh_json)
+    from .providers import inspect_delivery
+    from delivery import requirement
+
+    def _req(i):
+        return requirement(i, any(pr_card_id(p) == i["id"] for p in snap.get("prs") or []))
+
+    _prepare_delivery_context(snap, _req, gh_json)
+
     snap["cycle_id"] = uuid.uuid4().hex  # §8.1 판단 로그 사이클 식별자(리뷰 R4)
     acts = decide(snap)
     for a in acts:
