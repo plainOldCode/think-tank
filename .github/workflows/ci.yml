@@ -36,6 +36,7 @@ jobs:
       - run: uv pip install -p .venv/bin/python fastapi uvicorn pydantic httpx pytest
       - run: bash scripts/secret-scan.sh .
       - run: .venv/bin/python -m pytest tests/ -q
+      - run: .venv/bin/python -m pytest runner/test_tt_runner.py -q  # 러너 단위 95개 — S0BW
       - run: node tests/smoke_mobile.mjs
       - run: node tests/smoke_theme_wiring.mjs
       - run: node tests/smoke_agent_board.mjs
