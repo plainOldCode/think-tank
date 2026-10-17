@@ -275,6 +275,10 @@ def dispatch(issue_id: str, p: DispatchIn, request: Request, ctx: Ctx = Depends(
             _so = service.standing_orders(c, issue)
             if _so:
                 p.message = p.message + "\n\n[standing orders]\n" + _so
+            # Y5EG(M53PBECP-Y5EG): brief 4칸도 지시문에 — 멱등키는 원본 메시지 기준
+            _bf = service.brief_block(issue)
+            if _bf:
+                p.message = p.message + "\n\n" + _bf
             # resume context는 신규 행 INSERT 전에 조회해야 이전 회차를 가리킨다
             # (INSERT 후 조회하면 방금 만든 빈 context 행이 최신이 되어버림).
             prev = c.execute("SELECT context FROM dispatches WHERE issue_id=? AND agent=? "
