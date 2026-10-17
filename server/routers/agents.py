@@ -269,6 +269,10 @@ def dispatch(issue_id: str, p: DispatchIn, request: Request, ctx: Ctx = Depends(
         raise HTTPException(422, "message 비어 있음")
     with ctx.con() as c:
         issue = service.get_issue(c, issue_id)
+        # 9PDD: 종료 카드에 대한 신규 dispatch도 차단 — 멱등키에 회차가 포함돼
+        # 기존 행 조회로는 못 걸러낸다(QN0H: 재전달이 신규 행으로 카드 재개장).
+        if issue["state"] in ("done", "cancelled") or issue["archived"]:
+            raise HTTPException(409, f"issue {issue_id} 종료 상태 — dispatch 불가")
         ag = c.execute("SELECT * FROM agents WHERE name=?", (p.agent,)).fetchone()
         if not ag and "@" in p.agent:
             # 본명@호스트 형식 assignee(tt CLI 기본 신원)를 등록 에이전트 단축명으로

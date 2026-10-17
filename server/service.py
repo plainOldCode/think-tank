@@ -110,6 +110,21 @@ def finish_issue_dispatches(c, issue_id):
                   (ts, row["id"]))
         log_event(c, "dispatch.updated", "dispatch", row["id"],
                   {"run_state": "finished", "via": "issue-terminal"})
+    # 9PDD(M54X0X19-9PDD): 카드 종료 시 전달 상태 error/queued 행도 닫는다 —
+    # 안 그러면 낡은 error 행이 재전달 대상으로 남아 종료 카드를 재청구시킨다(QN0H).
+    # 주의: bump()가 활성 카드 PATCH마다 호출되므로 종료 상태 EXISTS 가드가 필수다
+    # (a1 리뷰 R1) — 없으면 poll 에이전트의 queued 행이 픽업 전에 닫혀 영원히
+    # 전달되지 않고, error 행도 재전달 대기 중 조기 종료된다.
+    rows = c.execute(
+        "SELECT id FROM dispatches WHERE issue_id=? AND status IN ('error','queued') "
+        "AND EXISTS (SELECT 1 FROM issues i WHERE i.id=dispatches.issue_id "
+        "AND (i.state IN ('done','cancelled') OR i.archived=1))",
+        (issue_id,)).fetchall()
+    for row in rows:
+        c.execute("UPDATE dispatches SET status='superseded', ended_at=? WHERE id=?",
+                  (ts, row["id"]))
+        log_event(c, "dispatch.updated", "dispatch", row["id"],
+                  {"status": "superseded", "via": "issue-terminal"})
 
 
 def close_superseded_dispatches(c, issue_id):
@@ -119,6 +134,9 @@ def close_superseded_dispatches(c, issue_id):
     round's queued/running/stalled row in place. A later kill/timeout was then
     rejected, and the probe treated that leftover as busy. Closing it here does
     not record completion evidence. NULL attempt rows are legacy and stay as they are.
+
+    9PDD: 전달 상태 error/queued도 회차 기준으로 함께 닫는다 — run_state만 보면
+    전달 실패 행이 다음 회차 재전달 대상으로 살아남는다.
     """
     ph = ",".join("?" * len(config.ACTIVE_RUN_STATES))
     rows = c.execute(
@@ -132,6 +150,16 @@ def close_superseded_dispatches(c, issue_id):
                   (ts, row["id"]))
         log_event(c, "dispatch.updated", "dispatch", row["id"],
                   {"run_state": "finished", "via": "stale-round"})
+    rows = c.execute(
+        "SELECT d.id FROM dispatches d JOIN issues i ON i.id=d.issue_id "
+        "WHERE d.issue_id=? AND d.status IN ('error','queued') "
+        "AND d.attempt IS NOT NULL AND d.attempt < i.execution_attempt",
+        (issue_id,)).fetchall()
+    for row in rows:
+        c.execute("UPDATE dispatches SET status='superseded', ended_at=? WHERE id=?",
+                  (ts, row["id"]))
+        log_event(c, "dispatch.updated", "dispatch", row["id"],
+                  {"status": "superseded", "via": "stale-round"})
 
 
 def reset_evidence(c, issue_id):
