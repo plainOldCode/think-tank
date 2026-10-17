@@ -86,6 +86,8 @@ class IssuePatch(BaseModel):
     blocked_default: str | None = None
     # P8MN(M5283KGX-P8MN): brief 필드 갱신 — auto 라벨 추가 시 brief_verify 필요
     brief_scope: str | None = None
+    # RPXH(M53PBDWJ-RPXH): 반려 3회+ premise 재검토 상태 — probe가 설정, 소거는 서버
+    premise_rework: bool | None = None
     brief_verify: str | None = None
     brief_forbidden: str | None = None
     brief_timebox: str | None = None

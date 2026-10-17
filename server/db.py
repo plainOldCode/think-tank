@@ -202,6 +202,9 @@ def connect(path):
                 "blocked_default TEXT NOT NULL DEFAULT ''",
                 # P8MN(M5283KGX-P8MN): brief 필드 — SCOPE·VERIFY·FORBIDDEN·TIMEBOX
                 "brief_scope TEXT NOT NULL DEFAULT ''",
+                # RPXH(M53PBDWJ-RPXH): 369Y 후속 — 반려 3회+ 카드의 premise 재검토 상태.
+                # probe가 설정, 검증 종결·새 수령에서 소거. 상태 표시+라우팅용(내용 강제 아님).
+                "premise_rework INTEGER NOT NULL DEFAULT 0",
                 "brief_verify TEXT NOT NULL DEFAULT ''",
                 "brief_forbidden TEXT NOT NULL DEFAULT ''",
                 "brief_timebox TEXT NOT NULL DEFAULT ''",

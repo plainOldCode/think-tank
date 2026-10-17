@@ -42,6 +42,8 @@ The bundled reference is the contract copy shipped with the package and does not
 `<!-- tt-work-contract:start -->` and `<!-- tt-work-contract:end -->` are the boundaries from which the server extracts the guidance text.
 The comments themselves do not cause skill registration or execution on the client.
 Only when an agent discovers, selects, and reads this `SKILL.md` do the client procedures above apply as guidance.
+Contract versions in force: `tt-work-contract-v2.1` (server default) and `tt-work-contract-v2.2`
+(adds mandatory `verification.verification_level`); see `references/api.md` for the full blocks.
 
 ## Stage-exit contract — wait for nothing
 

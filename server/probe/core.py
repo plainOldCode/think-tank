@@ -414,6 +414,38 @@ def _correct_loop_sections(cur):
     return sections
 
 
+def _rejection_summary(url, days=30):
+    """RPXH(M53PBDWJ-RPXH) — 카드 간 반려 유형 집계. 실패·미배포 서버면 {} (369Y 카드 내 집계만)."""
+    try:
+        d = api(url, f"/rejections/summary?days={days}")
+    except Exception:
+        return {}
+    return d if isinstance(d, dict) and d.get("buckets") is not None else {}
+
+
+def _conversion_section(summary, cur):
+    """RPXH — 발령문에 붙일 카드 간 전환 권장 섹션. 순수 함수.
+
+    규칙: 최근 기간 count>=3 AND cards>=2 인 버킷만 — 단발 지적·한 카드 내 반복은 제외.
+    369Y의 카드 내 구조화 승격과 짝을 이룬다(반복이 구조를 넘어 다른 카드에도 번지면 전환).
+    """
+    if not isinstance(summary, dict):
+        return ""
+    cur_buckets = {_classify_rejection(c.get("body") or "") for c in _rejection_verdicts(cur)}
+    hot = [b for b in (summary.get("buckets") or [])
+           if b.get("count", 0) >= 3 and b.get("cards", 0) >= 2 and b["bucket"] != "general"][:3]
+    if not hot:
+        return ""
+    days = summary.get("days") or 30
+    lines = [f"- {b['bucket']}: 최근 {days}일 {b['count']}회(카드 {b['cards']}장) 반복 — "
+             "이 유형은 리뷰 지적으로 남기 말고 lint/테스트/계약 체크로 전환하라"
+             for b in hot]
+    touched = [b["bucket"] for b in hot if b["bucket"] in cur_buckets]
+    if touched:
+        lines.append(f"이 카드의 반려도 {'/'.join(touched)} 유형 — 수정과 함께 전환 작업을 노트로 남겨라.")
+    return "--- 반복 유형 전환 (RPXH) ---\n" + "\n".join(lines)
+
+
 def _pick_rework_executor(url, issue_id, assignee, agents):
     """M5283HM4-0SZP — 원작업자 고정 해제: 등록 실행자 중 대체 선정.
 
@@ -452,7 +484,7 @@ def _pick_rework_executor(url, issue_id, assignee, agents):
     return None
 
 
-def _rework_brief(assignee, act, cur, msg):
+def _rework_brief(assignee, act, cur, msg, url=None):
     """M5283HM4-0SZP — 통합 발령문: 원 brief + 반려 판정 + 이전 보고 + PR.
 
     대체 실행자는 원 세션 맥락이 없으므로 판정·보고를 발령문에 담는다(1200자 절단).
@@ -472,6 +504,11 @@ def _rework_brief(assignee, act, cur, msg):
               f"(branch {act.get('branch', '')}, head {(act.get('head_sha') or '')[:8]})"]
     # 369Y — 반복 지적 구조화 + premise 강제 섹션(레거시 PR 경로도 동일 적용)
     parts += _correct_loop_sections(cur)
+    # RPXH — 카드 간 반복 유형 전환 권장(url 있을 때만; 실패는 조용히 생략)
+    if url:
+        _cs = _conversion_section(_rejection_summary(url), cur)
+        if _cs:
+            parts.append(_cs)
     return "\n".join(parts)
 
 
@@ -2465,7 +2502,7 @@ def execute(url, act):
                    f"재리뷰 요청·병합은 probe가 자동 진행하니 결과를 기다리거나 폴링하지 말 것"
                    f"(다음 단계 필요 시 보드가 재호출).")
             if rerouted:
-                msg = _rework_brief(assignee, act, cur, msg)
+                msg = _rework_brief(assignee, act, cur, msg, url=url)
             if target is None:
                 _ratt = cur.get("execution_attempt") or 0
                 _rm = f"[rework-relay #{act['pr']}/{(act.get('head_sha') or '')[:8]} a{_ratt}]"

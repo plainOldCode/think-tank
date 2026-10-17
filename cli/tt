@@ -5,7 +5,7 @@ URL="${TT_URL:-http://127.0.0.1:7800}"  # serve-time 주입 계약 — 설치본
 AGENT="${TT_AGENT:-$USER@$(hostname -s)}"
 JQ="jq -r"
 # TT 개선#3f: CLI 버전 — 서버 openapi 해시와 함께 `tt version`으로 표기(드리프트 감지)
-TT_CLI_VERSION="2.7.0"
+TT_CLI_VERSION="2.7.1"
 jfilter() { if [[ "${JSON:-0}" == 1 ]]; then jq .; else jq -r "$@"; fi; }
 
 usage() {
@@ -189,6 +189,7 @@ case "$cmd" in
       (if $lastm then "  변화: \($lastm.body | split("\n")[0] | .[0:90]) (\($lastm.ts))" else empty end),
       (if $hold and $hold.ts == $lastm.ts then "  ⛔gate: delivery-hold — \($hold.body | split("] ")[1] // "?") (\($hold.ts))" else empty end),
       (if .state == "blocked" then "  ⛔gate: blocked — \(.waiting_for // "?") (why: \(.blocked_detail // "-"))" else empty end),
+      (if .premise_rework == 1 then "  ⛔premise: 반려 3회+ — premise 재검토 상태 (RPXH)" else empty end),
       "  \(.body|gsub("\n"; "\n  "))",
       (if (.children|length)>0 then "-- 하위 --" else empty end), (.children[] | "  ↳ \(.id) [\(.state)] \(.title)"),
       (if (.comments|length)>0 then "-- 코멘트 --" else empty end),

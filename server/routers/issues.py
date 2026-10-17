@@ -207,6 +207,7 @@ def claim(issue_id: str, p: ClaimIn, ctx: Ctx = Depends(get_ctx)):
             raise HTTPException(409, f"lease limit: active leases={held} (max={config.max_leases()}) — heartbeat or done first")
         service.bump(c, issue_id, {**service.reset_evidence(c, issue_id), "state": "in_progress", "assignee": p.agent,
                                    "reviewer": None,  # R6: 재작업 진입 시 이전 리뷰어 표기 제거
+                                   "premise_rework": 0,  # RPXH: 새 회차는 premise 상태 초기화
                                    "started_at": dbmod.now(),
                                    "work_contract": json.dumps(ctx.contract, ensure_ascii=False),
                                    "execution_attempt": row["execution_attempt"] + 1,
@@ -433,7 +434,7 @@ def pull(p: ClaimIn, ctx: Ctx = Depends(get_ctx)):
                 continue
             if cand["state"] == "todo":
                 res = c.execute(
-                    "UPDATE issues SET state='in_progress', assignee=?, reviewer=NULL, started_at=?, lease_by=?, lease_expires=?, "
+                    "UPDATE issues SET state='in_progress', assignee=?, reviewer=NULL, premise_rework=0, started_at=?, lease_by=?, lease_expires=?, "
                     "heartbeat_at=?, updated_at=?, work_contract=?, execution_attempt=execution_attempt+1, "
                     "version=version+1 WHERE id=? AND state='todo' AND assignee=''",
                     (p.agent, ts, p.agent, dbmod.future(p.safe_hours()), ts, ts,
@@ -596,6 +597,12 @@ def patch_issue(issue_id: str, p: IssuePatch, ctx: Ctx = Depends(get_ctx)):
                 fields.update({"lease_by": "", "lease_expires": None})
         if p.archived is not None:
             fields["archived"] = 1 if p.archived else 0
+        # RPXH(M53PBDWJ-RPXH): premise_rework — probe가 반려 3회+에서 설정.
+        # 명시 갱신을 받고, 검증 종결(done)·새 수령(claim)에서 소거된다.
+        if p.premise_rework is not None:
+            fields["premise_rework"] = 1 if p.premise_rework else 0
+            if p.premise_rework and (row["execution_attempt"] or 0) < 3:
+                pass  # 상태는 probe 판단을 따른다 — 서버는 저장·표시·소거만 담당
         # done 이탈(재개) 시 자동 아카이브 플래그 해제 — todo+archived 잔존 방지(P77 R2)
         new_state = fields.get("state") or row["state"]
         if new_state not in ("done", "cancelled") and row["state"] in ("done", "cancelled"):
@@ -749,6 +756,7 @@ def verify_issue(issue_id: str, p: VerifyIn, ctx: Ctx = Depends(get_ctx)):
                               {"author": p.verifier, "preview": verify_body[:120]})
             c.execute("UPDATE issues SET verified=1, verified_at=?, verified_evidence=?, "
                       "verification_status='approved', approval_path='human', state='done', "
+                      "premise_rework=0, "
                       "completed_at=?, version=version+1 "
                       "WHERE id=? AND version=?",
                       (dbmod.now(), f"사람 승인: {ev[:300]}", dbmod.now(), issue_id, row["version"]))
@@ -831,6 +839,7 @@ def verify_issue(issue_id: str, p: VerifyIn, ctx: Ctx = Depends(get_ctx)):
                   # VQK1 B안 — 승인 경로: review_subject 검증 통과=독립검증, 없으면 증거만
                   "approval_path": ("independent-review" if p.review_subject is not None
                                     else "evidence-only"),
+                  "premise_rework": 0,
                   "delivery_receipt": p.delivery_receipt.model_dump_json() if p.delivery_receipt else "",
                   "completion_report": (row["completion_report"] if p.review_subject is not None
                                         else proof.model_dump_json() if proof else ""),
@@ -852,6 +861,42 @@ def add_comment(issue_id: str, p: CommentIn, ctx: Ctx = Depends(get_ctx)):
         service.record_comment(c, issue_id, p.author, p.body)
         c.commit()
     return {"ok": True}
+
+
+@router.get("/rejections/summary")
+def rejections_summary(days: int = 30, ctx: Ctx = Depends(get_ctx)):
+    """RPXH(M53PBDWJ-RPXH) — 반려(request-changes) 유형의 카드 간 집계.
+
+    369Y는 카드 하나 안의 반복만 셌다. 이 엔드포인트는 기간 내 모든 반려 판정을
+    버킷 분류해 누적한다 — 재작업 발령문의 전환 권장 노트와 운영자의
+    lint/테스트 전환 판단이 같은 수치를 본다."""
+    if days < 0:
+        raise HTTPException(422, "days는 0 이상")
+    with ctx.con() as c:
+        cutoff = _archive_cutoff(days)
+        rows = c.execute(
+            "SELECT issue_id, body, ts FROM comments WHERE ts>=? AND body LIKE '%review: request-changes%'",
+            (cutoff,)).fetchall()
+        from collections import defaultdict
+        agg = defaultdict(lambda: {"count": 0, "cards": set(), "last_ts": ""})
+        for r in rows:
+            b = _classify_rejection_body(r["body"])
+            agg[b]["count"] += 1
+            agg[b]["cards"].add(r["issue_id"])
+            if r["ts"] > agg[b]["last_ts"]:
+                agg[b]["last_ts"] = r["ts"]
+        buckets = sorted(
+            ({"bucket": b, "count": v["count"], "cards": len(v["cards"]), "last_ts": v["last_ts"]}
+             for b, v in agg.items()),
+            key=lambda x: (-x["count"], x["bucket"]))
+    return {"days": days, "buckets": buckets}
+
+
+def _classify_rejection_body(body: str) -> str:
+    from probe.core import _classify_rejection
+    text = body.strip().splitlines()
+    # 첫 줄 판정 헤더를 제외한 본문으로 분류 — 헤더의 키워드 오분류 방지
+    return _classify_rejection("\n".join(text[1:]) if len(text) > 1 else body)
 
 
 @router.get("/issues/{issue_id}/why-blocked")
