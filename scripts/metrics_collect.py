@@ -115,7 +115,21 @@ def payload_of(e):
         return {}
 
 
-_VERDICT_RE = re.compile(r"review: (approve|request-changes)\s*$", re.M)  # 첫 줄 완전 일치 — lookalike 오인 방지(X7DG RC)
+# 9WWK: 판정 파서 단일 소스(server/verdicts.py) — 레포 트리에서 import, 실패 시 동일 규칙 폴백
+try:
+    for _rp in (os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                os.path.expanduser("~/think-tank")):
+        if os.path.isdir(os.path.join(_rp, "server")):
+            sys.path.insert(0, _rp)
+            break
+    from server.verdicts import first_line_verdict as _first_line_verdict
+except ImportError:  # 독립 실행(레포 없음) — X7DG RC 규칙 폴백(첫 줄 완전 일치)
+    _VERDICT_RE = re.compile(r"review: (approve|request-changes)\s*$")
+
+    def _first_line_verdict(body):
+        lines = (body or "").strip().splitlines()
+        m = _VERDICT_RE.match(lines[0].strip()) if lines else None
+        return m.group(1) if m else None
 
 
 def reviewer_calibration(events, window_start):
@@ -130,9 +144,9 @@ def reviewer_calibration(events, window_start):
         if not ts or ts < window_start:
             continue
         pl = payload_of(e)
-        m = _VERDICT_RE.match(pl.get("preview") or "")
-        if m:
-            verdicts.append((e["seq"], e.get("entity_id"), pl.get("author") or "?", m.group(1)))
+        v = _first_line_verdict(pl.get("preview") or "")
+        if v:
+            verdicts.append((e["seq"], e.get("entity_id"), pl.get("author") or "?", v))
 
     counts = {}  # reviewer -> [approve, rc]
     judged_cards = {}  # reviewer -> set(card)

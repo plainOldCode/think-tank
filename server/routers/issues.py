@@ -8,6 +8,7 @@ import config
 import db as dbmod
 import service
 import policy
+import verdicts  # 9WWK — 판정 파서 단일 소스
 from models import ClaimIn, CommentIn, IssueCreate, IssuePatch, LeaseIn, ReviewClaimIn, VerifyIn
 from service import Ctx
 from verification import legacy_result
@@ -876,11 +877,15 @@ def rejections_summary(days: int = 30, ctx: Ctx = Depends(get_ctx)):
     with ctx.con() as c:
         cutoff = _archive_cutoff(days)
         rows = c.execute(
-            "SELECT issue_id, body, ts FROM comments WHERE ts>=? AND body LIKE '%review: request-changes%'",
+            "SELECT issue_id, author, body, ts FROM comments WHERE ts>=? "
+            "AND body LIKE '%review: request-changes%'",
             (cutoff,)).fetchall()
         from collections import defaultdict
         agg = defaultdict(lambda: {"count": 0, "cards": set(), "last_ts": ""})
         for r in rows:
+            # 9WWK: 첫 줄 판정 + 기계 author 제외 — 본문 인용·에코는 집계에서 뺀다
+            if verdicts.verdict_of(r["author"], r["body"]) != "request-changes":
+                continue
             b = _classify_rejection_body(r["body"])
             agg[b]["count"] += 1
             agg[b]["cards"].add(r["issue_id"])
@@ -894,10 +899,9 @@ def rejections_summary(days: int = 30, ctx: Ctx = Depends(get_ctx)):
 
 
 def _classify_rejection_body(body: str) -> str:
-    from probe.core import _classify_rejection
     text = body.strip().splitlines()
     # 첫 줄 판정 헤더를 제외한 본문으로 분류 — 헤더의 키워드 오분류 방지
-    return _classify_rejection("\n".join(text[1:]) if len(text) > 1 else body)
+    return verdicts.classify_rejection("\n".join(text[1:]) if len(text) > 1 else body)
 
 
 @router.get("/issues/{issue_id}/why-blocked")
