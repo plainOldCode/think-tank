@@ -214,7 +214,10 @@ def claim(issue_id: str, p: ClaimIn, ctx: Ctx = Depends(get_ctx)):
                                    "heartbeat_at": dbmod.now(),
                                    "todo_since": None}, row["version"])
         row = service.get_issue(c, issue_id)
-    return dbmod.to_dict(row)
+    out = dbmod.to_dict(row)
+    # DW0P(M5283NC3-DW0P): 부모 epic의 standing orders를 응답에 그대로 첨부
+    out["standing_orders"] = service.standing_orders(c, out)
+    return out
 
 
 def _archive_days() -> int:

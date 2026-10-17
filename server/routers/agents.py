@@ -269,6 +269,12 @@ def dispatch(issue_id: str, p: DispatchIn, request: Request, ctx: Ctx = Depends(
             return JSONResponse(status_code=200, content=dict(existing))
         redeliver = existing is not None
         if not redeliver:
+            # DW0P(M5283NC3-DW0P): 부모 epic의 standing orders를 메시지에 그대로
+            # 첨부 — 코멘트와 러너 payload가 같은 본문을 받는다(재전송 멱등키는
+            # 원본 메시지 기준 유지).
+            _so = service.standing_orders(c, issue)
+            if _so:
+                p.message = p.message + "\n\n[standing orders]\n" + _so
             # resume context는 신규 행 INSERT 전에 조회해야 이전 회차를 가리킨다
             # (INSERT 후 조회하면 방금 만든 빈 context 행이 최신이 되어버림).
             prev = c.execute("SELECT context FROM dispatches WHERE issue_id=? AND agent=? "

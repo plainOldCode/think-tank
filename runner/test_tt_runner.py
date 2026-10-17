@@ -353,7 +353,11 @@ class TestLedgerGate(unittest.TestCase):
         with patch.object(R.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)):
             self.assertTrue(R.continue_session({"continue_cmd": "echo"}, session, "Fix retry", key))
         with open(os.path.join(R.INBOX_DIR, R.sanitize(session) + ".msg")) as f:
-            self.assertEqual(f.read(), prompt)
+            resumed = f.read()
+        # DW0P — 계속 세션 프롬프트는 [Task] 앞에 session-pickup 규칙을 둔다(이전 기록 신뢰)
+        self.assertIn("[session-pickup] 이 세션은 이전 기록이 있다", resumed, resumed[:120])
+        self.assertIn("이미 한 일을 다시 하지 않는다", resumed)
+        self.assertTrue(resumed.endswith("Fix retry"))
 
     def test_legacy_payload_keeps_its_prompt(self):
         from unittest.mock import patch
