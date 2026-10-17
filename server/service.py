@@ -5,6 +5,7 @@
 """
 import json
 import os
+import re
 import sqlite3
 import threading
 import urllib.request
@@ -246,6 +247,23 @@ def requires_report(row):
     # after claim/pull or a scope change establishes a contract.
     pinned = json.loads(row["work_contract"]) if row["work_contract"] else {}
     return pinned.get("report_required", False)
+
+
+def standing_orders(c, issue):
+    """DW0P(M5283NC3-DW0P) — 부모 epic 본문의 "## Standing Orders" 섹션 텍스트.
+
+    claim 응답과 dispatch 메시지에 그대로 붙는다(번호 목록 원문). 부모 없음·
+    섹션 없음·부모가 아카이브면 "" — 호출자는 빈 값을 그대로 둔다.
+    """
+    pid = issue.get("parent_id") if isinstance(issue, dict) else issue["parent_id"]
+    if not pid:
+        return ""
+    row = c.execute("SELECT body, archived FROM issues WHERE id=?", (pid,)).fetchone()
+    if not row or row["archived"] or not row["body"]:
+        return ""
+    m = re.search(r"^## +standing orders *\n(.*?)(?=^## |\Z)", row["body"],
+                  re.IGNORECASE | re.MULTILINE | re.DOTALL)
+    return m.group(1).strip() if m else ""
 
 
 def find_evidence(c, issue_id, row) -> str:

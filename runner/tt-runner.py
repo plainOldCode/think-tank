@@ -1010,11 +1010,18 @@ def start_session(key, prof, session, workspace):
 def continue_session(prof, session, message, key=None):
     """pane의 대화형 셸에 파일 읽기 형태만으로 메시지를 전달한다.
     계속 모드도 신규 모드와 동일한 종료 마커 프로토콜을 쓴다 — pane 셸이 rc/done을
-    쓰고 감시자가 이를 주시한다 (t_0d90b8eb 실측: 마커 없어 running 고립)."""
+    쓰고 감시자가 이를 주시한다 (t_0d90b8eb 실측: 마커 없어 running 고립).
+
+    DW0P(M5283NC3-DW0P): 계속 세션에는 session-pickup 규칙을 앞에 붙인다 —
+    이전 기록을 먼저 읽고 신뢰하며, 이미 한 일을 다시 하지 않는다."""
     cmd = prof.get("continue_cmd")
     if not cmd:
         return False
     msgfile = os.path.join(INBOX_DIR, sanitize(session) + ".msg")
+    if key:
+        message = ("[session-pickup] 이 세션은 이전 기록이 있다 — 먼저 읽고 신뢰하라. "
+                   "이미 한 일을 다시 하지 않는다(완료·진행 중 항목은 스킵). "
+                   "이어서 아래 지시만 수행한다.\n\n" + message)
     with open(msgfile, "w") as f:
         f.write(task_prompt({**(get_run(key) or {}), "message": message}) if key else message)
     os.chmod(msgfile, 0o600)
