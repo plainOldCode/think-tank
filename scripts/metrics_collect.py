@@ -115,6 +115,61 @@ def payload_of(e):
         return {}
 
 
+_VERDICT_RE = re.compile(r"review: (approve|request-changes)")
+
+
+def reviewer_calibration(events, window_start):
+    """X7DG 리뷰어 보정 — 판정 코멘트(`review: approve|request-changes`로 시작, 작성자=리뷰어)를
+    리뷰어별 집계한다. 승인( seq s1 ) 뒤 같은 카드에서 RC( seq s2>s1 )가 나오면 승인자에게
+    결함 1건(카드당 리뷰어 1회 — 재승인 후 재RC는 다시 1건). 창 필터는 판정 ts 기준."""
+    verdicts = []  # (seq, card, reviewer, verdict)
+    for e in events:
+        if e.get("kind") != "comment.added":
+            continue
+        ts = parse_ts(e.get("ts"))
+        if not ts or ts < window_start:
+            continue
+        pl = payload_of(e)
+        m = _VERDICT_RE.match(pl.get("preview") or "")
+        if m:
+            verdicts.append((e["seq"], e.get("entity_id"), pl.get("author") or "?", m.group(1)))
+
+    counts = {}  # reviewer -> [approve, rc]
+    judged_cards = {}  # reviewer -> set(card)
+    for _, card, rv, verdict in verdicts:
+        c = counts.setdefault(rv, [0, 0])
+        c[0 if verdict == "approve" else 1] += 1
+        judged_cards.setdefault(rv, set()).add(card)
+
+    defect_pairs = set()  # (approver, rc_seq, card) — 승인 세대별: 재승인 후 재RC는 새 결함
+    approved_by_card = {}  # card -> set(approver) — 마지막 RC 이후 승인자 누적
+    for seq, card, rv, verdict in verdicts:  # verdicts는 seq 오름차순
+        if verdict == "approve":
+            approved_by_card.setdefault(card, set()).add(rv)
+        else:
+            for approver in approved_by_card.get(card, ()):
+                defect_pairs.add((approver, seq, card))
+            approved_by_card[card] = set()  # 이 RC로 승인 세대 종료
+
+    rows = []
+    for rv, (ap, rc) in sorted(counts.items(), key=lambda kv: -(kv[1][0] + kv[1][1])):
+        rows.append({
+            "reviewer": rv, "approve": ap, "request_changes": rc,
+            "total": ap + rc, "approve_pct": round(ap / (ap + rc) * 100.0, 1) if (ap + rc) else None,
+            "cards_judged": len(judged_cards.get(rv, ())),
+            "post_approval_defects": sum(1 for a, _, _ in defect_pairs if a == rv),
+        })
+    return {
+        "definition": "리뷰어 보정(X7DG) — 판정 코멘트(review: approve|request-changes)의 리뷰어별 집계. "
+                      "승인 뒤 같은 카드에서 나중에 RC가 나오면 승인자 결함 1건(카드당 리뷰어 1회).",
+        "rows": rows,
+        "post_approval_defects_total": len(defect_pairs),
+        "defect_rows": [{"reviewer": a, "rc_seq": s, "card": c} for a, s, c in sorted(defect_pairs)][-20:],
+        "note": "별칭 미병합 — agy와 agy@m2max는 별개 리뷰어(레지스트리 aliases와 무관). "
+                "승인 후 RC는 재작업 사이클(정상 반려)과도 발생 — 결함률 낮을수록 좋으나 0이 정답은 아님.",
+    }
+
+
 def collect(base: str, state_file: str, window_start: datetime,
             max_seq: int | None = None, issues_file: str | None = None):
     """W098 재현성: max_seq로 이벤트 컷을, issues_file로 스냅샷을 고정한다 —
@@ -302,7 +357,7 @@ def collect(base: str, state_file: str, window_start: datetime,
                     human_messages += 1
 
     return {
-        "collector_version": "v4",
+        "collector_version": "v5",
         "generated_at": now.isoformat(timespec="seconds"),
         "window_start": window_start.isoformat(timespec="seconds"),
         "window_note": f"이벤트 로그 seq 1~{events[-1]['seq'] if events else 0} (로그 시작 이전 이력은 원시 근거 없음 — 집계 제외·별도 표기)",
@@ -340,6 +395,7 @@ def collect(base: str, state_file: str, window_start: datetime,
         "intervention": {"human_comments": human_comments, "human_messages": human_messages,
                          "blocked_entries": blocked_entries,
                          "note": "자동 blocked vs 사람 개입 구분 불가 — v1 proxy"},
+        "reviewers": reviewer_calibration(events, window_start),
     }
 
 
@@ -362,6 +418,8 @@ def dashboard(m: dict) -> str:
         f"| stall복구율 전체 (해소분 기준) | {str(stl['recovery_rate_pct']) + '%' if stl['recovery_rate_pct'] is not None else '-'} | 상태 파일 누적 |",
         f"| stall복구율 120분 이내 (판정 기준) | {str(stl['recovery_rate_120m_pct']) + '%' if stl['recovery_rate_120m_pct'] is not None else '-'} | 시간 유효 해소분 n={stl['timed_resolved_n']} |",
         f"| 개입: 사람 코멘트/메시지/blocked 진입 | {iv['human_comments']}/{iv['human_messages']}/{iv['blocked_entries']} | events (v1 proxy) |",
+        *(f"| 리뷰어 보정 (approve/RC, 승인 후 결함) | {r['reviewer']}: {r['approve']}/{r['request_changes']} (결함 {r['post_approval_defects']}, 카드 {r['cards_judged']}) | 이벤트 (X7DG) |"
+          for r in sorted(m["reviewers"]["rows"], key=lambda x: -x["total"])[:6]),
         "",
         f"stall 상세: {', '.join(stl['stalled_now'][:5]) or '없음'}",
     ]
