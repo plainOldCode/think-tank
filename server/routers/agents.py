@@ -377,9 +377,20 @@ def dispatch(issue_id: str, p: DispatchIn, request: Request, ctx: Ctx = Depends(
 
 @router.get("/issues/{issue_id}/dispatches")
 def list_dispatches(issue_id: str, ctx: Ctx = Depends(get_ctx)):
+    """Dispatch rows for one card.
+
+    Old-round active rows are finished in this read (M54E72RQ-SXGS). Cards already
+    stuck before the round-advance close shipped are healed the next time the probe
+    or the board lists dispatches — no manual edit. The response is the healed set.
+    Comments and report receipts are not created.
+    """
     with ctx.con() as c:
+        c.execute("BEGIN IMMEDIATE")
         service.get_issue(c, issue_id)
-        rows = c.execute("SELECT * FROM dispatches WHERE issue_id=? ORDER BY id", (issue_id,)).fetchall()
+        service.close_superseded_dispatches(c, issue_id)
+        rows = c.execute("SELECT * FROM dispatches WHERE issue_id=? ORDER BY id",
+                         (issue_id,)).fetchall()
+        c.commit()
     return [dict(r) for r in rows]
 
 
@@ -419,9 +430,11 @@ def dispatch_progress(issue_id: str, dispatch_id: int, p: DispatchProgress, requ
             # 완료 전환 최종 판정 — 서버 attempt CAS (TT 개선#1 요구 2, if-match).
             # 종료 상태(finished/failed)는 비교와 갱신을 단일 조건부 UPDATE로 원자화한다
             # (R2: SELECT 후 UPDATE 사이 claim 끼워들기 창 제거) — dispatch가 생성된
-            # 회차(attempt 스냅샷)보다 이슈의 현재 execution_attempt가 앞서면 갱신
-            # 자체가 이뤄지지 않고 409로 거부된다. 이미 done/cancelled/archived인
-            # 카드의 물리 종료 투영만 예외이며 구회차 코멘트는 받지 않는다.
+            # 회차(attempt 스냅샷)보다 이슈의 현재 execution_attempt가 앞서면
+            # 투영은 닫되(kill/timeout/failed/done) 코멘트·report_session·
+            # dispatch_reports는 남기지 않는다. 현재 회차 보고가 CAS에 지면 409.
+            # 이미 done/cancelled/archived인 카드의 물리 종료도 같은 예외이며
+            # 구회차 코멘트는 받지 않는다.
             # attempt 스냅샷이 없는 구형 행(NULL)은 기존 동작 유지.
             # running/stalled 등 비종료 진행은 last-write-wins 그대로(러너 stall_check
             # 소유 — 서버 재계산 금지).
@@ -432,51 +445,68 @@ def dispatch_progress(issue_id: str, dispatch_id: int, p: DispatchProgress, requ
                         (dispatch_id, p.session)).fetchone()
                     if receipt:
                         return dict(row)  # previously accepted retry, projection unchanged
-                # 보고 선점 선(先)결제 (6차 리뷰 R13 — 원자성): 접수 이력 (dispatch,
-                # session) 유니크 INSERT OR IGNORE가 그 자체로 게이트다. 이력 SELECT와
-                # 투영 갱신을 분리하면 경합 창(이력 부재 판독 → 타 요청 접수 → 재개)에서
-                # 이전 세션 재시도가 새 회차 running 투영을 종료로 덮는다. 승자만 아래
-                # 투영 갱신·코멘트 접수로 진행하고, 패자는 이미 접수된 보고의 재시도로
-                # 투영(run_state/ended_at/session) 무변경 기수락 200. 세션 없는 보고는
-                # 회차 식별 불가 — 선점 없이 기존 동작(CAS + 매 접수).
-                claimed = None
-                if accept_comment and p.session:
-                    claimed = c.execute(
-                        "INSERT OR IGNORE INTO dispatch_reports (dispatch_id, session, ts) "
-                        "VALUES (?,?,?)", (dispatch_id, p.session, dbmod.now()))
-                    if claimed.rowcount == 0:
-                        row = c.execute("SELECT * FROM dispatches WHERE id=?", (dispatch_id,)).fetchone()
+                if not current_attempt:
+                    # M54E72RQ-SXGS: a kill/timeout/failed/done from the round this
+                    # dispatch was created in must close the projection. The comment
+                    # is not evidence for the current round — no comment, no
+                    # report_session, no dispatch_reports row. A different live
+                    # session already on this row is a newer projection; an older
+                    # kill must not overwrite it.
+                    if (p.session and row["session"] and p.session != row["session"]
+                            and row["run_state"] in config.ACTIVE_RUN_STATES):
                         return dict(row)
-                # report_session은 코멘트 접수와만 연결한다(5차 리뷰 R11) — STALL-kill·
-                # TIMEOUT·release 등 코멘트 없는 종료 투영은 접수 증거가 아니므로
-                # 기록하면 _terminal_recorded가 오패정한다.
-                sets = ("run_state=?, ended_at=?, report_session=?"
-                        if (accept_comment and p.session) else "run_state=?, ended_at=?")
-                args = ((p.state, ts, p.session) if (accept_comment and p.session)
-                        else (p.state, ts))
-                res = c.execute(
-                    "UPDATE dispatches SET %s WHERE id=? AND "
-                    "(attempt IS NULL OR attempt >= "
-                    "(SELECT i.execution_attempt FROM issues i WHERE i.id=dispatches.issue_id) "
-                    "OR EXISTS (SELECT 1 FROM issues i WHERE i.id=dispatches.issue_id "
-                    "AND (i.state IN ('done','cancelled') OR i.archived=1)))" % sets,
-                    (*args, dispatch_id))
-                if res.rowcount == 1:
-                    service.log_event(c, "dispatch.updated", "dispatch", dispatch_id,
-                                      {"run_state": p.state})
-                if res.rowcount != 1:
-                    # 409 — with 블록 예외 롤백으로 방금 선점한 보고 이력도 함께 취소된다
-                    # (미접수 보고의 이력 잔재 방지). 코멘트도 접수되지 않는다.
-                    raise HTTPException(
-                        409, f"stale round report: dispatch#{dispatch_id} attempt={row['attempt']} "
-                             f"< issue current execution_attempt — 이전 회차 종료 보고 거부")
-                if accept_comment:
-                    # 종료 투영과 완료 보고를 같은 트랜잭션에 접수 (R3: CAS 통과 후
-                    # 별도 /comments 사이 회차 변경 창 제거 — 409면 코멘트도 없다).
-                    # 접수 코어 공유로 버전 갱신·blocked 알림 부수효과 보존 (R9)
-                    service.record_comment(c, issue_id,
-                                           (p.author or "runner").strip() or "runner",
-                                           p.comment[:4000])
+                    res = c.execute(
+                        "UPDATE dispatches SET run_state=?, ended_at=? WHERE id=?",
+                        (p.state, ts, dispatch_id))
+                    if res.rowcount == 1:
+                        service.log_event(c, "dispatch.updated", "dispatch", dispatch_id,
+                                          {"run_state": p.state, "via": "stale-round"})
+                else:
+                    # 보고 선점 선(先)결제 (6차 리뷰 R13 — 원자성): 접수 이력 (dispatch,
+                    # session) 유니크 INSERT OR IGNORE가 그 자체로 게이트다. 이력 SELECT와
+                    # 투영 갱신을 분리하면 경합 창(이력 부재 판독 → 타 요청 접수 → 재개)에서
+                    # 이전 세션 재시도가 새 회차 running 투영을 종료로 덮는다. 승자만 아래
+                    # 투영 갱신·코멘트 접수로 진행하고, 패자는 이미 접수된 보고의 재시도로
+                    # 투영(run_state/ended_at/session) 무변경 기수락 200. 세션 없는 보고는
+                    # 회차 식별 불가 — 선점 없이 기존 동작(CAS + 매 접수).
+                    if accept_comment and p.session:
+                        claimed = c.execute(
+                            "INSERT OR IGNORE INTO dispatch_reports (dispatch_id, session, ts) "
+                            "VALUES (?,?,?)", (dispatch_id, p.session, dbmod.now()))
+                        if claimed.rowcount == 0:
+                            row = c.execute("SELECT * FROM dispatches WHERE id=?",
+                                            (dispatch_id,)).fetchone()
+                            return dict(row)
+                    # report_session은 코멘트 접수와만 연결한다(5차 리뷰 R11) — STALL-kill·
+                    # TIMEOUT·release 등 코멘트 없는 종료 투영은 접수 증거가 아니므로
+                    # 기록하면 _terminal_recorded가 오패정한다.
+                    sets = ("run_state=?, ended_at=?, report_session=?"
+                            if (accept_comment and p.session) else "run_state=?, ended_at=?")
+                    args = ((p.state, ts, p.session) if (accept_comment and p.session)
+                            else (p.state, ts))
+                    res = c.execute(
+                        "UPDATE dispatches SET %s WHERE id=? AND "
+                        "(attempt IS NULL OR attempt >= "
+                        "(SELECT i.execution_attempt FROM issues i WHERE i.id=dispatches.issue_id) "
+                        "OR EXISTS (SELECT 1 FROM issues i WHERE i.id=dispatches.issue_id "
+                        "AND (i.state IN ('done','cancelled') OR i.archived=1)))" % sets,
+                        (*args, dispatch_id))
+                    if res.rowcount == 1:
+                        service.log_event(c, "dispatch.updated", "dispatch", dispatch_id,
+                                          {"run_state": p.state})
+                    if res.rowcount != 1:
+                        # 409 — with 블록 예외 롤백으로 방금 선점한 보고 이력도 함께 취소된다
+                        # (미접수 보고의 이력 잔재 방지). 코멘트도 접수되지 않는다.
+                        raise HTTPException(
+                            409, f"stale round report: dispatch#{dispatch_id} attempt={row['attempt']} "
+                                 f"< issue current execution_attempt — 이전 회차 종료 보고 거부")
+                    if accept_comment:
+                        # 종료 투영과 완료 보고를 같은 트랜잭션에 접수 (R3: CAS 통과 후
+                        # 별도 /comments 사이 회차 변경 창 제거 — 409면 코멘트도 없다).
+                        # 접수 코어 공유로 버전 갱신·blocked 알림 부수효과 보존 (R9)
+                        service.record_comment(c, issue_id,
+                                               (p.author or "runner").strip() or "runner",
+                                               p.comment[:4000])
             else:
                 fields["run_state"] = p.state
                 if p.state in ("running", "stalled"):
