@@ -62,12 +62,18 @@ def parse_ts(s):
     return datetime.fromisoformat(s)
 
 
-def fetch_events(base: str):
+def fetch_events(base: str, max_seq: int | None = None):
     events, after = [], 0
     while True:
         batch = get(base, f"/events?after_seq={after}&limit=500")
         evs = batch.get("events", [])
+        if max_seq is not None:
+            evs = [e for e in evs if e["seq"] <= max_seq]
         events.extend(evs)
+        if not evs:
+            return sorted(events, key=lambda e: e["seq"])
+        if max_seq is not None and evs[-1]["seq"] >= max_seq:
+            return sorted(events, key=lambda e: e["seq"])
         if len(evs) < 500:
             return sorted(events, key=lambda e: e["seq"])
         after = evs[-1]["seq"]
@@ -109,13 +115,22 @@ def payload_of(e):
         return {}
 
 
-def collect(base: str, state_file: str, window_start: datetime):
+def collect(base: str, state_file: str, window_start: datetime,
+            max_seq: int | None = None, issues_file: str | None = None):
+    """W098 재현성: max_seq로 이벤트 컷을, issues_file로 스냅샷을 고정한다 —
+    같은 입력이면 같은 값(컷 없이 재실행하면 이벤트 추가분이 섞인다)."""
     now = datetime.now().astimezone()
-    issues = get(base, "/issues?limit=1000")
+    if issues_file:
+        with open(issues_file, encoding="utf-8") as f:
+            issues = json.load(f)
+        if isinstance(issues, dict):
+            issues = issues.get("issues", [])
+    else:
+        issues = get(base, "/issues?limit=1000")
     if isinstance(issues, dict):
         issues = issues.get("issues", [])
     snap = {it["id"]: it for it in issues}
-    events = fetch_events(base)
+    events = fetch_events(base, max_seq=max_seq)
 
     last_state = {}    # 이슈별 마지막 관측 상태 — 모든 state-bearing 이벤트에서 갱신(R3)
     todo_entry = {}    # 이슈별 todo 진입 시각(첫 수령 전 최신값, 첫 수령 후 동결 — R4)
@@ -358,6 +373,8 @@ def main():
     ap.add_argument("--base", default=os.environ.get("TT_URL", "http://localhost:7800"), help="TT 서버 URL — 운영 주소는 환경변수 TT_URL 또는 이 플래그로 전달(레포에 기록하지 않는다)")
     ap.add_argument("--json", action="store_true", help="JSON만 출력(코호트·episode 원시 행 포함)")
     ap.add_argument("--out", help="결과 파일 저장 경로")
+    ap.add_argument("--max-seq", type=int, default=None, help="이벤트 컷 상한 — 보고 컷(seq) 고정 재현용(W098)")
+    ap.add_argument("--issues-file", default=None, help="이슈 스냅샷 동결 파일 — 스냅샷 지표(재작업·stall active)를 그 시각 값으로 재계산(W098)")
     ap.add_argument("--state-file", default="tt_metrics_state.json", help="stall episode 영속 상태 파일(실행 호스트, Git 밖)")
     ap.add_argument("--window-start", default=None, help="실험 창 시작 ISO(기본: 이벤트 로그 시작)")
     args = ap.parse_args()
@@ -365,7 +382,7 @@ def main():
     first = get(args.base, "/events?limit=1").get("events", [])
     ws = parse_ts(args.window_start) if args.window_start else (
         parse_ts(first[0]["ts"]) if first else None) or datetime.now().astimezone()
-    m = collect(args.base, args.state_file, ws)
+    m = collect(args.base, args.state_file, ws, max_seq=args.max_seq, issues_file=args.issues_file)
     text = json.dumps(m, ensure_ascii=False, indent=2) if args.json else dashboard(m)
     if args.out:
         with open(args.out, "w", encoding="utf-8") as f:

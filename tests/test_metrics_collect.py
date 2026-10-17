@@ -187,3 +187,33 @@ def test_python39_timestamp_formats():
     for s in ("2026-10-09T13:38:33Z", "2026-10-09T13:38:33+0900",
               "2026-10-09T13:38:33.123456+0900", "2026-10-09T13:38:33-0530"):
         assert mc.parse_ts(s) is not None
+
+
+def test_max_seq_caps_event_window(tmp_path):
+    """W098 리뷰 — seq 상한으로 이벤트 파생 지표를 고정 컷에서 재현한다."""
+    issues = [_iss("A", "done", started_at=_ago(60), execution_attempt=1)]
+    events = [_claim("A", 90), _sub("A", 80), _done("A", 70), _sub("B", 10)]
+    mc.get = _issues(list(issues), events)
+    ws = NOW - timedelta(minutes=180)
+    full = mc.collect("http://test", None, ws)
+    capped = mc.collect("http://test", None, ws, max_seq=events[2]["seq"])
+    assert full["review_pass"]["passed"] == 1
+    assert capped["review_pass"]["passed"] == 1
+    # 상한 이후 이벤트(B의 review 진입)는 컷에 포함되지 않는다
+    assert capped["review_pass"]["submitted"] == 1
+    assert full["review_pass"]["submitted"] == 2
+
+
+def test_issues_file_reads_frozen_snapshot(tmp_path):
+    """W098 리뷰 — 재작업 등 스냅샷 지표는 동결 파일에서 재계산된다."""
+    live_issues = [_iss("A", "done", started_at=_ago(60), execution_attempt=1)]
+    frozen = [_iss("A", "done", started_at=_ago(60), execution_attempt=3),
+              _iss("B", "review", execution_attempt=2, started_at=_ago(50))]
+    f = tmp_path / "issues.json"
+    f.write_text(json.dumps(frozen), encoding="utf-8")
+    events = [_claim("A", 90), _sub("A", 80), _done("A", 70)]
+    mc.get = _issues(live_issues, events)
+    ws = NOW - timedelta(minutes=180)
+    out = mc.collect("http://test", None, ws, issues_file=str(f))
+    assert out["rework"]["started"] == 2
+    assert out["rework"]["attempt_ge2"] == 2
