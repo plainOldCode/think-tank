@@ -184,3 +184,32 @@ def test_자동_연결_병합은_보고_delivery가_없어도_완료된다(clien
     assert got["state"] == "done", got.get("verification_status")
     rc = got["delivery_receipt"]
     assert rc["head_sha"] == H1 and rc["number"] == 124
+
+
+def test_delivery_prep_빈_PR에서도_크래시_없다():
+    """회귀: run_once 스냅샷 준비가 조인 PR이 없으면 iid 미바인딩으로 크래시했다(운영 21:00 장애).
+
+    review 카드가 있어도 open PR이 하나도 없으면 discovered_delivery가 비는데,
+    patch-id 선계산이 유출된 루프변수 iid를 써서 UnboundLocalError가 났다.
+    """
+    issue = {"id": "M1X1X1X1-TEST", "state": "review", "labels": []}
+    s = {"issues": [issue], "prs": []}
+    req = lambda i: {"mode": "report"}  # noqa: E731
+    out = core._prepare_delivery_context(s, req, gh_json=None)
+    assert out["discovered_delivery"] == {}
+    assert out["patch_ids"] == {}
+    assert out["delivery_context"] == {}
+
+
+def test_delivery_prep_단일_PR_조인과_patch_id_선계산(client):
+    """조인 PR이 있으면 discovered_delivery를 채우고 head 불일치에 patch-id를 선계산한다."""
+    issue = approve(client, submitted(client))
+    obs = {**spec(issue), "state": "OPEN", "isDraft": False,
+           "checks": [{"state": "SUCCESS"}]}
+    pr = pr_join(issue)
+    req = lambda i: spec(issue)  # noqa: E731
+    gh = lambda *a, **k: obs  # noqa: E731
+    s = {"issues": [issue], "prs": [pr]}
+    out = core._prepare_delivery_context(s, req, gh)
+    assert issue["id"] in out["discovered_delivery"]
+    assert out["patch_ids"] == {}  # head 일치 — 선계산 불필요
