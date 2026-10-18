@@ -505,6 +505,9 @@ def _patch_state_transition(c, row, p, fields, issue_id, effective):
             # 제출의 종착지는 review. 현재 TT 판정에 연결된 probe verify
             # 또는 명시적 인수계/승인 경로가 종결을 담당한다.
             fields["state"] = "review"
+            # 90BH(M568PH4D-90BH) — 제출자 소유 poll 행 정리: running 잔존이
+            # 같은 에이전트 review-fix 재발령을 막는다(_occupies_card).
+            service.finish_submit_dispatches(c, issue_id, row["assignee"])
         elif "close" in labels_now and not ev:
             raise HTTPException(422, "close 라벨 종결은 폐기됨. 승인은 tt verify --human \"한 줄 사유\"")
         elif ev:

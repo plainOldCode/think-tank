@@ -162,6 +162,29 @@ def close_superseded_dispatches(c, issue_id):
                   {"status": "superseded", "via": "stale-round"})
 
 
+def finish_submit_dispatches(c, issue_id, submitter):
+    """90BH(M568PH4D-90BH) — 제출 시점에 제출자 소유 poll 행을 finished로.
+
+    review-fix를 받은 poll 에이전트가 재제출해도 그 행이 running으로 남아
+    probe의 같은 에이전트 재발령 가드(_occupies_card)에 걸린다. 제출(리뷰
+    진입) 시 제출자(카드 assignee) 소유 poll 행을 닫는다 — 리뷰어 등 타
+    에이전트 행은 건드리지 않는다."""
+    if not submitter:
+        return
+    ph = ",".join("?" * len(config.ACTIVE_RUN_STATES))
+    rows = c.execute(
+        f"SELECT d.id FROM dispatches d JOIN agents a ON a.name=d.agent "
+        f"WHERE d.issue_id=? AND d.agent=? AND a.receive_mode='poll' "
+        f"AND d.run_state IN ({ph})",
+        (issue_id, submitter, *config.ACTIVE_RUN_STATES)).fetchall()
+    ts = dbmod.now()
+    for r in rows:
+        c.execute("UPDATE dispatches SET run_state='finished', ended_at=? WHERE id=?",
+                  (ts, r["id"]))
+        log_event(c, "dispatch.updated", "dispatch", r["id"],
+                  {"run_state": "finished", "via": "submit"})
+
+
 def reset_evidence(c, issue_id):
     cursor = c.execute("SELECT COALESCE(MAX(id),0) FROM comments WHERE issue_id=?", (issue_id,)).fetchone()[0]
     return {"verified": 0, "verified_at": None, "verified_evidence": "",
