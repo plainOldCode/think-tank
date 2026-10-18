@@ -4,14 +4,15 @@
 - probe 판정·반려 감지 (server/probe/core.py)
 - 리뷰어 보정 지표 (scripts/metrics_collect.py)
 
-규칙(X7DG RC 확정): 첫 줄이 `review: approve|request-changes`로 **정확히** 시작하고
-그 줄로 끝나는 댓글만 판정이다(소문자 규약 — 대소문자 구분). 본문 중간의 인용·
-에코·보강 메모는 판정이 아니다. 기계 author(runner 에코·시스템·보드)도 판정이
-아니다 — 30일 창에서 27%가 비판정으로 집계됐던 원인.
+규칙(X7DG RC 확정, 71NK 완화): 첫 줄이 `review:` + 공백 + 판정어로 **시작**하고
+판정어 뒤가 단어 경계(공백·구두점·줄끝)인 댓글만 판정이다(대소문자 무시 —
+리뷰어가 같은 줄에 사유를 덧붙이거나 대문자로 써도 판독된다). 본문 중간의 인용·
+에코·보강 메모는 판정이 아니다(첫 줄 한정 유지). 기계 author(runner 에코·
+시스템·보드)도 판정이 아니다 — 30일 창에서 27%가 비판정으로 집계됐던 원인.
 """
 import re
 
-VERDICT_LINE = re.compile(r"review: (approve|request-changes)\s*$")
+VERDICT_LINE = re.compile(r"review:\s*(approve|request-changes)\b", re.IGNORECASE)
 # head-bound 판정 표기 'PR#<n>@<sha8>' — probe review_verdict와 동일 규격
 PR_SHA_RE = re.compile(r"PR#(\d+)@([0-9a-fA-F]{8})")
 MACHINE_AUTHOR = re.compile(r"^(probe|tt-server|tt-embedding-daemon|board)$|^runner@")
@@ -32,7 +33,7 @@ def first_line_verdict(body):
     if not lines:
         return None
     m = VERDICT_LINE.match(lines[0].strip())
-    return m.group(1) if m else None
+    return m.group(1).lower() if m else None
 
 
 def is_machine_author(author):

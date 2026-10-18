@@ -419,6 +419,22 @@ def pending_inbox(runner_name: str, request: Request, ctx: Ctx = Depends(get_ctx
             raise HTTPException(401, "pending inbox: 소속 러너 시크릿 불일치")
         names = [a["name"] for a in agents]
         qs = ",".join("?" * len(names))
+        # 3D5T(M568PGM1-3D5T) — 낡은 queued 행 선소멸: 종료 카드·이전 회차의
+        # queued 행은 poll 러너에 배달하면 안 된다(9PDD의 POST /dispatch 규약과
+        # 동일 검사를 배달 경로에도). NULL attempt는 레거시로 그대로 둔다.
+        stale = c.execute(
+            f"SELECT d.id FROM dispatches d JOIN issues i ON i.id=d.issue_id "
+            f"WHERE d.agent IN ({qs}) AND d.status='queued' AND "
+            f"(i.state IN ('done','cancelled') OR i.archived=1 OR "
+            f"(d.attempt IS NOT NULL AND d.attempt < i.execution_attempt)) "
+            f"ORDER BY d.id", names).fetchall()
+        if stale:
+            ts = dbmod.now()
+            for row in stale:
+                c.execute("UPDATE dispatches SET status='superseded', ended_at=? WHERE id=?",
+                          (ts, row["id"]))
+                service.log_event(c, "dispatch.updated", "dispatch", row["id"],
+                                  {"status": "superseded", "via": "poll-sweep"})
         rows = c.execute(f"SELECT * FROM dispatches WHERE agent IN ({qs}) AND status='queued' "
                          "ORDER BY id", names).fetchall()
         out = []
