@@ -162,3 +162,35 @@ def review_eligible(i, *, now="", agent="", low_risk=None):
         # 동일한 단일 관문을 태우기 위한 주입값.
         return False, "no_contract"
     return True, None
+
+
+# J2NJ(M54V6KY6-J2NJ) — 이중 판정: agents.model 컬럼 → 모델 계열 파생.
+# 계열 상호보완이 목적이므로 계정 가족(agent_family)과 무관한 모델 기준 판정이다.
+_MODEL_FAMILY_RULES = (
+    ("gpt", "gpt"), ("o1", "gpt"), ("o3", "gpt"), ("o4", "gpt"),
+    ("claude", "claude"),
+    ("gemini", "gemini"),
+    ("qwen", "qwen"),
+    ("cursor", "cursor"),
+    ("deepseek", "deepseek"),
+    ("llama", "llama"),
+    ("mistral", "mistral"),
+)
+
+
+def model_family(model):
+    """agents.model 문자열 → 모델 계열(gpt/qwen/gemini/claude/...). 미지 모델은 None."""
+    m = (model or "").lower()
+    for kw, fam in _MODEL_FAMILY_RULES:
+        if kw in m:
+            return fam
+    return None
+
+
+def dual_review_eligible(i):
+    """이중 판정 트리거 — 카드 라벨 dual_review(발령자가 생성 시 지정).
+
+    probe 휴리스틱(server/·마이그레이션·인증 경로)은 diff 관측이 필요해 2단계 분리
+    (카드 설계 노트 2026-10-18)."""
+    return "dual_review" in {str(x).strip().lower() for x in (i.get("labels") or [])
+                             if isinstance(x, str)}
