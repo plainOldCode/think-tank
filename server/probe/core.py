@@ -1016,83 +1016,98 @@ def _age_min(now, updated):
 _C1_SEEN = {}  # C1 카드별 최신 판정 입력 해시(프로세스 내 dedup)
 
 
-def decide(snap):
-    if not snap.get("auto"):
-        return []
-    issues = snap.get("issues") or []
-    # RQRT: 수신 계약 미선언 등록 에이전트는 배정 후보 제외 — claim 409 반복으로
-    # 사이클 전체가 중단되는 것을 배정 단계에서 원천 차단. 비등록 세션은
-    # 스냅샷 agents에 없으므로 영향 없다(암묵 relay).
-    agents = [a for a in (snap.get("agents") or []) if _assignable(a)]
-    now = snap.get("now") or ""
-    actions = []
-    claimed = set()
-    # TT 개선#3c R3: 유휴 판정은 작업 lease뿐 아니라 리뷰 점유 lease도 포함 +
-    # 이번 사이클에 이미 배정된(작업·리뷰) 에이전트는 재배정하지 않는다.
-    now0 = now
-    busy_agents = {i.get("lease_by") for i in issues
-                   if i.get("lease_by") and i.get("lease_expires")
-                   and (not now0 or i["lease_expires"] > now0)}
-    busy_agents.discard(None)
-    # TT 개선#3b: 배정 못 한 카드의 reason code — run_once가 로그로 남긴다.
-    # 에이전트 유무와 무관하게 전체 카드를 정책으로 스캔(상태 조합 매트릭스의 로그 실측).
-    snap["probe_skips"] = {}
-    skip = snap["probe_skips"]
-    for i in issues:
+class _DecideCtx:
+    """decide() 단계 공유 문맥(AK87-1) — 750줄 단일 함수를 위임형으로 분할한다.
+
+    계약: skip은 snap["probe_skips"]와 동일 객체(로그 계약), actions/claimed/
+    gated는 단계 간 누적 상태. 각 단계는 actions에만 기록하고 판정 입력을
+    변경하지 않는다(동작 불변)."""
+
+    def __init__(self, snap):
+        self.snap = snap
+        self.issues = snap.get("issues") or []
+        # RQRT: 수신 계약 미선언 등록 에이전트는 배정 후보 제외 — claim 409 반복으로
+        # 사이클 전체가 중단되는 것을 배정 단계에서 원천 차단. 비등록 세션은
+        # 스냅샷 agents에 없으므로 영향 없다(암묵 relay).
+        self.agents = [a for a in (snap.get("agents") or []) if _assignable(a)]
+        self.now = snap.get("now") or ""
+        self.actions = []
+        self.claimed = set()
+        self.ac_logged = set()  # [auto-classified] 보정 로그 — 카드당 1줄(1KFE 수용기준 1)
+        self.by_id = {i["id"]: i for i in self.issues}
+        # TT 개선#3c R3: 유휴 판정은 작업 lease뿐 아니라 리뷰 점유 lease도 포함 +
+        # 이번 사이클에 이미 배정된(작업·리뷰) 에이전트는 재배정하지 않는다.
+        self.busy_agents = {i.get("lease_by") for i in self.issues
+                            if i.get("lease_by") and i.get("lease_expires")
+                            and (not self.now or i["lease_expires"] > self.now)}
+        self.busy_agents.discard(None)
+        self.reviewer = os.environ.get("TT_REVIEW_AGENT", "").strip()
+        rmap = effective_review_map()  # 카운터파트 라우팅(M4JTJ970-WS3C) — env override 포함
+        # 런타임 설정(XV84) — 저장 설정이 코드 기본을 덮는다. decide는 순수 함수라
+        # snap에 조달된다(snapshot에서 GET /settings/review-routing).
+        routing = snap.get("review_routing") or {}
+        self.rmap = {**rmap, **(routing.get("review_map") or {})}
+        self.fb = routing.get("review_fallback")
+        self.tt_cards = set()   # ⓪ TT-submitted 카드 — _decide_tt_lifecycle이 채움
+        self.gated = set()      # 리뷰 게이트 보류 카드 — ⓪b needs-merge 제외
+        self.actor = None       # ①에서 산출 — ③ budget 통보 대행자
+
+
+def _decide_idle(name, issues, now):
+    return not any(i["state"] == "in_progress" and i.get("assignee") == name
+                   and (i.get("lease_expires") or "9999") > now for i in issues)
+
+
+def _decide_pick(cands, issues, now, skip, ac_logged):
+    """가장 낮은 우선순위의 배정 가능 후보(동률 id순). 없으면 None.
+    TT 개선#3b: 기각 시 policy reason code를 probe_skips에 남긴다.
+    1KFE: [auto-classified] 마커 카드는 동일 라벨 선행 카드 성적 score로
+    우선순위를 ±AC_PRIO_WEIGHT 보정한다. 마커 없음·미매칭 라벨은 기존 _prio."""
+    def key(i):
+        p_none, p, iid = _prio(i)
+        lab = _auto_classified_label(i)
+        if lab is None:
+            return (p_none, p, iid)
+        tr = _label_track(issues, lab, i["id"])
+        if tr is None:
+            return (p_none, p, iid)
+        if i["id"] not in ac_logged:
+            ac_logged.add(i["id"])
+            print(time.strftime("%F %T"),
+                  f"[auto-classified] {i['id']} label={lab} 선행 {tr['n']}건 "
+                  f"(done {tr['done_r']:.0%}, nh {tr['nh_r']:.0%}, "
+                  f"att {tr['avg_att']:.1f}) score {tr['score']:+.2f} "
+                  f"→ prio 보정 {-tr['score'] * AC_PRIO_WEIGHT:+.2f}", flush=True)
+        return (p_none, p - tr["score"] * AC_PRIO_WEIGHT, iid)
+    for i in sorted(cands, key=key):
         ok, code = policy.eligible(i, now=now, auto=True)
-        if not ok and code:
+        if ok:
+            return i
+        if code and i["id"] not in skip:
             skip[i["id"]] = code
+    return None
 
-    def idle(name):
-        return not any(i["state"] == "in_progress" and i.get("assignee") == name
-                       and (i.get("lease_expires") or "9999") > now for i in issues)
 
-    ac_logged = set()  # [auto-classified] 보정 로그 — 카드당 1줄(1KFE 수용기준 1)
+def _decide_assign(ctx):
+    """① release-ready 재개 + ② 에이전트별 작업 배정.
 
-    def pick(cands):
-        """가장 낮은 우선순위의 배정 가능 후보(동률 id순). 없으면 None.
-        TT 개선#3b: 기각 시 policy reason code를 probe_skips에 남긴다.
-        1KFE: [auto-classified] 마커 카드는 동일 라벨 선행 카드 성적 score로
-        우선순위를 ±AC_PRIO_WEIGHT 보정한다. 마커 없음·미매칭 라벨은 기존 _prio."""
-        def key(i):
-            p_none, p, iid = _prio(i)
-            lab = _auto_classified_label(i)
-            if lab is None:
-                return (p_none, p, iid)
-            tr = _label_track(issues, lab, i["id"])
-            if tr is None:
-                return (p_none, p, iid)
-            if i["id"] not in ac_logged:
-                ac_logged.add(i["id"])
-                print(time.strftime("%F %T"),
-                      f"[auto-classified] {i['id']} label={lab} 선행 {tr['n']}건 "
-                      f"(done {tr['done_r']:.0%}, nh {tr['nh_r']:.0%}, "
-                      f"att {tr['avg_att']:.1f}) score {tr['score']:+.2f} "
-                      f"→ prio 보정 {-tr['score'] * AC_PRIO_WEIGHT:+.2f}", flush=True)
-            return (p_none, p - tr["score"] * AC_PRIO_WEIGHT, iid)
-        for i in sorted(cands, key=key):
-            ok, code = policy.eligible(i, now=now, auto=True)
-            if ok:
-                return i
-            if code and i["id"] not in skip:
-                skip[i["id"]] = code
-        return None
-
-    # ① release-ready 재개(수동 재개 규약의 기계 대행 — 서버 release_ready 판정 근거)
+    True 반환 = ① 재개 발생 — decide는 즉시 종료한다(수동 재개 규약의 기계 대행)."""
+    issues, agents, now = ctx.issues, ctx.agents, ctx.now
+    actions, claimed, skip, ac_logged = ctx.actions, ctx.claimed, ctx.skip, ctx.ac_logged
     resumable = [i for i in issues if i["state"] == "blocked"
                  and i.get("waiting_for") == "dependency" and i.get("release_ready")]
-    actor = next((a["name"] for a in agents
-                  if a.get("name") not in NON_EXECUTORS and idle(a["name"])), None)
-    if resumable and actor:
+    ctx.actor = next((a["name"] for a in agents
+                      if a.get("name") not in NON_EXECUTORS and _decide_idle(a["name"], issues, now)), None)
+    if resumable and ctx.actor:
         t = resumable[0]
-        actions.append({"agent": actor, "issue": t["id"], "action": "resume",
+        actions.append({"agent": ctx.actor, "issue": t["id"], "action": "resume",
                         "reason": "release-ready"})
-        return actions
+        return True
 
     # ② agent별 작업 대상: continuation(자식→형제) → auto 풀 — 실행 불가 에이전트 제외(PXCJ)
     for a in agents:
         name = a["name"]
-        if name in NON_EXECUTORS or not idle(name):
+        if name in NON_EXECUTORS or not _decide_idle(name, issues, now):
             continue
         dones = [i for i in issues if i["state"] == "done" and i.get("assignee") == name]
         target = reason = None
@@ -1100,70 +1115,264 @@ def decide(snap):
             last = max(dones, key=lambda i: i.get("updated_at") or "")
             kids = _auto_todo(issues, claimed | {last["id"]})
             kids = [k for k in kids if k.get("parent_id") == last["id"]]
-            target, reason = pick(kids), "continuation-child"
+            target, reason = _decide_pick(kids, issues, now, skip, ac_logged), "continuation-child"
             if target is None:
                 sibs = [s for s in _auto_todo(issues, claimed | {last["id"]})
                         if last.get("parent_id") and s.get("parent_id") == last["parent_id"]]
-                target, reason = pick(sibs), "continuation-sibling"
+                target, reason = _decide_pick(sibs, issues, now, skip, ac_logged), "continuation-sibling"
         if target is None:
             pool = [p for p in _auto_todo(issues, claimed)
                     if not (dones and p["id"] == dones[0]["id"])]
-            target, reason = pick(pool), "pool"
+            target, reason = _decide_pick(pool, issues, now, skip, ac_logged), "pool"
         if target is None:
             continue
         claimed.add(target["id"])
         claimed.add(name)  # TT 개선#3c R3: 배정받은 에이전트는 이번 사이클 리뷰 금지
         actions.append({"agent": name, "issue": target["id"], "action": "work",
                         "reason": reason})
+    return False
 
-    # ⓪(사실상 우선) probe: CI green PR + 카드 연결/수령/계약 검증 → gh pr merge
-    # 리뷰 게이트(N0AN, docs/review-gate.md): TT_REVIEW_AGENT 설정 시 승인 코멘트 필요.
-    by_id = {i["id"]: i for i in issues}
-    reviewer = os.environ.get("TT_REVIEW_AGENT", "").strip()
-    rmap = effective_review_map()  # 카운터파트 라우팅(M4JTJ970-WS3C) — env override 포함
-    # 런타임 설정(XV84) — 저장 설정이 코드 기본을 덮는다. decide는 순수 함수라
-    # snap에 조달된다(snapshot에서 GET /settings/review-routing).
-    routing = snap.get("review_routing") or {}
-    rmap = {**rmap, **(routing.get("review_map") or {})}
-    fb = routing.get("review_fallback")
+
+def _decide_tt_lifecycle(ctx):
+    """⓪ 전단 — TT-submitted 카드 라이프사이클 계획. tt_cards·gated를 채운다."""
     from . import tt_lifecycle
-    tt_cards = {i["id"] for i in issues if tt_lifecycle.eligible(i)}
+    issues, agents, now = ctx.issues, ctx.agents, ctx.now
+    actions, claimed, busy_agents = ctx.actions, ctx.claimed, ctx.busy_agents
+    ctx.tt_cards = {i["id"] for i in issues if tt_lifecycle.eligible(i)}
     for i in issues:
-        if i["id"] in tt_cards:
+        if i["id"] in ctx.tt_cards:
             tt_actions = tt_lifecycle.plan(sys.modules[__name__], i, agents,
                                            busy_agents | claimed, now,
-                                           delivery_context=(snap.get("delivery_context") or {}).get(i["id"]),
-                                           linked=any(pr_card_id(p) == i["id"] for p in snap.get("prs") or []),
-                                           discovered=(snap.get("discovered_delivery") or {}).get(i["id"]),
-                                           patch_ids=snap.get("patch_ids"))
+                                           delivery_context=(ctx.snap.get("delivery_context") or {}).get(i["id"]),
+                                           linked=any(pr_card_id(p) == i["id"] for p in ctx.snap.get("prs") or []),
+                                           discovered=(ctx.snap.get("discovered_delivery") or {}).get(i["id"]),
+                                           patch_ids=ctx.snap.get("patch_ids"))
             actions.extend(tt_actions)
             claimed.update(a["agent"] for a in tt_actions if a["agent"] != "probe")
-    gated = set(tt_cards)  # TT-submitted cards do not require PR discovery or merge
-    for p in snap.get("prs") or []:
+    ctx.gated = set(ctx.tt_cards)  # TT-submitted cards do not require PR discovery or merge
+
+
+def _pr_risk(i, p):
+    """PR·카드 라벨의 위험 클래스 판정 — (low_risk, high_risk, pr_repo).
+
+    저위험(M4DEK6WC-MQYS): docs/i18n 라벨 PR — 계약·회차 없어도 제출(review) 상태면
+    독립 리뷰+CI green 후 무인 병합 대상. server/runner 경로는 execute에서 최종 차단.
+    고위험(FHH8): 'risk:*' 라벨 — probe 자동병합 휴면, 사람 승인 대기. 저위험과 동시에
+    걸리면 고위험이 이긴다(문서 라벨로 보안 변경 납치 방지)."""
+    pr_labels = {x.strip().lower() for x in (p.get("labels") or [])}
+    card_labels = i.get("labels")
+    if isinstance(card_labels, str):
+        try:
+            card_labels = json.loads(card_labels)
+        except (ValueError, TypeError):
+            card_labels = []
+    low_risk = bool({x.strip().lower() for x in (card_labels or [])}
+                    & set(policy.LOW_RISK_LABELS)) or bool(pr_labels & set(policy.LOW_RISK_LABELS))
+    high_risk = bool(policy.labels_in_class(card_labels or [], "high_risk")) or \
+        bool(policy.labels_in_class(pr_labels, "high_risk"))
+    if high_risk:
+        low_risk = False
+    pr_repo = p.get("repo") or REPO_CARDS["think-tank"]
+    return low_risk, high_risk, pr_repo
+
+
+def _decide_in_progress(ctx, i, p, iid, pr_repo):
+    """⓪c JXYS(M4MGV3BY) — in_progress 자동화: 리뷰 전용 자동화의 사각지대.
+
+    in_progress+PR에서도 CI 실패는 위임, green 무보고는 독려→무반응 승격.
+    전이는 probe가, 완료(done)는 보고서 의존 유지 — probe가 보고를 위조하지 않는다.
+    True 반환 = 이 PR 판정 종료(호출자 continue). False = 통과(게이트 판정 계속)."""
+    now, agents, actions = ctx.now, ctx.agents, ctx.actions
+    att_ip = i.get("execution_attempt") or 0
+    sha8_ip = (p.get("head_sha") or "")[:8]
+    checks_ip = p.get("checks") or []
+    states_ip = [c.get("state") for c in checks_ip]
+    fails_ip = [x for x in states_ip if x == "FAILURE"]
+    # 1) CI 실패 → 기존 ci-fix 흐름(위임 대상 동일) — 실패 PR은 미완성이어서 안전
+    if fails_ip and os.environ.get("TT_CI_FIX_AGENT", "kanban-adapter"):
+        marker_ip = f"[ci-fix-ip a{att_ip} #{p['number']}/{sha8_ip}]"
+        sup_ip, since_ip = _suppressed(i, "ci_failed_ip", f"#{p['number']}/{sha8_ip}")
+        if not sup_ip and not _probe_marker(i, marker_ip):
+            n_ip = failure_rules.suppress_n()
+            scope_ip = f"#{p['number']}/{sha8_ip}"
+            if not (n_ip and _repeat_count(
+                    i, rf"\[ci-fix-ip a\d+ {re.escape(scope_ip)}\]",
+                    since_ip) >= n_ip):
+                actions.append({"agent": "dispatchd", "issue": iid,
+                                "action": "ci-fix", "marker": marker_ip,
+                                "att": att_ip, "pr": p["number"], "repo": pr_repo,
+                                "branch": p.get("branch", ""),
+                                "head_sha": p.get("head_sha", ""),
+                                "cycle_id": ctx.snap.get("cycle_id"),
+                                "checks_failed": [c.get("name") or "?" for c in checks_ip
+                                                  if c.get("state") == "FAILURE"]})
+        return True
+    # 2) green + 무보고 → 독려 1회 → 무반응 승격. head가 바뀌면 새 sha의
+    #    독려 마커가 새로 필요 — 타이머가 자연 리셋(점진 push 납치 방지).
+    if not ci_passed(p):
+        return False
+    smarker = f"[submit-remind a{att_ip} #{p['number']}/{sha8_ip}]"
+    amarker = f"[submission-adopt a{att_ip} #{p['number']}/{sha8_ip}]"
+    if _probe_marker(i, amarker):
+        return True  # 이미 승격됨 — 승격 후에도 보고 제출은 가능
+    if not _probe_marker(i, smarker):
+        actions.append({"agent": "probe", "issue": iid,
+                        "action": "submit-remind", "marker": smarker,
+                        "att": att_ip, "pr": p["number"], "repo": pr_repo,
+                        "head_sha": p.get("head_sha", ""),
+                        "reason": f"PR#{p['number']} CI green — 완료 보고 제출"
+                                  "(tt submit --report)이 review 진입"})
+        return True
+    sc = next((c for c in (i.get("comments") or [])
+               if c.get("author") == "probe"
+               and smarker in (c.get("body") or "")), None)
+    sdt = _iso(_comment_ts(sc)) if sc else None
+    if not sdt or _lease_held(i, now):
+        return True  # 유효 임대 = 활동 중 — 무반응이 아님
+    if (datetime.fromisoformat(now) - sdt).total_seconds() <= \
+            _relay_timer_s(i.get("assignee") or "", agents):
+        return True  # 독려 타이머 미경과(hook 1h / relay 6h)
+    if any((x.get("author") or "") not in _RELAY_OBSERVERS
+           and not str(x.get("author") or "").startswith("runner")
+           and _comment_after(x, sdt, sc.get("id") or 0)
+           for x in (i.get("comments") or [])):
+        return True  # 응답·활동 중 — 승격 금지
+    actions.append({"agent": "probe", "issue": iid,
+                    "action": "submission-adopt", "marker": amarker,
+                    "att": att_ip, "pr": p["number"], "repo": pr_repo,
+                    "head_sha": p.get("head_sha", ""),
+                    "remind_ts": _comment_ts(sc),
+                    "remind_id": sc.get("id") or 0,
+                    "expected_version": i["version"],
+                    "reason": f"PR#{p['number']} green 무보고 — 기계적 승격"
+                              "(review). 완료 보고는 승격 후에도 유효"})
+    return True
+
+
+def _decide_verdict(ctx, i, p, iid, pr_repo, low_risk, high_risk, no_checks):
+    """pr_no_checks(규칙표 §4)·CI green 판정 경로 — 리뷰어 판정 소비.
+
+    True 반환 = 이 PR 판정 종료(호출자 continue). False = approve 확정 — merge로 통과.
+    pr_no_checks: 확인된 checks 0건([]) PR만 판정 대상 — 유효 리뷰 판정이 있으면 그
+    판정을 따르고(approve→병합 후보, request-changes→review-fix), 무판정이면 리뷰
+    요청. checks=None(조회 실패, collect_prs)은 관측 불가 — 0건 취급 금지(리뷰 R1:
+    CI 조회 오류의 병합 우회 방지). 게이트 off 레거시 모드는 기존 무응답 유지."""
+    now, agents, actions = ctx.now, ctx.agents, ctx.actions
+    claimed, busy_agents, gated = ctx.claimed, ctx.busy_agents, ctx.gated
+    sha8 = (p.get("head_sha") or "")[:8]
+    # TT 개선#3c R1: 교차 리뷰어의 판정도 인정 — env 리뷰어 + 카드 점유
+    # 리뷰어 + 마커 코멘트로 수령시킨 에이전트
+    verdict = review_verdict(i.get("comments"),
+                             ({ctx.reviewer, i.get("reviewer")}
+                              | _requested_reviewers(i, p["number"], sha8)) - {None},
+                             p["number"], sha8)
+    if verdict in ("approve", "request-changes") and i.get("reviewer"):
+        # 리뷰어 claim 해제 — 판정 기록됐으면 점유 반납(review-fix 시 작업자 assignee 보존)
+        actions.append({"agent": "probe", "issue": iid, "action": "release-reviewer",
+                        "reviewer": i["reviewer"], "pr": p["number"],
+                        "head_sha": p.get("head_sha", ""),
+                        "expected_version": i["version"],
+                        "reason": "판정 기록 — 리뷰어 점유 반납"})
+    if verdict == "request-changes":
+        marker = f"[review-fix #{p['number']}/{sha8}]"
+        if not _probe_marker(i, marker) and not i.get("busy_agents"):
+            # 진행 중 dispatch가 있으면 수정 스폰도 보류(JWW0) — 마커를
+            # 남기지 않아 다음 사이클 재판정.
+            actions.append({"agent": "probe", "issue": iid, "action": "review-fix",
+                            "pr": p["number"], "repo": pr_repo,
+                            "branch": p.get("branch", ""),
+                            "head_sha": p.get("head_sha", ""), "marker": marker,
+                            "reason": f"PR#{p['number']} 리뷰 request-changes — "
+                                      "review 반납+수정 위임"})
+        return True
+    if verdict is None:  # 미리뷰 또는 stale — (재)요청
+        marker = f"[review-req #{p['number']}/{sha8}]"
+        if _probe_marker(i, marker):
+            # 12MZ reviewer_session_failed — 발령 이력 head에 판정 없음:
+            # 세션 사망 정체 감지·재발령(W S3C 영구 정체 사고의 미커버 구간).
+            _maybe_review_retry(actions, i, p, pr_repo, now)
+            return True
+        # 진행 중 dispatch가 있으면 새 리뷰 스폰을 보류한다(JWW0) —
+        # 수동 재리뷰+자동 리뷰+자동 fix가 같은 카드에 동시 도는
+        # 사고(PR#87: 325/326/327/328)의 재발 방지. 마커 없이
+        # 건너뛰어 다음 사이클 재판정(진행 종료 후 정상 스폰).
+        if i.get("busy_agents"):
+            return True
+        # 카운터파트 라우팅 — 구현 에이전트(assignee) 기준 리뷰어 결정.
+        # 수령 방식(review-claim 선점)은 #3c 그대로, 대상 선정만 양 경로가
+        # 같은 카운터파트/가족 정책을 따른다(R1).
+        routed = pick_reviewer(i.get("assignee"), agents,
+                               busy_agents | claimed, ctx.rmap,
+                               fallback=ctx.fb)
+        # F1: 교차 수령 후보는 pick_reviewer 결과(라우팅 1순위 + 3a
+        # 폴백 체인)로 한정한다 — 전원 미가용이면 일반 유휴 스캔으로
+        # 확장하지 않는다(발령자가 지정하지 않은 에이전트의 수령 방지).
+        # pick_reviewer가 자기 리뷰 가드·오프라인·리스 보유를 이미
+        # 반영하므로, 남은 카드 수준 자격(review_eligible)만 재확인한다.
+        cross = None
+        if routed and routed not in busy_agents and routed not in claimed \
+                and routed != i.get("assignee") \
+                and policy.review_eligible(i, now=now, agent=routed,
+                                           low_risk=low_risk)[0]:
+            cross = routed
+        if cross:
+            actions.append({"agent": cross, "issue": iid, "action": "review-claim",
+                            "pr": p["number"], "repo": pr_repo,
+                            "branch": p.get("branch", ""),
+                            "head_sha": p.get("head_sha", ""), "marker": marker,
+                            "reason": f"PR#{p['number']} 리뷰 대기 — 유휴 에이전트 자동 수령(교차리뷰)"})
+            claimed.add(cross)  # R3: 한 사이클에 리뷰 1건
+        else:
+            # 활성 점유(타인 리뷰 lease)면 요청하지 않는다 — 마커도 없어
+            # lease 만료 후 다음 사이클 재판정(R3: 수령 거부 뒤 영구 차단 방지).
+            _ok, _why = policy.review_eligible(i, now=now, agent=routed or "~")
+            if _why != "review_occupied":
+                # 전원 미가용이면 reviewer 키 없이 액션만(실행측 레거시 폴백).
+                actions.append({"agent": "probe", "issue": iid,
+                                "action": "review-request",
+                                "pr": p["number"], "repo": pr_repo,
+                                "branch": p.get("branch", ""),
+                                "head_sha": p.get("head_sha", ""),
+                                "marker": marker,
+                                "reason": f"PR#{p['number']} CI green — 리뷰 요청 → "
+                                          f"{routed or ctx.reviewer or 'kanban-adapter'}",
+                                **({"reviewer": routed} if routed else {})})
+        return True
+    # approve — merge로 통과
+    if high_risk:
+        _high_risk_hold(actions, i, p)
+        return True  # gated 유지 — ⓪b 접촉 없음(FHH8)
+    gated.discard(iid)
+    # ZDNH(M4TW2J3V) — 승인 확정(head-bound verdict) 시점에
+    # tt/review-approved success 게시. 필수 상태 검사 등록 저장소에서
+    # 승인 전 병합이 기계 차단된다(실패-폐쇄 가드). 게시 실패 시 병합
+    # 후보에서 제외 → ⓪b [needs-merge] dedup 규약으로 인간 판단 요청.
+    if pr_repo in _review_status_repos() and p.get("head_sha"):
+        _sha = p["head_sha"]
+        if review_status_posted(pr_repo, _sha) != "success":
+            try:
+                review_status_post(pr_repo, _sha,
+                                   f"TT#{iid} 독립 리뷰 승인 ({_sha[:8]})")
+            except Exception as e:
+                print(time.strftime("%F %T"),
+                      f"review-status 게시 실패 #{p['number']} {_sha[:8]}: "
+                      f"{str(e)[:120]}", flush=True)
+                return True  # 병합 보류 — ⓪b에서 needs-merge(회차당 1회)
+    return False
+
+
+def _decide_pr_pipeline(ctx):
+    """⓪ probe 병합 파이프라인 — PR×카드 연결/수령/계약 검증 후 판정 경로 위임.
+
+    리뷰 게이트(N0AN, docs/review-gate.md): TT_REVIEW_AGENT 설정 시 승인 코멘트 필요."""
+    for p in ctx.snap.get("prs") or []:
         iid = pr_card_id(p)
-        i = by_id.get(iid) if iid else None
+        i = ctx.by_id.get(iid) if iid else None
         if not iid or i is None or i["state"] in ("done", "cancelled"):
             continue
-        if iid in tt_cards:
+        if iid in ctx.tt_cards:
             continue
-        # 저위험 클래스(M4DEK6WC-MQYS): docs/i18n 라벨 PR — 계약·회차 없어도 제출
-        # (review) 상태면 독립 리뷰+CI green 후 무인 병합 대상. server/runner 경로는
-        # execute에서 최종 차단(사람 승인 필요).
-        pr_labels = {x.strip().lower() for x in (p.get("labels") or [])}
-        card_labels = i.get("labels")
-        if isinstance(card_labels, str):
-            try:
-                card_labels = json.loads(card_labels)
-            except (ValueError, TypeError):
-                card_labels = []
-        low_risk = bool({x.strip().lower() for x in (card_labels or [])}
-                        & set(policy.LOW_RISK_LABELS)) or bool(pr_labels & set(policy.LOW_RISK_LABELS))
-        # 고위험 클래스(FHH8): 'risk:*' 라벨 카드/PR — probe 자동병합 휴면, 사람 승인 대기.
-        # 저위험과 동시에 걸리면 고위험이 이긴다(문서 라벨로 보안 변경 납치 방지).
-        high_risk = bool(policy.labels_in_class(card_labels or [], "high_risk")) or \
-            bool(policy.labels_in_class(pr_labels, "high_risk"))
-        if high_risk:
-            low_risk = False
+        low_risk, high_risk, pr_repo = _pr_risk(i, p)
         if (not i.get("work_contract") or (i.get("execution_attempt") or 0) < 1) and not low_risk:
             continue
         if low_risk and not i.get("work_contract") and i["state"] != "review":
@@ -1171,218 +1380,90 @@ def decide(snap):
         if p.get("isDraft"):
             continue  # draft 병합 시도 금지(HHP5) — ⓪b에서 ready 요청 1회
         want = card_repo(i)
-        pr_repo = p.get("repo") or REPO_CARDS["think-tank"]
         if want is None:
             # 카드 repo 표기/라벨 없음 — ID가 찍힌 PR의 repo를 추론 채택(발견 자체가 근거).
             # repo 명시 카드는 불일치 계속 차단(오repo 사고 방지) — GBE5 교훈 유지.
             want = pr_repo
         if want != pr_repo:
             continue
-        # ⓪c JXYS(M4MGV3BY) — in_progress 자동화: 리뷰 전용 자동화의 사각지대.
-        # in_progress+PR에서도 CI 실패는 위임, green 무보고는 독려→무반응 승격.
-        # 전이는 probe가, 완료(done)는 보고서 의존 유지 — probe가 보고를 위조하지 않는다.
         if i["state"] == "in_progress" and not i.get("busy_agents"):
-            att_ip = i.get("execution_attempt") or 0
-            sha8_ip = (p.get("head_sha") or "")[:8]
-            checks_ip = p.get("checks") or []
-            states_ip = [c.get("state") for c in checks_ip]
-            fails_ip = [x for x in states_ip if x == "FAILURE"]
-            # 1) CI 실패 → 기존 ci-fix 흐름(위임 대상 동일) — 실패 PR은 미완성이어서 안전
-            if fails_ip and os.environ.get("TT_CI_FIX_AGENT", "kanban-adapter"):
-                marker_ip = f"[ci-fix-ip a{att_ip} #{p['number']}/{sha8_ip}]"
-                sup_ip, since_ip = _suppressed(i, "ci_failed_ip",
-                                               f"#{p['number']}/{sha8_ip}")
-                if not sup_ip and not _probe_marker(i, marker_ip):
-                    n_ip = failure_rules.suppress_n()
-                    scope_ip = f"#{p['number']}/{sha8_ip}"
-                    if not (n_ip and _repeat_count(
-                            i, rf"\[ci-fix-ip a\d+ {re.escape(scope_ip)}\]",
-                            since_ip) >= n_ip):
-                        actions.append({"agent": "dispatchd", "issue": iid,
-                                        "action": "ci-fix", "marker": marker_ip,
-                                        "att": att_ip, "pr": p["number"], "repo": pr_repo,
-                                        "branch": p.get("branch", ""),
-                                        "head_sha": p.get("head_sha", ""),
-                                        "cycle_id": snap.get("cycle_id"),
-                                        "checks_failed": [c.get("name") or "?" for c in checks_ip
-                                                          if c.get("state") == "FAILURE"]})
+            if _decide_in_progress(ctx, i, p, iid, pr_repo):
                 continue
-            # 2) green + 무보고 → 독려 1회 → 무반응 승격. head가 바뀌면 새 sha의
-            #    독려 마커가 새로 필요 — 타이머가 자연 리셋(점진 push 납치 방지).
-            if ci_passed(p):
-                smarker = f"[submit-remind a{att_ip} #{p['number']}/{sha8_ip}]"
-                amarker = f"[submission-adopt a{att_ip} #{p['number']}/{sha8_ip}]"
-                if _probe_marker(i, amarker):
-                    continue  # 이미 승격됨 — 승격 후에도 보고 제출은 가능
-                if not _probe_marker(i, smarker):
-                    actions.append({"agent": "probe", "issue": iid,
-                                    "action": "submit-remind", "marker": smarker,
-                                    "att": att_ip, "pr": p["number"], "repo": pr_repo,
-                                    "head_sha": p.get("head_sha", ""),
-                                    "reason": f"PR#{p['number']} CI green — 완료 보고 제출"
-                                              "(tt submit --report)이 review 진입"})
-                    continue
-                sc = next((c for c in (i.get("comments") or [])
-                           if c.get("author") == "probe"
-                           and smarker in (c.get("body") or "")), None)
-                sdt = _iso(_comment_ts(sc)) if sc else None
-                if not sdt or _lease_held(i, now):
-                    continue  # 유효 임대 = 활동 중 — 무반응이 아님
-                if (datetime.fromisoformat(now) - sdt).total_seconds() <= \
-                        _relay_timer_s(i.get("assignee") or "", agents):
-                    continue  # 독려 타이머 미경과(hook 1h / relay 6h)
-                if any((x.get("author") or "") not in _RELAY_OBSERVERS
-                       and not str(x.get("author") or "").startswith("runner")
-                       and _comment_after(x, sdt, sc.get("id") or 0)
-                       for x in (i.get("comments") or [])):
-                    continue  # 응답·활동 중 — 승격 금지
-                actions.append({"agent": "probe", "issue": iid,
-                                "action": "submission-adopt", "marker": amarker,
-                                "att": att_ip, "pr": p["number"], "repo": pr_repo,
-                                "head_sha": p.get("head_sha", ""),
-                                "remind_ts": _comment_ts(sc),
-                                "remind_id": sc.get("id") or 0,
-                                "expected_version": i["version"],
-                                "reason": f"PR#{p['number']} green 무보고 — 기계적 승격"
-                                          "(review). 완료 보고는 승격 후에도 유효"})
-                continue
-        # pr_no_checks(규칙표 §4): 확인된 checks 0건([]) PR만 판정 대상 — 유효 리뷰
-        # 판정이 있으면 그 판정을 따르고(approve→병합 후보, request-changes→review-fix),
-        # 무판정이면 리뷰 요청. 기존은 무응답(needs-merge 오표기)이었다.
-        # checks=None(조회 실패, collect_prs)은 관측 불가 — 0건 취급 금지(리뷰 R1:
-        # CI 조회 오류의 병합 우회 방지). 게이트 off 레거시 모드는 기존 무응답 유지.
         no_checks = p.get("checks") == []
-        if ci_passed(p) or (no_checks and (reviewer or low_risk)):
-            if reviewer or low_risk:
+        if ci_passed(p) or (no_checks and (ctx.reviewer or low_risk)):
+            if ctx.reviewer or low_risk:
                 if i["state"] != "review":
                     # 게이트 on: 제출 전 카드는 리뷰·병합 대상 아님 — 움직이는 대상 리뷰 낭비 방지.
                     # agent가 보고 제출(state=review)하면 다음 라운드에서 판정.
                     continue
-                gated.add(iid)
-                sha8 = (p.get("head_sha") or "")[:8]
-                # TT 개선#3c R1: 교차 리뷰어의 판정도 인정 — env 리뷰어 + 카드 점유
-                # 리뷰어 + 마커 코멘트로 수령시킨 에이전트
-                verdict = review_verdict(i.get("comments"),
-                                         ({reviewer, i.get("reviewer")}
-                                          | _requested_reviewers(i, p["number"], sha8)) - {None},
-                                         p["number"], sha8)
-                if verdict in ("approve", "request-changes") and i.get("reviewer"):
-                    # 리뷰어 claim 해제 — 판정 기록됐으면 점유 반납(review-fix 시 작업자 assignee 보존)
-                    actions.append({"agent": "probe", "issue": iid, "action": "release-reviewer",
-                                    "reviewer": i["reviewer"], "pr": p["number"],
-                                    "head_sha": p.get("head_sha", ""),
-                                    "expected_version": i["version"],
-                                    "reason": "판정 기록 — 리뷰어 점유 반납"})
-                if verdict == "request-changes":
-                    marker = f"[review-fix #{p['number']}/{sha8}]"
-                    if not _probe_marker(i, marker) and not i.get("busy_agents"):
-                        # 진행 중 dispatch가 있으면 수정 스폰도 보류(JWW0) — 마커를
-                        # 남기지 않아 다음 사이클 재판정.
-                        actions.append({"agent": "probe", "issue": iid, "action": "review-fix",
-                                        "pr": p["number"], "repo": pr_repo,
-                                        "branch": p.get("branch", ""),
-                                        "head_sha": p.get("head_sha", ""), "marker": marker,
-                                        "reason": f"PR#{p['number']} 리뷰 request-changes — "
-                                                  "review 반납+수정 위임"})
+                ctx.gated.add(iid)
+                if _decide_verdict(ctx, i, p, iid, pr_repo, low_risk, high_risk, no_checks):
                     continue
-                if verdict is None:  # 미리뷰 또는 stale — (재)요청
-                    marker = f"[review-req #{p['number']}/{sha8}]"
-                    if _probe_marker(i, marker):
-                        # 12MZ reviewer_session_failed — 발령 이력 head에 판정 없음:
-                        # 세션 사망 정체 감지·재발령(W S3C 영구 정체 사고의 미커버 구간).
-                        _maybe_review_retry(actions, i, p, pr_repo, now)
-                    else:
-                        # 진행 중 dispatch가 있으면 새 리뷰 스폰을 보류한다(JWW0) —
-                        # 수동 재리뷰+자동 리뷰+자동 fix가 같은 카드에 동시 도는
-                        # 사고(PR#87: 325/326/327/328)의 재발 방지. 마커 없이
-                        # 건너뛰어 다음 사이클 재판정(진행 종료 후 정상 스폰).
-                        if i.get("busy_agents"):
-                            continue
-                        # 카운터파트 라우팅 — 구현 에이전트(assignee) 기준 리뷰어 결정.
-                        # 수령 방식(review-claim 선점)은 #3c 그대로, 대상 선정만 양 경로가
-                        # 같은 카운터파트/가족 정책을 따른다(R1).
-                        routed = pick_reviewer(i.get("assignee"), agents,
-                                               busy_agents | claimed, rmap,
-                                               fallback=fb)
-                        # F1: 교차 수령 후보는 pick_reviewer 결과(라우팅 1순위 + 3a
-                        # 폴백 체인)로 한정한다 — 전원 미가용이면 일반 유휴 스캔으로
-                        # 확장하지 않는다(발령자가 지정하지 않은 에이전트의 수령 방지).
-                        # pick_reviewer가 자기 리뷰 가드·오프라인·리스 보유를 이미
-                        # 반영하므로, 남은 카드 수준 자격(review_eligible)만 재확인한다.
-                        cross = None
-                        if routed and routed not in busy_agents and routed not in claimed \
-                                and routed != i.get("assignee") \
-                                and policy.review_eligible(i, now=now, agent=routed,
-                                                           low_risk=low_risk)[0]:
-                            cross = routed
-                        if cross:
-                            actions.append({"agent": cross, "issue": iid, "action": "review-claim",
-                                            "pr": p["number"], "repo": pr_repo,
-                                            "branch": p.get("branch", ""),
-                                            "head_sha": p.get("head_sha", ""), "marker": marker,
-                                            "reason": f"PR#{p['number']} 리뷰 대기 — 유휴 에이전트 자동 수령(교차리뷰)"})
-                            claimed.add(cross)  # R3: 한 사이클에 리뷰 1건
-                        else:
-                            # 활성 점유(타인 리뷰 lease)면 요청하지 않는다 — 마커도 없어
-                            # lease 만료 후 다음 사이클 재판정(R3: 수령 거부 뒤 영구 차단 방지).
-                            _ok, _why = policy.review_eligible(i, now=now, agent=routed or "~")
-                            if _why != "review_occupied":
-                                # 전원 미가용이면 reviewer 키 없이 액션만(실행측 레거시 폴백).
-                                actions.append({"agent": "probe", "issue": iid,
-                                                "action": "review-request",
-                                                "pr": p["number"], "repo": pr_repo,
-                                                "branch": p.get("branch", ""),
-                                                "head_sha": p.get("head_sha", ""),
-                                                "marker": marker,
-                                                "reason": f"PR#{p['number']} CI green — 리뷰 요청 → "
-                                                          f"{routed or reviewer or 'kanban-adapter'}",
-                                                **({"reviewer": routed} if routed else {})})
-                    continue
-                # approve — 아래 merge로 통과
-                if high_risk:
-                    _high_risk_hold(actions, i, p)
-                    continue  # gated 유지 — ⓪b 접촉 없음(FHH8)
-                gated.discard(iid)
-                # ZDNH(M4TW2J3V) — 승인 확정(head-bound verdict) 시점에
-                # tt/review-approved success 게시. 필수 상태 검사 등록 저장소에서
-                # 승인 전 병합이 기계 차단된다(실패-폐쇄 가드). 게시 실패 시 병합
-                # 후보에서 제외 → ⓪b [needs-merge] dedup 규약으로 인간 판단 요청.
-                if pr_repo in _review_status_repos() and p.get("head_sha"):
-                    _sha = p["head_sha"]
-                    if review_status_posted(pr_repo, _sha) != "success":
-                        try:
-                            review_status_post(pr_repo, _sha,
-                                               f"TT#{iid} 독립 리뷰 승인 ({_sha[:8]})")
-                        except Exception as e:
-                            print(time.strftime("%F %T"),
-                                  f"review-status 게시 실패 #{p['number']} {_sha[:8]}: "
-                                  f"{str(e)[:120]}", flush=True)
-                            continue  # 병합 보류 — ⓪b에서 needs-merge(회차당 1회)
             if high_risk:
-                _high_risk_hold(actions, i, p)
-                gated.add(iid)  # ⓪b가 needs-merge로 재알림하지 않게(FHH8)
+                _high_risk_hold(ctx.actions, i, p)
+                ctx.gated.add(iid)  # ⓪b가 needs-merge로 재알림하지 않게(FHH8)
                 continue
             merge_reason = (f"리뷰 판정 대체(checks 0건) + 카드 계약/수령 검증 — gh pr merge ({pr_repo})"
                             if no_checks else
                             f"CI green + 카드 계약/수령 검증 — gh pr merge ({pr_repo})")
-            actions.append({"agent": "probe", "issue": iid, "action": "merge", "pr": p["number"],
-                            "head_sha": p.get("head_sha", ""),
-                            "repo": pr_repo, "low_risk": bool(low_risk),
-                            **({"no_ci": True} if no_checks else {}),
-                            "reason": merge_reason})
+            ctx.actions.append({"agent": "probe", "issue": iid, "action": "merge", "pr": p["number"],
+                                "head_sha": p.get("head_sha", ""),
+                                "repo": pr_repo, "low_risk": bool(low_risk),
+                                **({"no_ci": True} if no_checks else {}),
+                                "reason": merge_reason})
 
-    # ⓪b review 카드 중 병합 불가 후보 — 사람 판단 요청 코멘트 (M3R7M0ZR-YF99).
-    # merge 후보(⓪)에 없는 review 카드만. 회차 마커 '[needs-merge a<n>'로 회차당 1회.
-    # 리뷰 게이트로 보류 중인 카드(gated)도 제외 — review-request/review-fix가 담당.
-    merged_targets = {a["issue"] for a in actions if a["action"] == "merge"} | gated
+
+def _decide_draft_pr(ctx, i, att, prs_for):
+    """⓪b draft PR 경로 — 병합·ci-fix 판정 불가. ready 요청 1회(마커 dedup) 후 무음.
+
+    draft_merge_loop(규칙표 §4): ready 요청 후에도 경과하면 사람 1회 통보(dedup) 후 중지.
+    draft 판정은 needs-merge dedup보다 먼저 — 구 needs-merge 마커가 draft의
+    ready 요청·48h 사람 통보를 가리지 않게(리뷰 R2). True = 처리됨(호출자 continue)."""
+    actions = ctx.actions
+    drafts = [p for p in prs_for if p.get("isDraft")]
+    dscope = f"#{drafts[0]['number']}"
+    dsup, dsince = _suppressed(i, "draft_merge_loop", dscope)
+    dn = failure_rules.suppress_n()
+    if dsup:
+        print(time.strftime("%F %T"),
+              f"억제 중 (draft_merge_loop, {dscope}) — draft 대응 스킵(§6)", flush=True)
+        return True
+    marker = f"[draft-flagged {dscope}]"
+    if dn and _repeat_count(i, rf"\[draft-flagged {re.escape(dscope)}\]",
+                            dsince) >= dn:
+        _escalate(actions, i, "draft_merge_loop", dscope, dn)
+        return True
+    if not any(marker in (c.get("body") or "") for c in (i.get("comments") or [])
+               if c.get("author") == "probe"):
+        actions.append({"agent": "probe", "issue": i["id"], "action": "review-note",
+                        "marker": marker,
+                        "reason": f"draft PR#{drafts[0]['number']} — ready for review "
+                                  "요청(준비되면 draft 해제)"})
+        return True
+    if _draft_stalled(i, drafts[0]["number"], ctx.snap.get("now") or ""):
+        dh = f"[needs-human-draft #{drafts[0]['number']}]"
+        if not any(dh in (c.get("body") or "") for c in (i.get("comments") or [])):
+            actions.append({"agent": "probe", "issue": i["id"], "action": "needs-human",
+                            "note": f"{dh} draft PR#{drafts[0]['number']} ready 전환 없이 "
+                                    f"병합 판정 반복(TT_DRAFT_STALL_H 경과) — 사람 판단 대기"})
+    return True
+
+
+def _decide_needs_merge(ctx):
+    """⓪b review 카드 중 병합 불가 후보 — 사람 판단 요청 코멘트 (M3R7M0ZR-YF99).
+
+    merge 후보(⓪)에 없는 review 카드만. 회차 마커 '[needs-merge a<n>'로 회차당 1회.
+    리뷰 게이트로 보류 중인 카드(gated)도 제외 — review-request/review-fix가 담당."""
+    issues, actions = ctx.issues, ctx.actions
+    merged_targets = {a["issue"] for a in actions if a["action"] == "merge"} | ctx.gated
     for i in issues:
         if i["state"] != "review" or i["id"] in merged_targets:
             continue
         if not i.get("work_contract") or (i.get("execution_attempt") or 0) < 1:
             continue
         att = i.get("execution_attempt") or 0
-        prs_for = [p for p in snap.get("prs") or [] if pr_card_id(p) == i["id"]]
-        context = (snap.get("pr_context") or {}).get(i["id"], [])
+        prs_for = [p for p in ctx.snap.get("prs") or [] if pr_card_id(p) == i["id"]]
+        context = (ctx.snap.get("pr_context") or {}).get(i["id"], [])
         if not prs_for and context:
             states = {p.get("state") for p in context}
             if states <= {"MERGED", "CLOSED"}:
@@ -1403,40 +1484,11 @@ def decide(snap):
                                 "repo": repo, "pr": prn, "marker": amarker,
                                 "reason": f"코멘트 PR URL 역기입 — {repo}#{prn} 채택"})
                 break
-        # draft 판정은 needs-merge dedup보다 먼저 — 구 needs-merge 마커가 draft의
-        # ready 요청·48h 사람 통보를 가리지 않게(리뷰 R2).
+        # draft 판정은 needs-merge dedup보다 먼저(리뷰 R2) — 위 _decide_draft_pr.
         drafts = [p for p in prs_for if p.get("isDraft")]
         if drafts and len(drafts) == len(prs_for):
-            # 반복 사건 억제(§6): (draft_merge_loop, #pr) — ready 요청이 N번 반복되면
-            # 사람 통보 후 스킵. 억제 중이면 48h 통보도 포함해 모든 자동 대응 중단.
-            dscope = f"#{drafts[0]['number']}"
-            dsup, dsince = _suppressed(i, "draft_merge_loop", dscope)
-            dn = failure_rules.suppress_n()
-            if dsup:
-                print(time.strftime("%F %T"),
-                      f"억제 중 (draft_merge_loop, {dscope}) — draft 대응 스킵(§6)", flush=True)
+            if _decide_draft_pr(ctx, i, att, prs_for):
                 continue
-            # 전부 draft — 병합·ci-fix 판정 불가. ready 요청 1회(마커 dedup) 후 무음.
-            # draft_merge_loop(규칙표 §4): ready 요청 후에도 경과하면 사람 1회 통보(dedup) 후 중지.
-            marker = f"[draft-flagged {dscope}]"
-            if dn and _repeat_count(i, rf"\[draft-flagged {re.escape(dscope)}\]",
-                                    dsince) >= dn:
-                _escalate(actions, i, "draft_merge_loop", dscope, dn)
-                continue
-            if not any(marker in (c.get("body") or "") for c in (i.get("comments") or [])
-                       if c.get("author") == "probe"):
-                actions.append({"agent": "probe", "issue": i["id"], "action": "review-note",
-                                "marker": marker,
-                                "reason": f"draft PR#{drafts[0]['number']} — ready for review "
-                                          "요청(준비되면 draft 해제)"})
-                continue
-            if _draft_stalled(i, drafts[0]["number"], snap.get("now") or ""):
-                dh = f"[needs-human-draft #{drafts[0]['number']}]"
-                if not any(dh in (c.get("body") or "") for c in (i.get("comments") or [])):
-                    actions.append({"agent": "probe", "issue": i["id"], "action": "needs-human",
-                                    "note": f"{dh} draft PR#{drafts[0]['number']} ready 전환 없이 "
-                                            f"병합 판정 반복(TT_DRAFT_STALL_H 경과) — 사람 판단 대기"})
-            continue
         marker = f"[needs-merge a{att}]"
         # 반복 사건 억제(§6): (no_pr, 카드) — 'PR 없음' 노트가 N회차면 사람 통보 후 스킵.
         nscope = i["id"]
@@ -1454,7 +1506,7 @@ def decide(snap):
             # 이미 needs-merge 노트 발행 — PR이 여전히 없을 때만 스탈 재평가 후 무음
             # (codex P2: PENDING/FAILURE/draft PR 관측 중엔 'PR 없음' 공지 금지).
             if not prs_for:
-                sa = _stale_act(i, att, snap.get("now") or "")
+                sa = _stale_act(i, att, ctx.snap.get("now") or "")
                 if sa:
                     actions.append(sa)
             continue
@@ -1487,7 +1539,7 @@ def decide(snap):
                     continue  # same head 재위임 금지 — 새 커밋(head 변경) 시에만 재판정
                 actions.append({"agent": "dispatchd", "issue": i["id"], "action": "ci-fix",
                                 "pr": p0["number"], "repo": p0.get("repo", ""),
-                                "cycle_id": snap.get("cycle_id"),
+                                "cycle_id": ctx.snap.get("cycle_id"),
                                 "branch": p0.get("branch", ""), "head_sha": p0.get("head_sha", ""),
                                 "checks_failed": [c.get("name") or "?" for p3 in prs_for
                                                   for c in p3.get("checks") or []
@@ -1500,12 +1552,12 @@ def decide(snap):
             else:
                 continue  # PENDING/진행 중 — 판정 보류, 다음 라운드 재확인
         else:
-            age = _age_min(snap.get("now") or "", i.get("updated_at") or "")
+            age = _age_min(ctx.snap.get("now") or "", i.get("updated_at") or "")
             if age is None or age < _review_grace_min():
                 continue  # PR 생성 유예 — 성급한 'PR 없음' 코멘트 금지
             # 스탈 공지: 'PR 없음' review 카드가 N시간 지속 — 사일런트 반복 방지.
             # (needs-merge 노트는 attempt당 1회 dedup이라 사이클 카운트 불가 → 연령 기반)
-            sa = _stale_act(i, att, snap.get("now") or "")
+            sa = _stale_act(i, att, ctx.snap.get("now") or "")
             if sa:
                 actions.append(sa)
             reason = "PR 미확인(미생성·provider 미지원·조회 실패 가능) — 유효 TT 보고 제출 필요"
@@ -1520,21 +1572,170 @@ def decide(snap):
             judge.run_advisory("C2", {"card": i["id"], "input": {
                 "labels": i.get("labels"), "repo_marker": bool(card_repo(i)),
                 "title": i.get("title", "")}},
-                f"review-note:{reason}", cycle_id=snap.get("cycle_id"))
+                f"review-note:{reason}", cycle_id=ctx.snap.get("cycle_id"))
         actions.append({"agent": "probe", "issue": i["id"], "action": "review-note",
                         "reason": f"{reason} — 사람 판단 대기"})
 
-    # ②b BG97(M4MGV3B7) — 재작업 전달 보장. 데몬 [fix-stall] 소비(원 워커 재발령
-    # 1회 재시도)와 relay 마커 무반응 양도(todo 회귀). dedup은 (사유,pr,sha,attempt) —
-    # docs/embedding-daemon-design.md §2 소비 계약. 소비자 재확인 의무(§2): 마커의
-    # PR·head·attempt가 현재값과 일치할 때만 유효 — 과거 이벤트를 현재 회차로
-    # 재태깅하지 않는다(리뷰 R1).
-    for p in snap.get("prs") or []:
+
+def _consume_fix_stall(ctx, i, p, iid, pr_no, sha8, pr_repo, att, comments, rmarker):
+    """②b-1 [fix-stall] 소비 — 위임 후 미실행 정체. 같은 (pr,sha,attempt) 재시도 1회.
+
+    유효 임대는 활동 중 — 재발령 금지(리뷰 R2: 임대 검사는 양쪽 액션 공통 자격)."""
+    actions = ctx.actions
+    stalls = [c for c in comments if c.get("author") == "tt-embedding-daemon"
+              and (c.get("body") or "").startswith("[fix-stall]")]
+    for c in reversed(stalls):
+        fs = _fix_stall_fields(c.get("body") or "")
+        if not fs or fs.get("src_kind") != "review-fix":
+            continue
+        if fs.get("src_pr") != str(pr_no) or fs.get("src_head") != sha8:
+            continue  # 과거 head의 정체 — 현재 head는 재판정됐으므로 무시
+        if str(fs.get("attempt") or "") != str(att):
+            continue  # 과거 회차의 정체 — 현재 회차로 재태깅 금지(리뷰 R1)
+        _sdt = _comment_ts(c)
+        _sdtv = _iso(_sdt)
+        _sid = c.get("id") or 0
+        if _sdtv and any(
+                (x.get("author") or "") not in _RELAY_OBSERVERS
+                and not str(x.get("author") or "").startswith("runner")
+                and _comment_after(x, _sdtv, _sid)
+                for x in comments):
+            break  # stall 뒤 워커 응답·진행 — 이미 해소된 정체(리뷰 R2)
+        # stall 이후 최신 판정이 approve면 재작업은 이미 통과 — 재발령 금지(리뷰 R2)
+        _revs = ({ctx.reviewer, i.get("reviewer")}
+                 | _requested_reviewers(i, pr_no, sha8)) - {None, ""}
+        if review_verdict(comments, _revs, pr_no, sha8) == "approve":
+            break
+        actions.append({"agent": "probe", "issue": iid, "action": "review-fix-relay",
+                        "pr": pr_no, "repo": pr_repo,
+                        "branch": p.get("branch", ""),
+                        "head_sha": p.get("head_sha", ""), "att": att,
+                        "stall_ts": _sdt, "stall_id": _sid,
+                        "reason": f"PR#{pr_no} fix 위임 미실행 정체 — 원 워커 재발령"})
+        break
+
+
+def _consume_rework_stuck(ctx, i, p, iid, pr_no, sha8, pr_repo, att, comments, rmarker):
+    """②b-1b [rework-stuck] 소비(4J4S) — review-fix dispatch 실패(404·non-executor·
+    failed)의 재라우팅 1회. 소비자 재확인 의무(설계 §2): src_pr/src_head/attempt가
+    현재값과 다르면 과거 사건 — 무시(현재 회차로 재태깅 금지). 소비 전 src_* 역파싱
+    원문이 카드 코멘트에 존재해야 한다(설계 §3-2). relay 예산은 fix-stall과 공유 —
+    rmarker(pr,sha,att당 1회)가 dedup."""
+    actions = ctx.actions
+    rws = [c for c in comments if c.get("author") == "tt-embedding-daemon"
+           and (c.get("body") or "").startswith("[rework-stuck]")]
+    for c in reversed(rws):
+        fs = _rework_stuck_fields(c.get("body") or "")
+        if not fs or fs.get("kind") not in ("404", "non-executor", "failed"):
+            continue
+        if fs.get("src_pr") != str(pr_no) or fs.get("src_head") != sha8:
+            continue  # 과거 head의 실패 — 현재 head는 재판정됐으므로 무시
+        if str(fs.get("attempt") or "") != str(att):
+            continue  # 과거 회차의 실패 — 현재 회차로 재태깅 금지(리뷰 R1)
+        orig = _rework_src_marker(fs)
+        if not any(orig in (x.get("body") or "") for x in comments
+                   if x.get("author") == "probe"):
+            continue  # 마커가 가리키는 위임 원문 부재 — 소비 불가(설계 §3-2)
+        _sdt = _comment_ts(c)
+        _sdtv = _iso(_sdt)
+        _sid = c.get("id") or 0
+        if _sdtv and any(
+                (x.get("author") or "") not in _RELAY_OBSERVERS
+                and not str(x.get("author") or "").startswith("runner")
+                and _comment_after(x, _sdtv, _sid) for x in comments):
+            break  # 마커 뒤 워커 응답·진행 — 이미 해소된 정체(리뷰 R2)
+        _revs = ({ctx.reviewer, i.get("reviewer")}
+                 | _requested_reviewers(i, pr_no, sha8)) - {None, ""}
+        if review_verdict(comments, _revs, pr_no, sha8) == "approve":
+            break  # 실패 뒤 승인 — 재작업 대상 아님
+        actions.append({"agent": "probe", "issue": iid, "action": "review-fix-relay",
+                        "pr": pr_no, "repo": pr_repo,
+                        "branch": p.get("branch", ""),
+                        "head_sha": p.get("head_sha", ""), "att": att,
+                        "stall_ts": _sdt, "stall_id": _sid,
+                        "rs_kind": fs.get("kind"), "rs_target": fs.get("target"),
+                        "reason": f"PR#{pr_no} review-fix dispatch 실패"
+                                  f"({fs.get('kind')}) — 재라우팅"})
+        break
+
+
+def _relay_fallback(ctx, i, p, iid, pr_no, sha8, pr_repo, att, comments):
+    """②b-2 무반응 양도 — 현재 (pr,head,attempt)의 relay 마커만 소비한다(리뷰 R1).
+
+    과거 회차·head의 relay는 새 워커를 해치므로 회귀 입력에서 제외."""
+    now, agents, actions = ctx.now, ctx.agents, ctx.actions
+    relays = [c for c in comments if c.get("author") == "probe"
+              and "[rework-relay #" in (c.get("body") or "")]
+    if not relays or i.get("busy_agents"):
+        return
+    rc = None
+    for c in reversed(relays):
+        m = re.search(r"\[rework-relay #(\d+)/([0-9a-f]{8}) a(\d+)\]",
+                      c.get("body") or "")
+        if m and (int(m.group(1)), m.group(2).lower(), int(m.group(3))) == \
+                (pr_no, sha8, att):
+            rc = c
+            break
+    if rc is None:
+        return  # 현재 작업의 relay 없음 — 과거 이벤트로 회귀 금지(리뷰 R1)
+    # 재작업 가능한 state만 — blocked(사람 판단 대기)는 todo로 되돌리지 않는다(리뷰 R2)
+    if i["state"] != "review" or i.get("waiting_for") == "human":
+        return
+    rpr, rsha, ratt = pr_no, sha8, att
+    if _probe_marker(i, f"[rework-fallback a{ratt}]"):
+        return
+    # §6 공용 억제 계약 — 해제 마커 이후만 재집계, 사람 [unblocked]로 재개 가능(리뷰 R6)
+    sup, since_id = _suppressed(i, "rework_relay", f"#{rpr}/{rsha}")
+    if sup:
+        return
+    n = failure_rules.suppress_n()
+    if n and _repeat_count(i, r"\[rework-fallback a\d+\]", since_id) >= n:
+        _escalate(actions, i, "rework_relay", f"#{rpr}/{rsha}", n)
+        return
+    rts = _comment_ts(rc)
+    if _lease_held(i, now):
+        return  # 유효 임대 = 활동 중(Q05B claude 케이스) — 무반응이 아님
+    try:
+        rdt = datetime.fromisoformat(rts)
+    except ValueError:
+        return
+    if (datetime.fromisoformat(now) - rdt).total_seconds() <= \
+            _relay_timer_s(i.get("assignee") or "", agents):
+        return
+    # head 불변 — relay 이후 같은 PR의 다른 head 위임·요청 마커가 있으면 회귀 금지
+    if any(x.get("author") == "probe" and _comment_after(x, rdt, rc.get("id") or 0)
+           and f"#{rpr}/" in (x.get("body") or "")
+           and rsha not in (x.get("body") or "")
+           and ("[review-fix #" in (x.get("body") or "")
+                or "[review-req #" in (x.get("body") or "")
+                or "[ci-fix a" in (x.get("body") or ""))
+           for x in comments):
+        return
+    # 무활동 — relay 이후 관측자(probe·데몬·서버·보드·runner 계열) 외 코멘트만
+    # 활동으로 센다. runner 기록은 세션 수명 관측일 뿐 워커 진행 증거가 아니다(리뷰 R5).
+    if any((x.get("author") or "") not in _RELAY_OBSERVERS
+           and not str(x.get("author") or "").startswith("runner")
+           and _comment_after(x, rdt, rc.get("id") or 0)
+           for x in comments):
+        return
+    actions.append({"agent": "probe", "issue": iid, "action": "rework-fallback",
+                    "pr": rpr, "repo": pr_repo, "head_sha": p.get("head_sha", ""),
+                    "relay_ts": rts, "relay_id": rc.get("id") or 0,
+                    "att": ratt, "marker": f"[rework-fallback a{ratt}]",
+                    "reason": f"PR#{rpr} relay 무반응 — assignee 해제+todo 회귀"})
+
+
+def _decide_rework_relay(ctx):
+    """②b BG97(M4MGV3B7) — 재작업 전달 보장. 데몬 [fix-stall] 소비(원 워커 재발령
+    1회 재시도)와 relay 마커 무반응 양도(todo 회귀). dedup은 (사유,pr,sha,attempt) —
+    docs/embedding-daemon-design.md §2 소비 계약."""
+    now = ctx.now
+    for p in ctx.snap.get("prs") or []:
         iid = pr_card_id(p)
-        i = by_id.get(iid) if iid else None
+        i = ctx.by_id.get(iid) if iid else None
         if not iid or i is None or i["state"] in ("done", "cancelled"):
             continue
-        if iid in tt_cards:
+        if iid in ctx.tt_cards:
             continue
         pr_no, sha8 = p["number"], (p.get("head_sha") or "")[:8]
         pr_repo = p.get("repo") or REPO_CARDS.get("think-tank", "")
@@ -1542,163 +1743,44 @@ def decide(snap):
         att = i.get("execution_attempt") or 0
         rmarker = f"[rework-relay #{pr_no}/{sha8} a{att}]"
         # 1) [fix-stall] 소비 — 위임 후 미실행 정체. 같은 (pr,sha,attempt) 재시도 1회.
-        #    유효 임대는 활동 중 — 재발령 금지(리뷰 R2: 임대 검사는 양쪽 액션 공통 자격).
         if i["state"] == "review" and not i.get("busy_agents") and \
                 not _lease_held(i, now) and not _probe_marker(i, rmarker):
-            stalls = [c for c in comments if c.get("author") == "tt-embedding-daemon"
-                      and (c.get("body") or "").startswith("[fix-stall]")]
-            for c in reversed(stalls):
-                fs = _fix_stall_fields(c.get("body") or "")
-                if not fs or fs.get("src_kind") != "review-fix":
-                    continue
-                if fs.get("src_pr") != str(pr_no) or fs.get("src_head") != sha8:
-                    continue  # 과거 head의 정체 — 현재 head는 재판정됐으므로 무시
-                if str(fs.get("attempt") or "") != str(att):
-                    continue  # 과거 회차의 정체 — 현재 회차로 재태깅 금지(리뷰 R1)
-                _sdt = _comment_ts(c)
-                _sdtv = _iso(_sdt)
-                _sid = c.get("id") or 0
-                if _sdtv and any(
-                        (x.get("author") or "") not in _RELAY_OBSERVERS
-                        and not str(x.get("author") or "").startswith("runner")
-                        and _comment_after(x, _sdtv, _sid)
-                        for x in comments):
-                    break  # stall 뒤 워커 응답·진행 — 이미 해소된 정체(리뷰 R2)
-                # stall 이후 최신 판정이 approve면 재작업은 이미 통과 — 재발령 금지(리뷰 R2)
-                _revs = ({reviewer, i.get("reviewer")}
-                         | _requested_reviewers(i, pr_no, sha8)) - {None, ""}
-                if review_verdict(comments, _revs, pr_no, sha8) == "approve":
-                    break
-                actions.append({"agent": "probe", "issue": iid, "action": "review-fix-relay",
-                                "pr": pr_no, "repo": pr_repo,
-                                "branch": p.get("branch", ""),
-                                "head_sha": p.get("head_sha", ""), "att": att,
-                                "stall_ts": _sdt, "stall_id": _sid,
-                                "reason": f"PR#{pr_no} fix 위임 미실행 정체 — 원 워커 재발령"})
-                break
-            if any(a["issue"] == iid and a["action"] == "review-fix-relay" for a in actions):
+            _consume_fix_stall(ctx, i, p, iid, pr_no, sha8, pr_repo, att, comments, rmarker)
+            if any(a["issue"] == iid and a["action"] == "review-fix-relay" for a in ctx.actions):
                 continue  # 이번 회차 재발령 중 — 양도 판정은 다음 사이클
-        # 1b) [rework-stuck] 소비(4J4S) — review-fix dispatch 실패(404·non-executor·
-        #     failed)의 재라우팅 1회. 소비자 재확인 의무(설계 §2): src_pr/src_head/
-        #     attempt가 현재값과 다르면 과거 사건 — 무시(현재 회차로 재태깅 금지).
-        #     소비 전 src_* 역파싱 원문이 카드 코멘트에 존재해야 한다(설계 §3-2).
-        #     relay 예산은 fix-stall과 공유 — rmarker(pr,sha,att당 1회)가 dedup.
+        # 1b) [rework-stuck] 소비(4J4S) — review-fix dispatch 실패의 재라우팅 1회.
         if i["state"] == "review" and not i.get("busy_agents") and \
                 not _lease_held(i, now) and not _probe_marker(i, rmarker):
-            rws = [c for c in comments if c.get("author") == "tt-embedding-daemon"
-                   and (c.get("body") or "").startswith("[rework-stuck]")]
-            for c in reversed(rws):
-                fs = _rework_stuck_fields(c.get("body") or "")
-                if not fs or fs.get("kind") not in ("404", "non-executor", "failed"):
-                    continue
-                if fs.get("src_pr") != str(pr_no) or fs.get("src_head") != sha8:
-                    continue  # 과거 head의 실패 — 현재 head는 재판정됐으므로 무시
-                if str(fs.get("attempt") or "") != str(att):
-                    continue  # 과거 회차의 실패 — 현재 회차로 재태깅 금지(리뷰 R1)
-                orig = _rework_src_marker(fs)
-                if not any(orig in (x.get("body") or "") for x in comments
-                           if x.get("author") == "probe"):
-                    continue  # 마커가 가리키는 위임 원문 부재 — 소비 불가(설계 §3-2)
-                _sdt = _comment_ts(c)
-                _sdtv = _iso(_sdt)
-                _sid = c.get("id") or 0
-                if _sdtv and any(
-                        (x.get("author") or "") not in _RELAY_OBSERVERS
-                        and not str(x.get("author") or "").startswith("runner")
-                        and _comment_after(x, _sdtv, _sid) for x in comments):
-                    break  # 마커 뒤 워커 응답·진행 — 이미 해소된 정체(리뷰 R2)
-                _revs = ({reviewer, i.get("reviewer")}
-                         | _requested_reviewers(i, pr_no, sha8)) - {None, ""}
-                if review_verdict(comments, _revs, pr_no, sha8) == "approve":
-                    break  # 실패 뒤 승인 — 재작업 대상 아님
-                actions.append({"agent": "probe", "issue": iid, "action": "review-fix-relay",
-                                "pr": pr_no, "repo": pr_repo,
-                                "branch": p.get("branch", ""),
-                                "head_sha": p.get("head_sha", ""), "att": att,
-                                "stall_ts": _sdt, "stall_id": _sid,
-                                "rs_kind": fs.get("kind"), "rs_target": fs.get("target"),
-                                "reason": f"PR#{pr_no} review-fix dispatch 실패"
-                                          f"({fs.get('kind')}) — 재라우팅"})
-                break
+            _consume_rework_stuck(ctx, i, p, iid, pr_no, sha8, pr_repo, att, comments, rmarker)
         # 2) 무반응 양도 — 현재 (pr,head,attempt)의 relay 마커만 소비한다(리뷰 R1).
-        #    과거 회차·head의 relay는 새 워커를 해치므로 회귀 입력에서 제외.
-        relays = [c for c in comments if c.get("author") == "probe"
-                  and "[rework-relay #" in (c.get("body") or "")]
-        if not relays or i.get("busy_agents"):
-            continue
-        rc = None
-        for c in reversed(relays):
-            m = re.search(r"\[rework-relay #(\d+)/([0-9a-f]{8}) a(\d+)\]",
-                          c.get("body") or "")
-            if m and (int(m.group(1)), m.group(2).lower(), int(m.group(3))) == \
-                    (pr_no, sha8, att):
-                rc = c
-                break
-        if rc is None:
-            continue  # 현재 작업의 relay 없음 — 과거 이벤트로 회귀 금지(리뷰 R1)
-        # 재작업 가능한 state만 — blocked(사람 판단 대기)는 todo로 되돌리지 않는다(리뷰 R2)
-        if i["state"] != "review" or i.get("waiting_for") == "human":
-            continue
-        rpr, rsha, ratt = pr_no, sha8, att
-        if _probe_marker(i, f"[rework-fallback a{ratt}]"):
-            continue
-        # §6 공용 억제 계약 — 해제 마커 이후만 재집계, 사람 [unblocked]로 재개 가능(리뷰 R6)
-        sup, since_id = _suppressed(i, "rework_relay", f"#{rpr}/{rsha}")
-        if sup:
-            continue
-        n = failure_rules.suppress_n()
-        if n and _repeat_count(i, r"\[rework-fallback a\d+\]", since_id) >= n:
-            _escalate(actions, i, "rework_relay", f"#{rpr}/{rsha}", n)
-            continue
-        rts = _comment_ts(rc)
-        if _lease_held(i, now):
-            continue  # 유효 임대 = 활동 중(Q05B claude 케이스) — 무반응이 아님
-        try:
-            rdt = datetime.fromisoformat(rts)
-        except ValueError:
-            continue
-        if (datetime.fromisoformat(now) - rdt).total_seconds() <= \
-                _relay_timer_s(i.get("assignee") or "", agents):
-            continue
-        # head 불변 — relay 이후 같은 PR의 다른 head 위임·요청 마커가 있으면 회귀 금지
-        if any(x.get("author") == "probe" and _comment_after(x, rdt, rc.get("id") or 0)
-               and f"#{rpr}/" in (x.get("body") or "")
-               and rsha not in (x.get("body") or "")
-               and ("[review-fix #" in (x.get("body") or "")
-                    or "[review-req #" in (x.get("body") or "")
-                    or "[ci-fix a" in (x.get("body") or ""))
-               for x in comments):
-            continue
-        # 무활동 — relay 이후 관측자(probe·데몬·서버·보드·runner 계열) 외 코멘트만
-        # 활동으로 센다. runner 기록은 세션 수명 관측일 뿐 워커 진행 증거가 아니다(리뷰 R5).
-        if any((x.get("author") or "") not in _RELAY_OBSERVERS
-               and not str(x.get("author") or "").startswith("runner")
-               and _comment_after(x, rdt, rc.get("id") or 0)
-               for x in comments):
-            continue
-        actions.append({"agent": "probe", "issue": iid, "action": "rework-fallback",
-                        "pr": rpr, "repo": pr_repo, "head_sha": p.get("head_sha", ""),
-                        "relay_ts": rts, "relay_id": rc.get("id") or 0,
-                        "att": ratt, "marker": f"[rework-fallback a{ratt}]",
-                        "reason": f"PR#{rpr} relay 무반응 — assignee 해제+todo 회귀"})
+        _relay_fallback(ctx, i, p, iid, pr_no, sha8, pr_repo, att, comments)
 
-    # ③ 예산 소진 카드 — dispatch 대신 needs-human (auto 풀 전수)
-    for i in _auto_todo(issues, claimed):
+
+def _decide_budget(ctx):
+    """③ 예산 소진 카드 — dispatch 대신 needs-human (auto 풀 전수)."""
+    for i in _auto_todo(ctx.issues, ctx.claimed):
         why = _budget_blocked(i)
         if why:
-            actions.append({"agent": actor or "dispatchd", "issue": i["id"],
-                            "action": "needs-human", "reason": why})
-    # ④ 자동 아카이브 스윕(M3ZRGTSF-N95X) — TT_ARCHIVE_AFTER_DAYS>0일 때 사이클당 1회
+            ctx.actions.append({"agent": ctx.actor or "dispatchd", "issue": i["id"],
+                                "action": "needs-human", "reason": why})
+
+
+def _decide_archive_sweep(ctx):
+    """④ 자동 아카이브 스윕(M3ZRGTSF-N95X) — TT_ARCHIVE_AFTER_DAYS>0일 때 사이클당 1회."""
     try:
         _ad = int(os.environ.get("TT_ARCHIVE_AFTER_DAYS", "0") or 0)
     except ValueError:
         _ad = 0
     if _ad > 0:
-        actions.append({"agent": "probe", "action": "archive-sweep", "days": _ad})
-    # ⑤ evidence_rejected(규칙표 §4) — done 거부 시스템 기록(tt-server DONE_GATE_MSG
-    # 코멘트)이 있는 비완료 카드: 담당 assignee 재제출 요청 노트(회차당 1회 dedup).
-    # 서버는 거부 시 state=review로 돌리므로 review 포함 — 실제 발생 상태(리뷰 R3).
-    for i in issues:
+        ctx.actions.append({"agent": "probe", "action": "archive-sweep", "days": _ad})
+
+
+def _decide_evidence_rejected(ctx):
+    """⑤ evidence_rejected(규칙표 §4) — done 거부 시스템 기록(tt-server DONE_GATE_MSG
+    코멘트)이 있는 비완료 카드: 담당 assignee 재제출 요청 노트(회차당 1회 dedup).
+    서버는 거부 시 state=review로 돌리므로 review 포함 — 실제 발생 상태(리뷰 R3)."""
+    now, agents, actions = ctx.now, ctx.agents, ctx.actions
+    for i in ctx.issues:
         if i.get("archived") or i["state"] in ("done", "cancelled"):
             continue
         att = i.get("execution_attempt") or 0
@@ -1710,7 +1792,7 @@ def decide(snap):
             continue
         if not _probe_marker(i, emarker):
             actions.append({"agent": "probe", "issue": i["id"], "action": "review-note",
-                            "marker": emarker, "attempt": att, "cycle_id": snap.get("cycle_id"),
+                            "marker": emarker, "attempt": att, "cycle_id": ctx.snap.get("cycle_id"),
                             "reason": f"done 거부(증거 없음/실패) 또는 무보고 병합 — "
                                       f"assignee 재제출 요청(계약 v2 3단계 보고, "
                                       f"tt submit {i['id']} --report)"})
@@ -1732,40 +1814,74 @@ def decide(snap):
                and _comment_after(x, edt, ec.get("id") or 0) for x in cs):
             continue  # 응답·활동 중
         _escalate(actions, i, "evidence_rejected", i["id"], 0)
-    # ⑥ C1 unknown 그림자(gate-failure-rules.md §5.1/§7) — 규칙표 어느 행에도
-    # 매칭되지 않는 tt-server 실패 기록: 판단기 rank 제안(shadow — 동작 불변, 로그만,
-    # 카드당 최신 1건). 사람이 로그를 검토해 표에 행을 추가하는 것이 유일한 반영 경로.
-    # 판단기 미구성이면 아무 일도 일어나지 않는다(규칙만 — 로그 접근도 없음, 리뷰 R1).
-    if judge.get_judge() is not None:
-        for i in issues:
-            if i.get("archived"):
+
+
+def _decide_c1_shadow(ctx):
+    """⑥ C1 unknown 그림자(gate-failure-rules.md §5.1/§7) — 규칙표 어느 행에도
+    매칭되지 않는 tt-server 실패 기록: 판단기 rank 제안(shadow — 동작 불변, 로그만,
+    카드당 최신 1건). 사람이 로그를 검토해 표에 행을 추가하는 것이 유일한 반영 경로.
+    판단기 미구성이면 아무 일도 일어나지 않는다(규칙만 — 로그 접근도 없음, 리뷰 R1)."""
+    if judge.get_judge() is None:
+        return
+    for i in ctx.issues:
+        if i.get("archived"):
+            continue
+        latest = None  # (ts, id, body) — 카드당 최신 미매칭 사건(리뷰 R7)
+        for c in (i.get("comments") or []):
+            if c.get("author") != "tt-server":
                 continue
-            latest = None  # (ts, id, body) — 카드당 최신 미매칭 사건(리뷰 R7)
-            for c in (i.get("comments") or []):
-                if c.get("author") != "tt-server":
-                    continue
-                body = c.get("body") or ""
-                if body.startswith(("done 증거 없음", "보고 접수")):
-                    continue  # 규칙표 행 존재(evidence_rejected) — C1 아님
-                if "verify 422" in body:
-                    continue  # verify_422 정식 행의 기계적 표식만 제외(리뷰 R8)
-                if not re.search(r"실패|오류|거부|거절|4\d\d", body):
-                    continue
-                k = (c.get("ts") or c.get("created_at") or "", c.get("id") or 0)
-                if latest is None or k > latest[:2]:
-                    latest = (k[0], k[1], body)
-            if latest is None:
+            body = c.get("body") or ""
+            if body.startswith(("done 증거 없음", "보고 접수")):
+                continue  # 규칙표 행 존재(evidence_rejected) — C1 아님
+            if "verify 422" in body:
+                continue  # verify_422 정식 행의 기계적 표식만 제외(리뷰 R8)
+            if not re.search(r"실패|오류|거부|거절|4\d\d", body):
                 continue
-            view = {"card": i["id"], "input": {"comment": latest[2][:800],
-                                               "state": i["state"]}}
-            ih = judge.input_hash("C1", view)
-            if _C1_SEEN.get(i["id"]) == ih:
-                continue  # 같은 입력 재판정 방지(프로세스 내 dedup)
-            _C1_SEEN[i["id"]] = ih
-            if judge.JudgeLog().seen(i["id"], "C1", ih):
-                continue  # 로그에 이미 판정된 입력(재시작 후에도 dedup)
-            judge.run_advisory("C1", view, "unknown", cycle_id=snap.get("cycle_id"))
-    return actions
+            k = (c.get("ts") or c.get("created_at") or "", c.get("id") or 0)
+            if latest is None or k > latest[:2]:
+                latest = (k[0], k[1], body)
+        if latest is None:
+            continue
+        view = {"card": i["id"], "input": {"comment": latest[2][:800],
+                                           "state": i["state"]}}
+        ih = judge.input_hash("C1", view)
+        if _C1_SEEN.get(i["id"]) == ih:
+            continue  # 같은 입력 재판정 방지(프로세스 내 dedup)
+        _C1_SEEN[i["id"]] = ih
+        if judge.JudgeLog().seen(i["id"], "C1", ih):
+            continue  # 로그에 이미 판정된 입력(재시작 후에도 dedup)
+        judge.run_advisory("C1", view, "unknown", cycle_id=ctx.snap.get("cycle_id"))
+
+
+def decide(snap):
+    """probe 판정 엔진 — 스냅샷을 읽어 액션 목록을 반환한다(AK87-1 위임형).
+
+    각 단계는 _decide_* 핸들러로 분리돼 있다: ①재개+②배정 → ⓪TT 라이프사이클
+    → ⓪PR 파이프라인 → ⓪b needs-merge → ②b 재작업 relay → ③예산 → ④아카이브
+    → ⑤evidence → ⑥C1 shadow. 순서·조기 종료는 분할 전과 동일하며, probe_skips는
+    snap에 기록(로그 계약), actions/claimed/gated는 단계 간 누적 상태다."""
+    if not snap.get("auto"):
+        return []
+    ctx = _DecideCtx(snap)
+    # TT 개선#3b: 배정 못 한 카드의 reason code — run_once가 로그로 남긴다.
+    # 에이전트 유무와 무관하게 전체 카드를 정책으로 스캔(상태 조합 매트릭스의 로그 실측).
+    snap["probe_skips"] = {}
+    ctx.skip = snap["probe_skips"]
+    for i in ctx.issues:
+        ok, code = policy.eligible(i, now=ctx.now, auto=True)
+        if not ok and code:
+            ctx.skip[i["id"]] = code
+    if _decide_assign(ctx):
+        return ctx.actions  # ① release-ready 재개 — 사이클 즉시 종료
+    _decide_tt_lifecycle(ctx)
+    _decide_pr_pipeline(ctx)
+    _decide_needs_merge(ctx)
+    _decide_rework_relay(ctx)
+    _decide_budget(ctx)
+    _decide_archive_sweep(ctx)
+    _decide_evidence_rejected(ctx)
+    _decide_c1_shadow(ctx)
+    return ctx.actions
 
 
 def api(url, path, method="GET", body=None):

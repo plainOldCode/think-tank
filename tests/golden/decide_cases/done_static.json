@@ -1,0 +1,36 @@
+{
+ "auto": true,
+ "now": "2026-09-29T21:00:00+0900",
+ "agents": [
+  {
+   "name": "hermes@mini",
+   "enabled": true,
+   "base_url": "http://127.0.0.1:7799",
+   "release_hook": true,
+   "receive_mode": "hook"
+  }
+ ],
+ "issues": [
+  {
+   "id": "D1",
+   "state": "done",
+   "parent_id": null,
+   "assignee": null,
+   "lease_expires": null,
+   "labels": [],
+   "priority": null,
+   "execution_attempt": 0,
+   "dispatches": 0,
+   "release_ready": false,
+   "waiting_for": null,
+   "title": "D1",
+   "brief_verify": "pytest -q",
+   "reviewer": "",
+   "archived": 0,
+   "version": 3,
+   "comments": [],
+   "updated_at": "2026-09-29T20:00:00+0900"
+  }
+ ],
+ "prs": []
+}

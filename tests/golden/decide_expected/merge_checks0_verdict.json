@@ -1,0 +1,23 @@
+[
+ {
+  "action": "release-reviewer",
+  "agent": "probe",
+  "expected_version": 3,
+  "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "issue": "M4ABCDEF-GH12",
+  "pr": 9,
+  "reason": "판정 기록 — 리뷰어 점유 반납",
+  "reviewer": "fallback@t"
+ },
+ {
+  "action": "merge",
+  "agent": "probe",
+  "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "issue": "M4ABCDEF-GH12",
+  "low_risk": false,
+  "no_ci": true,
+  "pr": 9,
+  "reason": "리뷰 판정 대체(checks 0건) + 카드 계약/수령 검증 — gh pr merge (plainOldCode/think-tank)",
+  "repo": "plainOldCode/think-tank"
+ }
+]
