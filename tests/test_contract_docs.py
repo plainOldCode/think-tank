@@ -95,11 +95,34 @@ def test_issue_응답_필드는_두_api문서에_모두_문서화돼_있다(tmp_
 
 
 def test_패리티는_미문서화_신규에서_적색이_된다(tmp_path_factory):
-    """GY52 RED 증명 — 생성 기반 검사가 드리프트를 잡는지 헬퍼 단위로 확인."""
-    assert _undocumented({"/issues/{issue_id}/new-undocumented"}, "", set()) == \
-        ["/issues/{issue_id}/new-undocumented"]
+    """GY52 RED 증명 — 미문서화 엔드포인트를 추가한 실제 앱에서 생성 기반 검사가
+    적색이 되고, 현재 트리(문서화된 앱)에서는 녹색이 된다."""
+    import sys
+    sys.path.insert(0, str(ROOT))
+    from fastapi import APIRouter
+    from fastapi.testclient import TestClient
+    from app import create_app
+
+    app = create_app(str(tmp_path_factory.mktemp("parity-red") / "tt.db"))
+    extra = APIRouter()
+
+    @extra.get("/issues/{issue_id}/new-undocumented")
+    def _undoc(issue_id: str):
+        return {}
+
+    app.include_router(extra)
+    app.openapi_schema = None  # create_app이 캐시한 스키마 재생성(GY52 RC — 드리프트 반영)
+    paths = {_doc_path(p) for p in app.openapi()["paths"]}
     s = (ROOT / "server/static/api.md").read_text()
-    assert _undocumented({"/issues"}, s, set()) == []
+    # 생성 경로 집합에 신규 엔드포인트가 있고, 문서에는 없다 → 적색(드리프트 감지)
+    # (_doc_path가 {issue_id}→{id} 정규화하므로 문서 축약형으로 비교)
+    assert "/issues/{id}/new-undocumented" in paths
+    assert "/issues/{id}/new-undocumented" not in s
+    assert _undocumented(paths, s, _PATH_ALLOWLIST) == ["/issues/{id}/new-undocumented"]
+    # 현재 트리의 문서화된 앱은 녹색
+    app2 = create_app(str(tmp_path_factory.mktemp("parity-green") / "tt.db"))
+    green = {_doc_path(p) for p in app2.openapi()["paths"]}
+    assert _undocumented(green, s, _PATH_ALLOWLIST) == []
 
 
 def test_두_api문서는_바이트_동일하다():
