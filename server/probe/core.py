@@ -1262,13 +1262,14 @@ def _agent_model_fam(agents, name):
     return None
 
 
-def _pick_dual_reviewers(ctx, i, busy, judged=()):
+def _pick_dual_reviewers(ctx, i, busy, judged=(), fams=()):
     """J2NJ — 모델 계열이 서로 다른 리뷰어 2인(주 라우팅+폴백 체인 순서 유지).
 
     구현자 자기 리뷰 가드(agent_family 기존 규약)는 유지하고, 모델 계열이
     겹치는 후보는 건너뛴다. 계열 미판정 에이전트는 이중 대상이 아니다.
-    judged는 이미 판정을 남긴 리뷰어(중재자 선정 시 제외). 2곳 미확보 시
-    빈 리스트 — 호출자가 단일 요청으로 폴백한다."""
+    judged는 이미 판정을 남긴 리뷰어, fams는 배제할 계열(기판정자 계열 —
+    중재자는 반드시 제3계열). 2곳 미확보 시 빈 리스트 — 호출자가 단일
+    요청으로 폴백한다."""
     a = (i.get("assignee") or "").strip()
     impl_fam = _impl_family(a)
     primary = route_reviewer(i.get("assignee"), ctx.rmap)
@@ -1283,7 +1284,7 @@ def _pick_dual_reviewers(ctx, i, busy, judged=()):
         if name is None or name in (busy or []):
             continue
         mfam = _agent_model_fam(ctx.agents, name)
-        if mfam is None or mfam in seen:
+        if mfam is None or mfam in seen or mfam in fams:
             continue
         picked.append((name, mfam))
         seen.add(mfam)
@@ -1292,12 +1293,12 @@ def _pick_dual_reviewers(ctx, i, busy, judged=()):
     return picked
 
 
-def _pick_dual_mediator(ctx, i, judged=()):
-    """J2NJ — 불일치 중재자: 양측 판정자를 제외하고 계열이 다른 에이전트.
+def _pick_dual_mediator(ctx, i, judged=(), judged_fams=()):
+    """J2NJ — 불일치 중재자: 기판정자(이름·계열)를 제외한 제3계열 에이전트.
 
-    계열 2곳 미확보 시 None — 호출자가 사람 판단 노트로 종결."""
+    계열 확보 실패 시 None — 호출자가 사람 판단 노트로 종결."""
     pairs = _pick_dual_reviewers(ctx, i, set(ctx.busy_agents) | set(ctx.claimed),
-                                 judged=judged)
+                                 judged=judged, fams=judged_fams)
     return pairs[0][0] if pairs else None
 
 
@@ -1318,35 +1319,45 @@ def _decide_verdict(ctx, i, p, iid, pr_repo, low_risk, high_risk, no_checks):
                              ({ctx.reviewer, i.get("reviewer")}
                               | _requested_reviewers(i, p["number"], sha8)) - {None},
                              p["number"], sha8)
-    # J2NJ(M54V6KY6-J2NJ) — 이중 판정 집계: 리뷰어별 최신 판정이 갈리면(승인+RC)
-    # 제3계열 중재자 1인에게 재요청한다(카드당 1회 — 마커 dedup). 중재 후에는
-    # latest-wins verdict가 최종(중재자 코멘트가 최신). 한쪽만 RC면 기존 단일
-    # 경로(review-fix)가 그대로 — 양측 승인은 아래 merge로 통과.
-    if policy.dual_review_eligible(i) and verdict is not None:
+    # J2NJ(M54V6KY6-J2NJ, agy RC 반영) — 이중 판정 집계:
+    # · 무판정 → 계열 상이 2인 동시 요청(None 경로)
+    # · 단독 승인(다른 리뷰어 무판정) → 대기 — 조기 병합 금지(결함 1)
+    # · 승인+RC 불일치 → 제3계열 중재자 1인 재요청(카드당 1회, 기판정자 이름·계열 제외)
+    # · 중재 요청 후 중재자 무판정 → 대기 — 기존 2인 최신 판정으로 종결 금지(결함 2)
+    # · 중재자 판정 도착 → latest-wins verdict(중재자 코멘트가 최신)로 기존 경로
+    # · 양측 승인 → merge, 단독 RC → 기존 review-fix
+    if policy.dual_review_eligible(i):
+        _req = _requested_reviewers(i, p["number"], sha8)
         _vdict = verdicts_all(i.get("comments"),
-                              ({ctx.reviewer, i.get("reviewer")}
-                               | _requested_reviewers(i, p["number"], sha8)) - {None},
+                              ({ctx.reviewer, i.get("reviewer")} | _req) - {None},
                               p["number"], sha8)
         _app = {a for a, v in _vdict.items() if v == "approve"}
         _rcs = {a for a, v in _vdict.items() if v == "request-changes"}
-        if _app and _rcs and not _probe_marker(i, f"[dual-tiebreak #{p['number']}/{sha8}]") \
-                and not i.get("busy_agents"):
-            mediator = _pick_dual_mediator(ctx, i, judged=_app | _rcs)
+        _pending = _req - set(_vdict)
+        _tb = f"[dual-tiebreak #{p['number']}/{sha8}]"
+        if _app and _rcs and not _probe_marker(i, _tb) and not i.get("busy_agents"):
+            _fams = {_agent_model_fam(ctx.agents, a) for a in (_app | _rcs)}
+            _fams.discard(None)
+            mediator = _pick_dual_mediator(ctx, i, judged=_app | _rcs, judged_fams=_fams)
             if mediator:
                 actions.append({"agent": "probe", "issue": iid, "action": "review-request",
                                 "pr": p["number"], "repo": pr_repo,
                                 "branch": p.get("branch", ""),
                                 "head_sha": p.get("head_sha", ""),
-                                "marker": f"[dual-tiebreak #{p['number']}/{sha8}]",
+                                "marker": _tb,
                                 "dual": True, "reviewer": mediator,
                                 "reason": f"PR#{p['number']} 이중 판정 불일치"
                                           f"(승인 {_sorted_names(_app)} vs RC {_sorted_names(_rcs)}) — "
                                           f"제3계열 중재 → {mediator}"})
             else:
                 actions.append({"agent": "probe", "issue": iid, "action": "review-note",
-                                "marker": f"[dual-tiebreak #{p['number']}/{sha8}]",
+                                "marker": _tb,
                                 "reason": "이중 판정 불일치 — 제3계열 중재자 없음, 사람 판단 대기"})
             return True
+        if _probe_marker(i, _tb) and _pending:
+            return True  # 결함 2 — 중재자 판정 대기
+        if _app and _pending:
+            return True  # 결함 1 — 단독 승인, 미판정 리뷰어 대기
     if verdict in ("approve", "request-changes") and i.get("reviewer"):
         # 리뷰어 claim 해제 — 판정 기록됐으면 점유 반납(review-fix 시 작업자 assignee 보존)
         actions.append({"agent": "probe", "issue": iid, "action": "release-reviewer",

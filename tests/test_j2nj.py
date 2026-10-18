@@ -171,3 +171,54 @@ def test_non_dual_카드는_기존_단일_경로다():
     i = issue(labels=["auto"])  # dual_review 없음
     acts = decide(snap([i], AGENTS, routing=ROUTING))
     assert acts and not any(a.get("dual") for a in acts)  # 기존 경로 유지
+
+
+def test_단독_승인은_나머지_리뷰어를_기다린다():
+    i = issue(comments=[req_comment("rev-a@t"), req_comment("rev-b@t"),
+                        verdict_comment("rev-a@t", "approve")])
+    acts = decide(snap([i], AGENTS, routing=ROUTING))
+    assert not [a for a in acts if a["action"] in ("merge", "review-fix", "review-request")]
+
+
+def test_중재자_판정이_없으면_기다린다():
+    i = issue(comments=[req_comment("rev-a@t"), req_comment("rev-b@t"),
+                        pc(f"[dual-tiebreak #9/{SHA8}] PR#9 이중 판정 불일치 — 제3계열 중재 → rev-c@t"),
+                        verdict_comment("rev-a@t", "approve"),
+                        verdict_comment("rev-b@t", "request-changes")])
+    acts = decide(snap([i], AGENTS, routing=ROUTING))
+    assert not [a for a in acts if a["action"] in ("merge", "review-fix")]
+
+
+def test_중재자_판정_도착시_최종_반영된다():
+    base = [req_comment("rev-a@t"), req_comment("rev-b@t"),
+            pc(f"[dual-tiebreak #9/{SHA8}] 중재 → rev-c@t"),
+            verdict_comment("rev-a@t", "approve"),
+            verdict_comment("rev-b@t", "request-changes")]
+    i = issue(comments=base + [verdict_comment("rev-c@t", "approve")])
+    assert len([a for a in decide(snap([i], AGENTS, routing=ROUTING))
+                if a["action"] == "merge"]) == 1
+    i2 = issue(comments=base + [verdict_comment("rev-c@t", "request-changes")])
+    assert len([a for a in decide(snap([i2], AGENTS, routing=ROUTING))
+                if a["action"] == "review-fix"]) == 1
+
+
+def test_기판정자와_같은_계열은_중재자에서_제외된다():
+    agents = [agent("rev-a@t", "gpt-6.1-sol"), agent("rev-b@t", "qwen3.8"),
+              agent("rev-d@t", "gpt-5")]  # rev-d = gpt — 기판정자 계열 중복
+    i = issue(comments=[req_comment("rev-a@t"), req_comment("rev-b@t"),
+                        verdict_comment("rev-a@t", "approve"),
+                        verdict_comment("rev-b@t", "request-changes")])
+    acts = decide(snap([i], agents, routing=ROUTING))
+    tb = [a for a in acts if "dual-tiebreak" in (a.get("marker") or "")]
+    assert len(tb) == 1 and "review-note" == tb[0]["action"]  # 제3계열 없음 → 사람 노트
+
+
+def test_제3계열이_있으면_그_중에서_중재자를_고른다():
+    agents = [agent("rev-a@t", "gpt-6.1-sol"), agent("rev-b@t", "qwen3.8"),
+              agent("rev-d@t", "gpt-5"), agent("rev-c@t", "gemini-3")]
+    i = issue(comments=[req_comment("rev-a@t"), req_comment("rev-b@t"),
+                        verdict_comment("rev-a@t", "approve"),
+                        verdict_comment("rev-b@t", "request-changes")])
+    acts = decide(snap([i], agents, routing=ROUTING))
+    tb = [a for a in acts if a["action"] == "review-request" and "dual-tiebreak" in a["marker"]]
+    assert len(tb) == 1 and tb[0]["reviewer"] == "rev-c@t"
