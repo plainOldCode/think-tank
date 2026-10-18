@@ -461,11 +461,222 @@ def pull(p: ClaimIn, ctx: Ctx = Depends(get_ctx)):
     return None
 
 
+def _patch_state_transition(c, row, p, fields, issue_id, effective):
+    """상태 전이 검증 — 게이트(자기발의 승격·전이 규칙)·done 증거 경로·lease 반납.
+
+    True 반환 시 gate_warn(warn 게이트에서 무증거 done)."""
+    gate = config.done_gate()
+    gate_warn = False
+    if not (p.state and p.state != row["state"]):
+        return False
+    if p.state not in dbmod.STATES:
+        raise HTTPException(422, f"bad state {p.state}")
+    # TT 개선#3d: 자기발의 카드의 todo 승격은 사람/트리아지만 — 명시 플래그 요구.
+    # R2: 같은 요청이 labels를 바꾸면 바뀐 라벨 기준으로 판정한다.
+    eff_labels = p.labels if p.labels is not None else (row["labels"] or "").split(",")
+    if p.state == "todo" and "self" in [l.strip() for l in eff_labels] \
+            and not p.promoted:
+        raise HTTPException(
+            409, "self 카드의 todo 승격은 사람/트리아지만 — promoted=true 필요 (TT 개선#3d)")
+    if not dbmod.can_transition(row["state"], p.state):
+        raise HTTPException(409, f"illegal transition {row['state']} -> {p.state}")
+    fields["state"] = p.state
+    fields["todo_since"] = dbmod.now() if p.state == "todo" else None
+    if p.state == "in_progress" and not row["started_at"]:
+        fields["started_at"] = dbmod.now()
+    if p.state == "done":
+        n_open = c.execute(
+            "SELECT COUNT(*) n FROM issues WHERE parent_id=? AND state NOT IN ('done','cancelled')",
+            (issue_id,)).fetchone()["n"]
+        if n_open:
+            raise HTTPException(409, f"child 미완료 {n_open}건 — 자식을 done/cancelled로 먼저 종결하세요")
+        labels_now = p.labels if p.labels is not None else [s for s in (row["labels"] or "").split(",") if s]
+        proof = p.completion_report
+        ev = service.find_evidence(c, issue_id, effective) if not proof and not service.requires_report(effective) else ""
+        fields.update(verified=0, verified_at=None, verified_evidence="",
+                      verification_status="unverified", completed_at=None)
+        if proof:
+            fields["completion_report"] = proof.model_dump_json()
+            fields["submission_revision"] = row["submission_revision"] + 1
+            fields["delivery_receipt"] = ""
+            fields["reviewer"] = None
+            if proof.result == "passed":
+                fields.update(service.reported_fields(proof.evidence))
+            # 제출의 종착지는 review. 현재 TT 판정에 연결된 probe verify
+            # 또는 명시적 인수계/승인 경로가 종결을 담당한다.
+            fields["state"] = "review"
+        elif "close" in labels_now and not ev:
+            raise HTTPException(422, "close 라벨 종결은 폐기됨. 승인은 tt verify --human \"한 줄 사유\"")
+        elif ev:
+            fields.update(service.reported_fields(ev))
+            fields["approval_path"] = "evidence-only"
+        elif gate == "gate" or service.requires_report(effective):
+            fields["state"] = "review"
+        else:
+            gate_warn = gate == "warn"
+            fields["approval_path"] = "direct"
+        if fields["state"] == "done":
+            fields["completed_at"] = dbmod.now()
+    if p.state in ("todo", "backlog", "done", "cancelled", "blocked"):
+        fields["assignee"] = "" if p.state in ("todo", "backlog") else row["assignee"]
+        fields.update({"lease_by": "", "lease_expires": None})
+        # blocked 사족은 blocked 이탈 시 자동 소거 (재-blocked 시 재입력)
+        fields.update({"waiting_for": "", "waiting_actor": "", "blocked_detail": "",
+                       "blocked_notified_at": None, "blocked_question": "",
+                       "blocked_options": "", "blocked_default": ""})
+    if fields.get("state") == "review":
+        # review = done 강등 대기: worker lease 반납 + blocked 사족 리셋(재진입 시 재알림)
+        fields.update({"lease_by": "", "lease_expires": None,
+                       "waiting_for": "", "waiting_actor": "", "blocked_detail": "",
+                       "blocked_notified_at": None, "blocked_question": "",
+                       "blocked_options": "", "blocked_default": ""})
+    return gate_warn
+
+
+def _patch_auto_promotion(row, p, fields):
+    """P8MN(M5283KGX-P8MN): auto 라벨 추가 = 자율 pull 승격 — VERIFY 필요.
+
+    같은 요청의 brief_verify 또는 기존 카드 값으로 충족한다. 이미 auto인
+    카드의 라벨 재설정은 재검사하지 않는다(승격 아님)."""
+    # P8MN(M5283KGX-P8MN): auto 라벨 추가 = 자율 pull 승격 — VERIFY 필요.
+    # 같은 요청의 brief_verify 또는 기존 카드 값으로 충족한다. 이미 auto인
+    # 카드의 라벨 재설정은 재검사하지 않는다(승격 아님).
+    cur_labels = [s.strip() for s in (row["labels"] or "").split(",") if s.strip()]
+    if "auto" in [l.strip().lower() for l in p.labels] and "auto" not in cur_labels:
+        eff_verify = p.brief_verify if p.brief_verify is not None else (row["brief_verify"] or "")
+        if not eff_verify.strip():
+            raise HTTPException(422, "auto 라벨 카드는 brief_verify(정확한 검증 명령)가 필요합니다 "
+                                "(P8MN — 자율 pull 전제)")
+def _patch_assignee_normalize(c, row, p, fields):
+    """DX88: 수동 지정도 정규화 — 별칭 치환·정크 거부·게이트 적용."""
+    if p.assignee == "":
+        fields["assignee"] = ""
+        fields.update({"lease_by": "", "lease_expires": None})
+    else:
+        # DX88: 수동 지정도 정규화 — 별칭 치환·정크 거부·게이트 적용
+        fields["assignee"] = _normalize_claim_agent(c, p.assignee)
+def _patch_field_updates(c, row, p, fields):
+    """스칼라 필드 갱신 — 검증이 필요한 auto 승격(P8MN)·assignee 정규화(DX88)는 전용 함수로."""
+    if p.acceptance is not None:
+        # 기존 카드 점진 보완 경로 — 생성 게이트와 달리 PATCH는 강제하지 않는다
+        if not p.acceptance.strip():
+            raise HTTPException(422, "acceptance는 빈 값으로 되돌릴 수 없다")
+        fields["acceptance"] = p.acceptance.strip()
+    if p.title is not None:
+        fields["title"] = p.title
+    if p.body is not None:
+        fields["body"] = p.body
+    if p.priority is not None:
+        fields["priority"] = p.priority
+    if p.clear_priority:
+        fields["priority"] = None
+    if p.labels is not None:
+        _patch_auto_promotion(row, p, fields)
+        fields["labels"] = ",".join(p.labels)
+    for _bf in ("brief_scope", "brief_verify", "brief_forbidden", "brief_timebox"):
+        _bv = getattr(p, _bf)
+        if _bv is not None:
+            fields[_bf] = _bv.strip()
+    if p.assignee is not None:
+        _patch_assignee_normalize(c, row, p, fields)
+    if p.reviewer is not None:
+        # lease는 probe가 조건부로 명시(R5) — reviewer 반납이 재작업자 lease를 덮지 않게 분리
+        fields["reviewer"] = p.reviewer or None
+        if p.reviewer == "" and row["lease_by"] == (row["reviewer"] or ""):
+            fields.update({"lease_by": "", "lease_expires": None})
+    if p.archived is not None:
+        fields["archived"] = 1 if p.archived else 0
+    # RPXH(M53PBDWJ-RPXH): premise_rework — probe가 반려 3회+에서 설정.
+    # 명시 갱신을 받고, 검증 종결(done)·새 수령(claim)에서 소거된다.
+    if p.premise_rework is not None:
+        fields["premise_rework"] = 1 if p.premise_rework else 0
+        if p.premise_rework and (row["execution_attempt"] or 0) < 3:
+            pass  # 상태는 probe 판단을 따른다 — 서버는 저장·표시·소거만 담당
+def _patch_blocked_gate(c, row, p, fields):
+    """blocked 사족 게이트(5722/HDPB).
+
+    waiting_for는 4종 enum만, 상태가 blocked일 때만 유효. HDPB: blocked "전이"는
+    게이트 형식(질문·선택지·무응답 기본값)이 필수 — 빈 waiting_for는 409.
+    기존 blocked 카드 사족 갱신은 기존값과 병합 판정."""
+    if p.state == "blocked" and row["state"] != "blocked":
+        if not (p.waiting_for or "").strip():
+            raise HTTPException(409, "blocked 전이는 waiting_for가 필요합니다 "
+                                f"({sorted(dbmod.WAITING_FOR)} 중 하나)")
+        fields.update(_validate_gate_fields(p.blocked_question, p.blocked_options,
+                                            p.blocked_default))
+    elif row["state"] == "blocked" and (
+            p.blocked_question is not None or p.blocked_options is not None
+            or p.blocked_default is not None):
+        fields.update(_validate_gate_fields(
+            p.blocked_question if p.blocked_question is not None else row["blocked_question"],
+            p.blocked_options if p.blocked_options is not None
+            else json.loads(row["blocked_options"] or "[]"),
+            p.blocked_default if p.blocked_default is not None else row["blocked_default"]))
+    if p.waiting_for is not None:
+        wf = p.waiting_for
+        if wf not in dbmod.WAITING_FOR:
+            raise HTTPException(422, f"waiting_for는 {sorted(dbmod.WAITING_FOR)} 중 하나")
+        if (fields.get("state") or row["state"]) != "blocked":
+            raise HTTPException(409, "waiting_for는 blocked 전이/blocked 상태에서만 설정 가능")
+        fields["waiting_for"] = wf
+        if p.waiting_actor is not None:
+            fields["waiting_actor"] = p.waiting_actor
+        if p.blocked_detail is not None:
+            fields["blocked_detail"] = p.blocked_detail
+    else:
+        if p.waiting_actor is not None:
+            fields["waiting_actor"] = p.waiting_actor
+        if p.blocked_detail is not None:
+            fields["blocked_detail"] = p.blocked_detail
+def _patch_parent_cycle(c, issue_id, p, fields):
+    """부모 설정 검증 — 자기 참조·사이클 금지."""
+    if p.clear_parent:
+        fields["parent_id"] = None
+    elif p.parent_id is not None:
+        if p.parent_id == issue_id:
+            raise HTTPException(422, "parent cannot be self")
+        service.get_issue(c, p.parent_id)
+        node = p.parent_id
+        while node:
+            if node == issue_id:
+                raise HTTPException(422, "cycle detected")
+            node = c.execute("SELECT parent_id FROM issues WHERE id=?", (node,)).fetchone()["parent_id"]
+        fields["parent_id"] = p.parent_id
+def _patch_done_review_note(c, p, fields, issue_id, new_state, gate_warn):
+    """done→review 접수·경고 노트 — 무엇이 증거로 인정되는지 관찰 가능하게."""
+    if p.state == "done" and new_state == "review":
+        accepted = (fields.get("completion_report")
+                    and fields.get("verification_status") == "reported")
+        if accepted:
+            # 유효보고 접수 = 정상 정지. 현재 제출물의 독립 리뷰를 기다린다.
+            body = ("보고 접수 — review에 정지(TT 독립 리뷰 대기). 현재 review_subject에 대한 "
+                     "승인 후 probe verify → done. PR은 선택적 보조 자료. "
+                     f"수동 인수계: tt verify {issue_id} --report/증거. "
+                     "동일 회차 수정은 보고 재제출, 새 회차는 review → todo → claim.")
+            c.execute("INSERT INTO comments (issue_id, author, body, ts) VALUES (?,?,?,?)",
+                      (issue_id, "tt-server", body, dbmod.now()))
+            service.log_event(c, "comment.added", "issue", issue_id,
+                              {"author": "tt-server", "preview": body[:120]})
+        else:
+            # done 강등 사유를 관찰 가능하게: 무엇이 증거로 인정되는지 안내
+            body = config.DONE_GATE_MSG.format(iid=issue_id)
+            c.execute("INSERT INTO comments (issue_id, author, body, ts) VALUES (?,?,?,?)",
+                      (issue_id, "tt-server", body, dbmod.now()))
+            service.log_event(c, "comment.added", "issue", issue_id,
+                              {"author": "tt-server", "preview": body[:120]})
+        c.commit()
+    elif p.state == "done" and new_state == "done" and gate_warn:
+        body = (f"⚠ done 됐지만 완료증거 코멘트가 없음 (TT_DONE_GATE=warn — M3BZV172-9F0S). "
+                f"나중에라도: tt verify {issue_id} <증거>")
+        c.execute("INSERT INTO comments (issue_id, author, body, ts) VALUES (?,?,?,?)",
+                  (issue_id, "tt-server", body, dbmod.now()))
+        service.log_event(c, "comment.added", "issue", issue_id,
+                          {"author": "tt-server", "preview": body[:120]})
+        c.commit()
+
 @router.patch("/issues/{issue_id}")
 def patch_issue(issue_id: str, p: IssuePatch, ctx: Ctx = Depends(get_ctx)):
     fields: dict = {}
-    gate_warn = False
-    gate = config.done_gate()
     with ctx.con() as c:
         c.execute("BEGIN IMMEDIATE")
         row = service.get_issue(c, issue_id)
@@ -488,68 +699,7 @@ def patch_issue(issue_id: str, p: IssuePatch, ctx: Ctx = Depends(get_ctx)):
             service.check_report(effective, p.completion_report)
         if p.force_done:
             raise HTTPException(422, "force_done은 폐기됨. 승인은 tt verify --human \"한 줄 사유\"")
-        if p.state and p.state != row["state"]:
-            if p.state not in dbmod.STATES:
-                raise HTTPException(422, f"bad state {p.state}")
-            # TT 개선#3d: 자기발의 카드의 todo 승격은 사람/트리아지만 — 명시 플래그 요구.
-            # R2: 같은 요청이 labels를 바꾸면 바뀐 라벨 기준으로 판정한다.
-            eff_labels = p.labels if p.labels is not None else (row["labels"] or "").split(",")
-            if p.state == "todo" and "self" in [l.strip() for l in eff_labels] \
-                    and not p.promoted:
-                raise HTTPException(
-                    409, "self 카드의 todo 승격은 사람/트리아지만 — promoted=true 필요 (TT 개선#3d)")
-            if not dbmod.can_transition(row["state"], p.state):
-                raise HTTPException(409, f"illegal transition {row['state']} -> {p.state}")
-            fields["state"] = p.state
-            fields["todo_since"] = dbmod.now() if p.state == "todo" else None
-            if p.state == "in_progress" and not row["started_at"]:
-                fields["started_at"] = dbmod.now()
-            if p.state == "done":
-                n_open = c.execute(
-                    "SELECT COUNT(*) n FROM issues WHERE parent_id=? AND state NOT IN ('done','cancelled')",
-                    (issue_id,)).fetchone()["n"]
-                if n_open:
-                    raise HTTPException(409, f"child 미완료 {n_open}건 — 자식을 done/cancelled로 먼저 종결하세요")
-                labels_now = p.labels if p.labels is not None else [s for s in (row["labels"] or "").split(",") if s]
-                proof = p.completion_report
-                ev = service.find_evidence(c, issue_id, effective) if not proof and not service.requires_report(effective) else ""
-                fields.update(verified=0, verified_at=None, verified_evidence="",
-                              verification_status="unverified", completed_at=None)
-                if proof:
-                    fields["completion_report"] = proof.model_dump_json()
-                    fields["submission_revision"] = row["submission_revision"] + 1
-                    fields["delivery_receipt"] = ""
-                    fields["reviewer"] = None
-                    if proof.result == "passed":
-                        fields.update(service.reported_fields(proof.evidence))
-                    # 제출의 종착지는 review. 현재 TT 판정에 연결된 probe verify
-                    # 또는 명시적 인수계/승인 경로가 종결을 담당한다.
-                    fields["state"] = "review"
-                elif "close" in labels_now and not ev:
-                    raise HTTPException(422, "close 라벨 종결은 폐기됨. 승인은 tt verify --human \"한 줄 사유\"")
-                elif ev:
-                    fields.update(service.reported_fields(ev))
-                    fields["approval_path"] = "evidence-only"
-                elif gate == "gate" or service.requires_report(effective):
-                    fields["state"] = "review"
-                else:
-                    gate_warn = gate == "warn"
-                    fields["approval_path"] = "direct"
-                if fields["state"] == "done":
-                    fields["completed_at"] = dbmod.now()
-            if p.state in ("todo", "backlog", "done", "cancelled", "blocked"):
-                fields["assignee"] = "" if p.state in ("todo", "backlog") else row["assignee"]
-                fields.update({"lease_by": "", "lease_expires": None})
-                # blocked 사족은 blocked 이탈 시 자동 소거 (재-blocked 시 재입력)
-                fields.update({"waiting_for": "", "waiting_actor": "", "blocked_detail": "",
-                               "blocked_notified_at": None, "blocked_question": "",
-                               "blocked_options": "", "blocked_default": ""})
-            if fields.get("state") == "review":
-                # review = done 강등 대기: worker lease 반납 + blocked 사족 리셋(재진입 시 재알림)
-                fields.update({"lease_by": "", "lease_expires": None,
-                               "waiting_for": "", "waiting_actor": "", "blocked_detail": "",
-                               "blocked_notified_at": None, "blocked_question": "",
-                               "blocked_options": "", "blocked_default": ""})
+        gate_warn = _patch_state_transition(c, row, p, fields, issue_id, effective)
         # HDPB: blocked 이탈은 목적지 무관하게 게이트 사족 소거 — blocked→in_progress
         # 재개 경로(cursor-review 지적)까지. 위 블록이 todo/backlog/done/cancelled를
         # 이미 커버하므로 여기는 누락 목적지만 실제로 걸린다.
@@ -557,136 +707,18 @@ def patch_issue(issue_id: str, p: IssuePatch, ctx: Ctx = Depends(get_ctx)):
             fields.update({"waiting_for": "", "waiting_actor": "", "blocked_detail": "",
                            "blocked_notified_at": None, "blocked_question": "",
                            "blocked_options": "", "blocked_default": ""})
-        if p.acceptance is not None:
-            # 기존 카드 점진 보완 경로 — 생성 게이트와 달리 PATCH는 강제하지 않는다
-            if not p.acceptance.strip():
-                raise HTTPException(422, "acceptance는 빈 값으로 되돌릴 수 없다")
-            fields["acceptance"] = p.acceptance.strip()
-        if p.title is not None:
-            fields["title"] = p.title
-        if p.body is not None:
-            fields["body"] = p.body
-        if p.priority is not None:
-            fields["priority"] = p.priority
-        if p.clear_priority:
-            fields["priority"] = None
-        if p.labels is not None:
-            # P8MN(M5283KGX-P8MN): auto 라벨 추가 = 자율 pull 승격 — VERIFY 필요.
-            # 같은 요청의 brief_verify 또는 기존 카드 값으로 충족한다. 이미 auto인
-            # 카드의 라벨 재설정은 재검사하지 않는다(승격 아님).
-            cur_labels = [s.strip() for s in (row["labels"] or "").split(",") if s.strip()]
-            if "auto" in [l.strip().lower() for l in p.labels] and "auto" not in cur_labels:
-                eff_verify = p.brief_verify if p.brief_verify is not None else (row["brief_verify"] or "")
-                if not eff_verify.strip():
-                    raise HTTPException(422, "auto 라벨 카드는 brief_verify(정확한 검증 명령)가 필요합니다 "
-                                        "(P8MN — 자율 pull 전제)")
-            fields["labels"] = ",".join(p.labels)
-        for _bf in ("brief_scope", "brief_verify", "brief_forbidden", "brief_timebox"):
-            _bv = getattr(p, _bf)
-            if _bv is not None:
-                fields[_bf] = _bv.strip()
-        if p.assignee is not None:
-            if p.assignee == "":
-                fields["assignee"] = ""
-                fields.update({"lease_by": "", "lease_expires": None})
-            else:
-                # DX88: 수동 지정도 정규화 — 별칭 치환·정크 거부·게이트 적용
-                fields["assignee"] = _normalize_claim_agent(c, p.assignee)
-        if p.reviewer is not None:
-            # lease는 probe가 조건부로 명시(R5) — reviewer 반납이 재작업자 lease를 덮지 않게 분리
-            fields["reviewer"] = p.reviewer or None
-            if p.reviewer == "" and row["lease_by"] == (row["reviewer"] or ""):
-                fields.update({"lease_by": "", "lease_expires": None})
-        if p.archived is not None:
-            fields["archived"] = 1 if p.archived else 0
-        # RPXH(M53PBDWJ-RPXH): premise_rework — probe가 반려 3회+에서 설정.
-        # 명시 갱신을 받고, 검증 종결(done)·새 수령(claim)에서 소거된다.
-        if p.premise_rework is not None:
-            fields["premise_rework"] = 1 if p.premise_rework else 0
-            if p.premise_rework and (row["execution_attempt"] or 0) < 3:
-                pass  # 상태는 probe 판단을 따른다 — 서버는 저장·표시·소거만 담당
+        _patch_field_updates(c, row, p, fields)
         # done 이탈(재개) 시 자동 아카이브 플래그 해제 — todo+archived 잔존 방지(P77 R2)
         new_state = fields.get("state") or row["state"]
         if new_state not in ("done", "cancelled") and row["state"] in ("done", "cancelled"):
             fields["archived"] = 0
-        # blocked 사족 (①): waiting_for는 4종 enum만, 상태가 blocked일 때만 유효.
-        # HDPB: blocked "전이"는 게이트 형식(질문·선택지·무응답 기본값)이 필수 —
-        # 빈 waiting_for는 409. 기존 blocked 카드 사족 갱신은 기존값과 병합 판정.
-        if p.state == "blocked" and row["state"] != "blocked":
-            if not (p.waiting_for or "").strip():
-                raise HTTPException(409, "blocked 전이는 waiting_for가 필요합니다 "
-                                    f"({sorted(dbmod.WAITING_FOR)} 중 하나)")
-            fields.update(_validate_gate_fields(p.blocked_question, p.blocked_options,
-                                                p.blocked_default))
-        elif row["state"] == "blocked" and (
-                p.blocked_question is not None or p.blocked_options is not None
-                or p.blocked_default is not None):
-            fields.update(_validate_gate_fields(
-                p.blocked_question if p.blocked_question is not None else row["blocked_question"],
-                p.blocked_options if p.blocked_options is not None
-                else json.loads(row["blocked_options"] or "[]"),
-                p.blocked_default if p.blocked_default is not None else row["blocked_default"]))
-        if p.waiting_for is not None:
-            wf = p.waiting_for
-            if wf not in dbmod.WAITING_FOR:
-                raise HTTPException(422, f"waiting_for는 {sorted(dbmod.WAITING_FOR)} 중 하나")
-            if (fields.get("state") or row["state"]) != "blocked":
-                raise HTTPException(409, "waiting_for는 blocked 전이/blocked 상태에서만 설정 가능")
-            fields["waiting_for"] = wf
-            if p.waiting_actor is not None:
-                fields["waiting_actor"] = p.waiting_actor
-            if p.blocked_detail is not None:
-                fields["blocked_detail"] = p.blocked_detail
-        else:
-            if p.waiting_actor is not None:
-                fields["waiting_actor"] = p.waiting_actor
-            if p.blocked_detail is not None:
-                fields["blocked_detail"] = p.blocked_detail
-        if p.clear_parent:
-            fields["parent_id"] = None
-        elif p.parent_id is not None:
-            if p.parent_id == issue_id:
-                raise HTTPException(422, "parent cannot be self")
-            service.get_issue(c, p.parent_id)
-            node = p.parent_id
-            while node:
-                if node == issue_id:
-                    raise HTTPException(422, "cycle detected")
-                node = c.execute("SELECT parent_id FROM issues WHERE id=?", (node,)).fetchone()["parent_id"]
-            fields["parent_id"] = p.parent_id
+        _patch_blocked_gate(c, row, p, fields)
+        _patch_parent_cycle(c, issue_id, p, fields)
         if not fields:
             return service.enrich_blocked(c, dbmod.to_dict(row))
         service.bump(c, issue_id, fields, p.expected_version)
         new_state = fields.get("state")
-        if p.state == "done" and new_state == "review":
-            accepted = (fields.get("completion_report")
-                        and fields.get("verification_status") == "reported")
-            if accepted:
-                # 유효보고 접수 = 정상 정지. 현재 제출물의 독립 리뷰를 기다린다.
-                body = ("보고 접수 — review에 정지(TT 독립 리뷰 대기). 현재 review_subject에 대한 "
-                         "승인 후 probe verify → done. PR은 선택적 보조 자료. "
-                         f"수동 인수계: tt verify {issue_id} --report/증거. "
-                         "동일 회차 수정은 보고 재제출, 새 회차는 review → todo → claim.")
-                c.execute("INSERT INTO comments (issue_id, author, body, ts) VALUES (?,?,?,?)",
-                          (issue_id, "tt-server", body, dbmod.now()))
-                service.log_event(c, "comment.added", "issue", issue_id,
-                                  {"author": "tt-server", "preview": body[:120]})
-            else:
-                # done 강등 사유를 관찰 가능하게: 무엇이 증거로 인정되는지 안내
-                body = config.DONE_GATE_MSG.format(iid=issue_id)
-                c.execute("INSERT INTO comments (issue_id, author, body, ts) VALUES (?,?,?,?)",
-                          (issue_id, "tt-server", body, dbmod.now()))
-                service.log_event(c, "comment.added", "issue", issue_id,
-                                  {"author": "tt-server", "preview": body[:120]})
-            c.commit()
-        elif p.state == "done" and new_state == "done" and gate_warn:
-            body = (f"⚠ done 됐지만 완료증거 코멘트가 없음 (TT_DONE_GATE=warn — M3BZV172-9F0S). "
-                    f"나중에라도: tt verify {issue_id} <증거>")
-            c.execute("INSERT INTO comments (issue_id, author, body, ts) VALUES (?,?,?,?)",
-                      (issue_id, "tt-server", body, dbmod.now()))
-            service.log_event(c, "comment.added", "issue", issue_id,
-                              {"author": "tt-server", "preview": body[:120]})
-            c.commit()
+        _patch_done_review_note(c, p, fields, issue_id, new_state, gate_warn)
         if new_state in ("done", "cancelled"):
             # ③ reconcile: terminalize된 카드의 실행 중인 agent에게 release 명령 (best-effort)
             service.reconcile_release(c, issue_id, f"카드 {new_state} 전이", "board")
