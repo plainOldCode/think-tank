@@ -8,6 +8,7 @@
 
 ## 배포 이력
 
+- 2026-10-19: cli 2.7.2, openapi **3161dede** — PHFY 에픽 종결 — 후속 6카드(3D5T·90BH·71NK·3QMV·GY52·0TRW)+J2NJ 이중 판정 (PR#166~#170). 태그 `deploy-cli2.7.2-openapi3161dede`.
 - 2026-10-18: cli 2.7.2, openapi **3161dede** — 9WWK(M54X0Y56-9WWK) 병합 `a20dfdf`: 판정 파서 단일 소스(server/verdicts.py)·/rejections/summary 과다 집계 수정(542→150). 스키마 불변. **소급 기록** — 태그 미확정(사람 확인 필요).
 - 2026-10-18: cli 2.7.2, openapi **3161dede** — TPRQ(M54X0XS8-TPRQ) 병합 `e853818`: 실패 코멘트 폭주 억제(첫 실패만+지수 backoff+5회 통보). 스키마 불변. **소급 기록** — 태그 미확정.
 - 2026-10-18: cli 2.7.2, openapi **3161dede** — 3A0B(M54X0XDB-3A0B) 병합 `87be008`: poll dispatch 생명주기 추적(발송 queued→픽업 running→종료 finished). 스키마 불변. **소급 기록** — 태그 미확정.
