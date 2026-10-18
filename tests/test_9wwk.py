@@ -65,3 +65,47 @@ def test_rejections_summary는_첫_줄_판정만_센다(client):
     buckets = {b["bucket"]: b["count"] for b in r.json()["buckets"]}
     assert sum(buckets.values()) == 1  # 에코·메모 제외 — 실제 판정 1건
     assert buckets.get("test") == 1
+
+
+def test_제출_종결_판독도_공유_파서를_따른다():
+    """71NK RC — review_subject.verdict(제출 게이트)가 같은 완화 규칙을 쓴다.
+    사유 붙은 승인·대문자 승인·괄호 붙은 반려를 인식하고, 기계 author·본문
+    중간 인용은 여전히 비판정이다."""
+    from review_subject import subject, verdict
+
+    issue = {"id": "M1", "title": "t", "body": "", "acceptance": "ac",
+             "assignee": "worker", "execution_attempt": 1,
+             "submission_revision": 1, "work_contract": {"version": "v"},
+             "completion_report": {"attempt": 1}, "reviewer": "agy",
+             "comments": []}
+    tok = subject(issue)
+    assert tok
+
+    def c(author, body):
+        return {"author": author, "body": body}
+
+    base = [c("probe", f"[tt-review {tok}] reviewer=agy")]
+    issue["comments"] = base + [c("agy", f"review: approve — CI green\n{tok}")]
+    assert verdict(issue) == "approve"
+    issue["comments"] = base + [c("agy", f"Review: Approve\n{tok}")]
+    assert verdict(issue) == "approve"
+    issue["comments"] = base + [c("agy", f"review: request-changes (R1~R3)\n{tok}")]
+    assert verdict(issue) == "request-changes"
+    # 비판정 유지: 둘째 줄 토큰 불일치 / 본문 중간 인용 / 기계 author
+    issue["comments"] = base + [c("agy", "review: approve\n다른 주제")]
+    assert verdict(issue) is None
+    issue["comments"] = base + [c("agy", f"메모 — 이전 판정 review: approve 참고\n{tok}")]
+    assert verdict(issue) is None
+    issue["comments"] = base + [c("probe", f"review: approve\n{tok}")]
+    assert verdict(issue) is None
+
+
+def test_반려_집계는_기계_첫줄을_세지_않는다():
+    """71NK RC — probe _rejection_verdicts가 author를 거른다(/rejections/summary 동일)."""
+    import probe.core as core
+    cur = {"comments": [
+        {"author": "agy", "body": "review: request-changes\nTT#X@a1/s"},
+        {"author": "runner@m2max", "body": "review: request-changes\necho 재전송"},
+        {"author": "probe", "body": "review: request-changes\n시스템"},
+    ]}
+    assert [c["author"] for c in core._rejection_verdicts(cur)] == ["agy"]

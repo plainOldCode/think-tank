@@ -8,6 +8,8 @@ import hashlib
 import json
 import re
 
+from verdicts import first_line_verdict as _shared_first_line_verdict  # 71NK 단일 소스
+
 
 def subject(issue):
     report = issue.get("completion_report")
@@ -43,7 +45,8 @@ reviewer to a subject even after their lease is released.
         lines = body.strip().splitlines()
         if len(lines) < 2 or lines[1].strip() != token or c.get("author") not in reviewers:
             continue
-        m = re.fullmatch(r"review: (approve|request-changes)", lines[0].strip())
-        if m:
-            result = m[1]
+        # 71NK(M568PHFZ-71NK) — 판정어 인식은 공유 파서와 동일(같은 줄 사유·
+        # 대소문자 무시). 둘째 줄 정확 일치(리뷰 신원 바인딩)는 기존 규약 유지.
+        if c.get("author") in reviewers and _shared_first_line_verdict(lines[0]):
+            result = _shared_first_line_verdict(lines[0])
     return result

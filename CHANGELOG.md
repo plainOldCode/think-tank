@@ -8,12 +8,13 @@
 
 ## 배포 이력
 
-- 2026-10-18: cli 2.5.3(설치본 — 저장소 2.7.2 드리프트), openapi **3161dede** — 9WWK(M54X0Y56-9WWK) 병합 `a20dfdf`: 판정 파서 단일 소스(server/verdicts.py)·/rejections/summary 과다 집계 수정(542→150). 스키마 불변. **소급 기록** — 태그 미확정(사람 확인 필요).
-- 2026-10-18: cli 2.5.3, openapi **3161dede** — TPRQ(M54X0XS8-TPRQ) 병합 `e853818`: 실패 코멘트 폭주 억제(첫 실패만+지수 backoff+5회 통보). 스키마 불변. **소급 기록** — 태그 미확정.
-- 2026-10-18: cli 2.5.3, openapi **3161dede** — 3A0B(M54X0XDB-3A0B) 병합 `87be008`: poll dispatch 생명주기 추적(발송 queued→픽업 running→종료 finished). 스키마 불변. **소급 기록** — 태그 미확정.
-- 2026-10-17: cli 2.5.3, openapi **3161dede** — 9PDD(M54X0X19-9PDD) 병합 `bed03a1`: 종료 카드·이전 회차 dispatch 재전달 차단. 스키마 불변. **소급 기록** — 태그 미확정.
-- 2026-10-17: cli 2.5.3, openapi **3161dede** — probe SRJY 유출변수 수정 병합 `2c833dd`(PR#153): probe 루프 크래시 핫픽스 정식화. 스키마 불변. **소급 기록** — 태그 미확정.
-- 2026-10-17: cli 2.5.3, openapi **3161dede** — M3B5JHGP(#150)/X7DG(#152) 병합 `f52487f`: **poll-runner pending inbox 신설로 openapi e66cc1b6 → 3161dede 전환**. 이후 모든 배포의 기준 해시. **소급 기록** — 태그 미확정(사람 확인 후 `git tag deploy-cli2.5.3-openapi3161dede`).
+- 2026-10-18: cli 2.7.2, openapi **3161dede** — 9WWK(M54X0Y56-9WWK) 병합 `a20dfdf`: 판정 파서 단일 소스(server/verdicts.py)·/rejections/summary 과다 집계 수정(542→150). 스키마 불변. **소급 기록** — 태그 미확정(사람 확인 필요).
+- 2026-10-18: cli 2.7.2, openapi **3161dede** — TPRQ(M54X0XS8-TPRQ) 병합 `e853818`: 실패 코멘트 폭주 억제(첫 실패만+지수 backoff+5회 통보). 스키마 불변. **소급 기록** — 태그 미확정.
+- 2026-10-18: cli 2.7.2, openapi **3161dede** — 3A0B(M54X0XDB-3A0B) 병합 `87be008`: poll dispatch 생명주기 추적(발송 queued→픽업 running→종료 finished). 스키마 불변. **소급 기록** — 태그 미확정.
+- 2026-10-17: cli 2.7.2, openapi **3161dede** — 9PDD(M54X0X19-9PDD) 병합 `bed03a1`: 종료 카드·이전 회차 dispatch 재전달 차단. 스키마 불변. **소급 기록** — 태그 미확정.
+- 2026-10-17: cli 2.7.2, openapi **3161dede** — probe SRJY 유출변수 수정 병합 `2c833dd`(PR#153): probe 루프 크래시 핫픽스 정식화. 스키마 불변. **소급 기록** — 태그 미확정.
+- 2026-10-17: cli 2.7.2, openapi **2f927b2a** — K4Q7(M53XP2ZA-K4Q7) 병합 `17e2fbd`: 보안 — agent webhook secret 응답 완전 제거(AgentOut 스키마 변경). **e66cc1b6 → 2f927b2a 전환**. **소급 기록(2026-10-19 정정)** — 10-17 17:53 KST 라이브 관측 해시와 일치. 태그 미확정(사람 확인 필요).
+- 2026-10-17: cli 2.7.2, openapi **3161dede** — M3B5JHGP(#150)/X7DG(#152) 병합 `f52487f`: **poll-runner pending inbox 신설로 openapi 2f927b2a → 3161dede 전환**. 이후 모든 배포의 기준 해시. **소급 기록** — 태그 미확정(사람 확인 후 `git tag deploy-cli2.7.2-openapi3161dede`).
 - 2026-10-14: cli 2.5.3, openapi **e66cc1b6** — XV84(M4W99A6Z) 병합 `89ef962`: `/settings/review-routing` 엔드포인트 신설(런타임 리뷰어 라우팅), 웹 agents 패널 편집기. **8a3a18af → e66cc1b6 전환**. 태그 `deploy-cli2.5.3-openapie66cc1b6`.
 - 2026-10-14: cli 2.5.3, openapi **8a3a18af** — RQHD(M4W0VHZB) 병합 `dc1c850`: approval_path 컬럼(응답 필드 추가 — openapi 불변), ZDNH(M4TW2J3V) 병합 `1bf630f`: probe 병합 게이트(스키마 불변). 태그 `deploy-cli2.5.3-openapi8a3a18af` — **기준 시점**.
 - 2026-10-13: cli **2.5.3** 재설치 — `--head` 전체 SHA 강제 등 보고 계약 정합. openapi 8a3a18af 유지.
