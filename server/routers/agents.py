@@ -294,27 +294,17 @@ def delete_agent(name: str, ctx: Ctx = Depends(get_ctx)):
              summary="Dispatch: deliver an instruction to a registered agent via webhook (agent needs a listening base_url; poll-only agents should use todo+comments instead)",
              description="Records message as a comment, POSTs the payload to the agent webhook (10s timeout), stores optional resume context, and files a tt-server system comment on delivery failure. Never changes issue state.")
 def dispatch(issue_id: str, p: DispatchIn, request: Request, ctx: Ctx = Depends(get_ctx)):
+    """dispatch 발행 — 입출력만. 해석·멱등·행 생성·배달·투영은 service/helpers로.
+
+    9PDD: 종료 카드 dispatch 차단 / W0DF: 별칭 정본 해석 / WGT4: 본명@호스트 폴백 /
+    TT 개선#1: 기수락 멱등키 / R4·R5: 재전달 단일 선점 경로 / TPRQ: 실패 카운터."""
     if not p.message.strip():
         raise HTTPException(422, "message 비어 있음")
     with ctx.con() as c:
         issue = service.get_issue(c, issue_id)
-        # 9PDD: 종료 카드에 대한 신규 dispatch도 차단 — 멱등키에 회차가 포함돼
-        # 기존 행 조회로는 못 걸러낸다(QN0H: 재전달이 신규 행으로 카드 재개장).
         if issue["state"] in ("done", "cancelled") or issue["archived"]:
             raise HTTPException(409, f"issue {issue_id} 종료 상태 — dispatch 불가")
-        ag = c.execute("SELECT * FROM agents WHERE name=?", (p.agent,)).fetchone()
-        if not ag:
-            # W0DF: 별칭 사전(agents.aliases)은 service.resolve_agent_identity 정본으로
-            # 해석 — probe와 서버가 같은 규칙을 쓴다.
-            _res = service.resolve_agent_identity(c, p.agent)
-            if _res:
-                ag = c.execute("SELECT * FROM agents WHERE name=?", (_res,)).fetchone()
-        if not ag and "@" in p.agent:
-            # 본명@호스트 형식 assignee(tt CLI 기본 신원)를 등록 에이전트 단축명으로
-            # 폴백 — probe review-fix가 assignee에 재dispatch할 때 404로 무한 실패했던
-            # 버그(M4CJG2A5-WGT4). 정확명이 있으면 항상 우선한다.
-            ag = c.execute("SELECT * FROM agents WHERE name=?",
-                           (p.agent.split("@", 1)[0],)).fetchone()
+        ag = _resolve_dispatch_agent(c, p)
         if not ag:
             raise HTTPException(404, f"agent {p.agent} 미등록 — POST /agents")
         if not ag["enabled"]:
@@ -344,10 +334,6 @@ def dispatch(issue_id: str, p: DispatchIn, request: Request, ctx: Ctx = Depends(
             # (INSERT 후 조회하면 방금 만든 빈 context 행이 최신이 되어버림).
             prev = c.execute("SELECT context FROM dispatches WHERE issue_id=? AND agent=? "
                              "ORDER BY id DESC LIMIT 1", (issue_id, agent_name)).fetchone()
-            c.execute("INSERT INTO comments (issue_id, author, body, ts) VALUES (?,?,?,?)",
-                      (issue_id, p.author, p.message, dbmod.now()))
-            service.log_event(c, "comment.added", "issue", issue_id,
-                              {"author": p.author, "preview": p.message[:120]})
             # R5: 행 생성 시점부터 resume context를 상속해 둔다 — 전달 실패(error)나
             # 전달 전 크래시로 끝나도 재전달 payload가 원래 context를 잃지 않는다.
             # 전달 성공 시에만 웹훅 응답 token으로 갱신된다.
@@ -355,18 +341,8 @@ def dispatch(issue_id: str, p: DispatchIn, request: Request, ctx: Ctx = Depends(
             # 세션을 계속(reuse)하지 않게(러너는 빈 context에서 신규 세션으로 폴백).
             inh_ctx = (prev["context"] if prev else "") if not p.fresh else ""
             try:
-                # 3A0B(M54X0XDB-3A0B): poll 에이전트는 픽업 전까지 run_state=''라
-                # /agents/active·probe busy·stall·지표가 전부 못 봤다 — 발송 시점부터
-                # queued로 기록해 생명주기 추적을 시작한다.
-                _poll = (ag["receive_mode"] or "").strip().lower() == "poll"
-                did = c.execute("INSERT INTO dispatches (issue_id, agent, author, message, context, status, ts, model, idem_key, attempt, delivery_lease, run_state) "
-                                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-                                (issue_id, agent_name, p.author, p.message, inh_ctx, "queued", dbmod.now(),
-                                 ag["model"] or "", idem, issue["execution_attempt"],
-                                 dbmod.now(), "queued" if _poll else "")).lastrowid
-                service.log_event(c, "dispatch.created", "dispatch", did,
-                                  {"agent": agent_name, "issue_id": issue_id,
-                                   "preview": p.message[:120]})
+                did = service.insert_dispatch_row(c, issue_id, p, ag, agent_name, idem,
+                                                  issue["execution_attempt"], inh_ctx)
             except sqlite3.IntegrityError:
                 # 동시 중복 POST — 유니크 인덱스가 원자적으로 승자를 결정한다.
                 c.rollback()
@@ -403,51 +379,30 @@ def dispatch(issue_id: str, p: DispatchIn, request: Request, ctx: Ctx = Depends(
     # M3B5JHGP: poll 에이전트는 훅 POST가 없다 — 큐에 남고 소속 러너의 pending
     # 폴링이 꺼내 간다(단일 채널, 이중 전달 없음).
     poll_mode = (ag["receive_mode"] or "").strip().lower() == "poll"
-    status, detail, dctx = ("queued", "", "") if poll_mode else ("ok", "", "")
-    if not poll_mode:
-        try:
-            code, dctx = service.deliver(ag["base_url"], ag["secret"], payload)
-            if code >= 300:
-                status, detail = "error", f"HTTP {code}"
-        except Exception as e:
-            status, detail = "error", f"{type(e).__name__}: {e}"[:300]
+    service.dispatch_delivery_projection(ctx, ag, p, did, issue_id, payload, poll_mode,
+                                         DELIVERY_NOTIFY_FAILS)
     with ctx.con() as c:
-        # 실패(error) 시 context는 생성 시 상속값을 보존(R5) — 성공 시에만 응답 token으로 갱신
-        if status == "ok":
-            # TPRQ: 성공 시 실패 카운터 초기화 — 다음 실패가 다시 첫 실패로 기록된다
-            c.execute("UPDATE dispatches SET status=?, detail=?, context=?, delivery_lease=NULL, "
-                      "fail_count=0, last_fail_at=NULL WHERE id=?", (status, detail, dctx, did))
-        elif status == "error":
-            fail_n = c.execute("SELECT COALESCE(fail_count,0)+1 FROM dispatches WHERE id=?",
-                               (did,)).fetchone()[0]
-            c.execute("UPDATE dispatches SET status=?, detail=?, delivery_lease=NULL, "
-                      "fail_count=?, last_fail_at=? WHERE id=?",
-                      (status, detail, fail_n, dbmod.now(), did))
-        if not poll_mode:
-            c.execute("UPDATE agents SET last_ok=?, last_err=? WHERE name=?",
-                      (dbmod.now() if status == "ok" else ag["last_ok"],
-                       "" if status == "ok" else detail, ag["name"]))
-        if status == "error":
-            # TPRQ: 같은 did의 재시도마다 댓글을 쌓지 않는다 — 첫 실패만 타임라인에 남기고
-            # 이후는 행의 fail_count·detail로 추적한다(30s 재시도 간격이면 수십 줄 폭주).
-            if fail_n == 1:
-                fail_body = f"⚠ hook dispatch #{did} → {p.agent} 실패: {detail}"
-                c.execute("INSERT INTO comments (issue_id, author, body, ts) VALUES (?,?,?,?)",
-                          (issue_id, "tt-server", fail_body, dbmod.now()))
-                service.log_event(c, "comment.added", "issue", issue_id,
-                                  {"author": "tt-server", "preview": fail_body[:120]})
-            if fail_n == DELIVERY_NOTIFY_FAILS:
-                human_body = (f"⚠ hook dispatch #{did} → {p.agent} {fail_n}회 연속 실패 — "
-                              f"사람 확인 필요: {detail}")
-                c.execute("INSERT INTO comments (issue_id, author, body, ts) VALUES (?,?,?,?)",
-                          (issue_id, "tt-server", human_body, dbmod.now()))
-                service.log_event(c, "comment.added", "issue", issue_id,
-                                  {"author": "tt-server", "preview": human_body[:120]})
-        c.commit()
         row = c.execute("SELECT * FROM dispatches WHERE id=?", (did,)).fetchone()
     if redeliver:
         return JSONResponse(status_code=200, content=dict(row))
     return dict(row)
+
+
+def _resolve_dispatch_agent(c, p):
+    """등록 에이전트 해석 — 정확명 → 별칭 정본(W0DF) → 본명@호스트 폴백(WGT4).
+
+    본명@호스트 형식 assignee(tt CLI 기본 신원)를 등록 에이전트 단축명으로
+    폴백 — probe review-fix가 assignee에 재dispatch할 때 404로 무한 실패했던
+    버그(M4CJG2A5-WGT4). 정확명이 있으면 항상 우선한다."""
+    ag = c.execute("SELECT * FROM agents WHERE name=?", (p.agent,)).fetchone()
+    if not ag:
+        _res = service.resolve_agent_identity(c, p.agent)
+        if _res:
+            ag = c.execute("SELECT * FROM agents WHERE name=?", (_res,)).fetchone()
+    if not ag and "@" in p.agent:
+        ag = c.execute("SELECT * FROM agents WHERE name=?",
+                       (p.agent.split("@", 1)[0],)).fetchone()
+    return ag
 
 
 @router.get("/agents/{runner_name}/pending",
@@ -538,105 +493,22 @@ def dispatch_progress(issue_id: str, dispatch_id: int, p: DispatchProgress, requ
         if closed and p.state in config.ACTIVE_RUN_STATES:
             service.finish_issue_dispatches(c, issue_id)
             return dict(c.execute("SELECT * FROM dispatches WHERE id=?", (dispatch_id,)).fetchone())
-        fields: dict = {}
         ts = p.ts if p.ts else dbmod.now()
         if p.state is not None:
-            # 완료 전환 최종 판정 — 서버 attempt CAS (TT 개선#1 요구 2, if-match).
-            # 종료 상태(finished/failed)는 비교와 갱신을 단일 조건부 UPDATE로 원자화한다
-            # (R2: SELECT 후 UPDATE 사이 claim 끼워들기 창 제거) — dispatch가 생성된
-            # 회차(attempt 스냅샷)보다 이슈의 현재 execution_attempt가 앞서면
-            # 투영은 닫되(kill/timeout/failed/done) 코멘트·report_session·
-            # dispatch_reports는 남기지 않는다. 현재 회차 보고가 CAS에 지면 409.
-            # 이미 done/cancelled/archived인 카드의 물리 종료도 같은 예외이며
-            # 구회차 코멘트는 받지 않는다.
-            # attempt 스냅샷이 없는 구형 행(NULL)은 기존 동작 유지.
+            # 완료 전환 최종 판정은 service.project_terminal_report(서버 attempt CAS,
+            # TT 개선#1 요구 2) — 비종료 진행 투영은 project_progress_fields(§2.2).
             # running/stalled 등 비종료 진행은 last-write-wins 그대로(러너 stall_check
             # 소유 — 서버 재계산 금지).
             if p.state in ("finished", "failed"):
-                if not current_attempt and p.comment and p.session:
-                    receipt = c.execute(
-                        "SELECT 1 FROM dispatch_reports WHERE dispatch_id=? AND session=?",
-                        (dispatch_id, p.session)).fetchone()
-                    if receipt:
-                        return dict(row)  # previously accepted retry, projection unchanged
-                if not current_attempt:
-                    # M54E72RQ-SXGS: a kill/timeout/failed/done from the round this
-                    # dispatch was created in must close the projection. The comment
-                    # is not evidence for the current round — no comment, no
-                    # report_session, no dispatch_reports row. A different live
-                    # session already on this row is a newer projection; an older
-                    # kill must not overwrite it.
-                    if (p.session and row["session"] and p.session != row["session"]
-                            and row["run_state"] in config.ACTIVE_RUN_STATES):
-                        return dict(row)
-                    res = c.execute(
-                        "UPDATE dispatches SET run_state=?, ended_at=? WHERE id=?",
-                        (p.state, ts, dispatch_id))
-                    if res.rowcount == 1:
-                        service.log_event(c, "dispatch.updated", "dispatch", dispatch_id,
-                                          {"run_state": p.state, "via": "stale-round"})
-                else:
-                    # 보고 선점 선(先)결제 (6차 리뷰 R13 — 원자성): 접수 이력 (dispatch,
-                    # session) 유니크 INSERT OR IGNORE가 그 자체로 게이트다. 이력 SELECT와
-                    # 투영 갱신을 분리하면 경합 창(이력 부재 판독 → 타 요청 접수 → 재개)에서
-                    # 이전 세션 재시도가 새 회차 running 투영을 종료로 덮는다. 승자만 아래
-                    # 투영 갱신·코멘트 접수로 진행하고, 패자는 이미 접수된 보고의 재시도로
-                    # 투영(run_state/ended_at/session) 무변경 기수락 200. 세션 없는 보고는
-                    # 회차 식별 불가 — 선점 없이 기존 동작(CAS + 매 접수).
-                    if accept_comment and p.session:
-                        claimed = c.execute(
-                            "INSERT OR IGNORE INTO dispatch_reports (dispatch_id, session, ts) "
-                            "VALUES (?,?,?)", (dispatch_id, p.session, dbmod.now()))
-                        if claimed.rowcount == 0:
-                            row = c.execute("SELECT * FROM dispatches WHERE id=?",
-                                            (dispatch_id,)).fetchone()
-                            return dict(row)
-                    # report_session은 코멘트 접수와만 연결한다(5차 리뷰 R11) — STALL-kill·
-                    # TIMEOUT·release 등 코멘트 없는 종료 투영은 접수 증거가 아니므로
-                    # 기록하면 _terminal_recorded가 오패정한다.
-                    sets = ("run_state=?, ended_at=?, report_session=?"
-                            if (accept_comment and p.session) else "run_state=?, ended_at=?")
-                    args = ((p.state, ts, p.session) if (accept_comment and p.session)
-                            else (p.state, ts))
-                    res = c.execute(
-                        "UPDATE dispatches SET %s WHERE id=? AND "
-                        "(attempt IS NULL OR attempt >= "
-                        "(SELECT i.execution_attempt FROM issues i WHERE i.id=dispatches.issue_id) "
-                        "OR EXISTS (SELECT 1 FROM issues i WHERE i.id=dispatches.issue_id "
-                        "AND (i.state IN ('done','cancelled') OR i.archived=1)))" % sets,
-                        (*args, dispatch_id))
-                    if res.rowcount == 1:
-                        service.log_event(c, "dispatch.updated", "dispatch", dispatch_id,
-                                          {"run_state": p.state})
-                    if res.rowcount != 1:
-                        # 409 — with 블록 예외 롤백으로 방금 선점한 보고 이력도 함께 취소된다
-                        # (미접수 보고의 이력 잔재 방지). 코멘트도 접수되지 않는다.
-                        raise HTTPException(
-                            409, f"stale round report: dispatch#{dispatch_id} attempt={row['attempt']} "
-                                 f"< issue current execution_attempt — 이전 회차 종료 보고 거부")
-                    if accept_comment:
-                        # 종료 투영과 완료 보고를 같은 트랜잭션에 접수 (R3: CAS 통과 후
-                        # 별도 /comments 사이 회차 변경 창 제거 — 409면 코멘트도 없다).
-                        # 접수 코어 공유로 버전 갱신·blocked 알림 부수효과 보존 (R9)
-                        service.record_comment(c, issue_id,
-                                               (p.author or "runner").strip() or "runner",
-                                               p.comment[:4000])
+                immediate = service.project_terminal_report(
+                    c, issue_id, dispatch_id, p, row, current_attempt, accept_comment, ts)
+                if immediate is not None:
+                    return immediate
             else:
-                fields["run_state"] = p.state
-                if p.state in ("running", "stalled"):
-                    # 진행 병기 허용 상태: ts/tail 유무와 무관하게 liveness 시각 갱신
-                    # (동일 상태 재전송도 진행으로 봄 — 러너는 변경/주기 모두 허용)
-                    fields["last_progress_at"] = ts
-                    if p.tail is not None:
-                        fields["last_tail"] = p.tail[:500]  # 서버 클램프 (422 아님)
-                    if not row["started_at"]:
-                        fields["started_at"] = ts
-                else:
-                    # queued: run_state(+machine/session)만 — ts/tail 진행 미반영 (§2.2)
-                    if not row["started_at"]:
-                        fields["started_at"] = ts
+                service.project_progress_fields(c, row, p, ts, dispatch_id)
         elif p.tail is not None or p.ts or p.machine or p.session:
             raise HTTPException(422, "state 없이 진행/식별 갱신 불가")
+        fields: dict = {}
         # machine/session: 전송 시에만 반영(공백 문자열은 전송으로 보지 않음 — 기존 값 유지)
         for k in ("machine", "session"):
             v = getattr(p, k)

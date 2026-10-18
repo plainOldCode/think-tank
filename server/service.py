@@ -547,3 +547,181 @@ def deliver(url, secret, payload):
     except Exception:
         pass
     return code, ctx
+
+
+# ── dispatch 배달·투영 (AK87-4 — 라우터는 입출력만, 로직은 service로) ──
+
+def insert_dispatch_row(c, issue_id, p, ag, agent_name, idem, attempt, inh_ctx):
+    """신규 dispatch 행 생성 — 코멘트 기록 + run_state 투영(3A0B) + 이벤트.
+
+    동시 중복 POST(유니크 idem_key)는 sqlite3.IntegrityError로 그대로 올린다 —
+    경합 승자 판정과 재전달 선점은 호출자(라우터)의 단일 선점 경로(_claim_redelivery)가
+    담당한다(5차 리뷰 R4)."""
+    c.execute("INSERT INTO comments (issue_id, author, body, ts) VALUES (?,?,?,?)",
+              (issue_id, p.author, p.message, dbmod.now()))
+    log_event(c, "comment.added", "issue", issue_id,
+              {"author": p.author, "preview": p.message[:120]})
+    # 3A0B(M54X0XDB-3A0B): poll 에이전트는 픽업 전까지 run_state=''라
+    # /agents/active·probe busy·stall·지표가 전부 못 봤다 — 발송 시점부터
+    # queued로 기록해 생명주기 추적을 시작한다.
+    _poll = (ag["receive_mode"] or "").strip().lower() == "poll"
+    did = c.execute("INSERT INTO dispatches (issue_id, agent, author, message, context, status, ts, model, idem_key, attempt, delivery_lease, run_state) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (issue_id, agent_name, p.author, p.message, inh_ctx, "queued", dbmod.now(),
+                     ag["model"] or "", idem, attempt,
+                     dbmod.now(), "queued" if _poll else "")).lastrowid
+    log_event(c, "dispatch.created", "dispatch", did,
+              {"agent": agent_name, "issue_id": issue_id,
+               "preview": p.message[:120]})
+    return did
+
+
+def dispatch_delivery_projection(ctx, ag, p, did, issue_id, payload, poll_mode, notify_fails):
+    """배달(webhook/poll) + 행·에이전트 투영 + TPRQ 실패 추적.
+
+    poll 에이전트는 훅 POST가 없다 — 큐에 남고 소속 러너의 pending 폴링이 꺼내 간다
+    (단일 채널, 이중 전달 없음). error 시 context는 생성 시 상속값 보존(R5) —
+    성공 시에만 응답 token으로 갱신. TPRQ: 같은 did의 재시도마다 댓글을 쌓지 않는다 —
+    첫 실패만 타임라인에 남기고 이후는 행의 fail_count·detail로 추적한다."""
+    status, detail, dctx = ("queued", "", "") if poll_mode else ("ok", "", "")
+    if not poll_mode:
+        try:
+            code, dctx = deliver(ag["base_url"], ag["secret"], payload)
+            if code >= 300:
+                status, detail = "error", f"HTTP {code}"
+        except Exception as e:
+            status, detail = "error", f"{type(e).__name__}: {e}"[:300]
+    with ctx.con() as c:
+        if status == "ok":
+            # TPRQ: 성공 시 실패 카운터 초기화 — 다음 실패가 다시 첫 실패로 기록된다
+            c.execute("UPDATE dispatches SET status=?, detail=?, context=?, delivery_lease=NULL, "
+                      "fail_count=0, last_fail_at=NULL WHERE id=?", (status, detail, dctx, did))
+        elif status == "error":
+            fail_n = c.execute("SELECT COALESCE(fail_count,0)+1 FROM dispatches WHERE id=?",
+                               (did,)).fetchone()[0]
+            c.execute("UPDATE dispatches SET status=?, detail=?, delivery_lease=NULL, "
+                      "fail_count=?, last_fail_at=? WHERE id=?",
+                      (status, detail, fail_n, dbmod.now(), did))
+        else:
+            fail_n = 0
+        if not poll_mode:
+            c.execute("UPDATE agents SET last_ok=?, last_err=? WHERE name=?",
+                      (dbmod.now() if status == "ok" else ag["last_ok"],
+                       "" if status == "ok" else detail, ag["name"]))
+        if status == "error":
+            if fail_n == 1:
+                fail_body = f"⚠ hook dispatch #{did} → {p.agent} 실패: {detail}"
+                c.execute("INSERT INTO comments (issue_id, author, body, ts) VALUES (?,?,?,?)",
+                          (issue_id, "tt-server", fail_body, dbmod.now()))
+                log_event(c, "comment.added", "issue", issue_id,
+                          {"author": "tt-server", "preview": fail_body[:120]})
+            if fail_n == notify_fails:
+                human_body = (f"⚠ hook dispatch #{did} → {p.agent} {fail_n}회 연속 실패 — "
+                              f"사람 확인 필요: {detail}")
+                c.execute("INSERT INTO comments (issue_id, author, body, ts) VALUES (?,?,?,?)",
+                          (issue_id, "tt-server", human_body, dbmod.now()))
+                log_event(c, "comment.added", "issue", issue_id,
+                          {"author": "tt-server", "preview": human_body[:120]})
+        c.commit()
+
+
+def project_progress_fields(c, row, p, ts, dispatch_id):
+    """비종료 진행 투영 — run_state·liveness 시각·tail·started_at(§2.2).
+
+    running/stalled: 진행 병기 허용 상태 — ts/tail 유무와 무관하게 liveness 시각
+    갱신(동일 상태 재전송도 진행으로 봄 — 러너는 변경/주기 모두 허용).
+    queued: run_state(+machine/session)만 — ts/tail 진행 미반영."""
+    fields: dict = {"run_state": p.state}
+    if p.state in ("running", "stalled"):
+        fields["last_progress_at"] = ts
+        if p.tail is not None:
+            fields["last_tail"] = p.tail[:500]  # 서버 클램프 (422 아님)
+        if not row["started_at"]:
+            fields["started_at"] = ts
+    else:
+        if not row["started_at"]:
+            fields["started_at"] = ts
+    sets = ", ".join(f"{k}=?" for k in fields)
+    c.execute(f"UPDATE dispatches SET {sets} WHERE id=?", (*fields.values(), dispatch_id))
+    c.commit()
+
+
+def project_terminal_report(c, issue_id, dispatch_id, p, row, current_attempt, accept_comment, ts):
+    """종료 전환 최종 판정 — 서버 attempt CAS (TT 개선#1 요구 2, if-match).
+
+    종료 상태(finished/failed)는 비교와 갱신을 단일 조건부 UPDATE로 원자화한다
+    (R2) — dispatch가 생성된 회차(attempt 스냅샷)보다 이슈의 현재 execution_attempt가
+    앞서면 투영은 닫되 코멘트·report_session·dispatch_reports는 남기지 않는다.
+    현재 회차 보고가 CAS에 지면 409. 이미 done/cancelled/archived인 카드의 물리
+    종료도 같은 예외이며 구회차 코멘트는 받지 않는다. attempt 스냅샷이 없는 구형
+    행(NULL)은 기존 동작 유지.
+
+    즉시 반환할 dict(row)이면 라우터가 그대로 반환, None이면 진행 투영 계속."""
+    if not current_attempt and p.comment and p.session:
+        receipt = c.execute(
+            "SELECT 1 FROM dispatch_reports WHERE dispatch_id=? AND session=?",
+            (dispatch_id, p.session)).fetchone()
+        if receipt:
+            return dict(row)  # previously accepted retry, projection unchanged
+    if not current_attempt:
+        # M54E72RQ-SXGS: a kill/timeout/failed/done from the round this
+        # dispatch was created in must close the projection. The comment
+        # is not evidence for the current round — no comment, no
+        # report_session, no dispatch_reports row. A different live
+        # session already on this row is a newer projection; an older
+        # kill must not overwrite it.
+        if (p.session and row["session"] and p.session != row["session"]
+                and row["run_state"] in config.ACTIVE_RUN_STATES):
+            return dict(row)
+        res = c.execute(
+            "UPDATE dispatches SET run_state=?, ended_at=? WHERE id=?",
+            (p.state, ts, dispatch_id))
+        if res.rowcount == 1:
+            log_event(c, "dispatch.updated", "dispatch", dispatch_id,
+                      {"run_state": p.state, "via": "stale-round"})
+        return None
+    # 보고 선점 선(先)결제 (6차 리뷰 R13 — 원자성): 접수 이력 (dispatch,
+    # session) 유니크 INSERT OR IGNORE가 그 자체로 게이트다. 이력 SELECT와
+    # 투영 갱신을 분리하면 경합 창(이력 부재 판독 → 타 요청 접수 → 재개)에서
+    # 이전 세션 재시도가 새 회차 running 투영을 종료로 덮는다. 승자만 아래
+    # 투영 갱신·코멘트 접수로 진행하고, 패자는 이미 접수된 보고의 재시도로
+    # 투영(run_state/ended_at/session) 무변경 기수락 200. 세션 없는 보고는
+    # 회차 식별 불가 — 선점 없이 기존 동작(CAS + 매 접수).
+    if accept_comment and p.session:
+        claimed = c.execute(
+            "INSERT OR IGNORE INTO dispatch_reports (dispatch_id, session, ts) "
+            "VALUES (?,?,?)", (dispatch_id, p.session, dbmod.now()))
+        if claimed.rowcount == 0:
+            return dict(c.execute("SELECT * FROM dispatches WHERE id=?",
+                                  (dispatch_id,)).fetchone())
+    # report_session은 코멘트 접수와만 연결한다(5차 리뷰 R11) — STALL-kill·
+    # TIMEOUT·release 등 코멘트 없는 종료 투영은 접수 증거가 아니므로
+    # 기록하면 _terminal_recorded가 오패정한다.
+    sets = ("run_state=?, ended_at=?, report_session=?"
+            if (accept_comment and p.session) else "run_state=?, ended_at=?")
+    args = ((p.state, ts, p.session) if (accept_comment and p.session)
+            else (p.state, ts))
+    res = c.execute(
+        "UPDATE dispatches SET %s WHERE id=? AND "
+        "(attempt IS NULL OR attempt >= "
+        "(SELECT i.execution_attempt FROM issues i WHERE i.id=dispatches.issue_id) "
+        "OR EXISTS (SELECT 1 FROM issues i WHERE i.id=dispatches.issue_id "
+        "AND (i.state IN ('done','cancelled') OR i.archived=1)))" % sets,
+        (*args, dispatch_id))
+    if res.rowcount == 1:
+        log_event(c, "dispatch.updated", "dispatch", dispatch_id,
+                  {"run_state": p.state})
+    if res.rowcount != 1:
+        # 409 — with 블록 예외 롤백으로 방금 선점한 보고 이력도 함께 취소된다
+        # (미접수 보고의 이력 잔재 방지). 코멘트도 접수되지 않는다.
+        raise HTTPException(
+            409, f"stale round report: dispatch#{dispatch_id} attempt={row['attempt']} "
+                 f"< issue current execution_attempt — 이전 회차 종료 보고 거부")
+    if accept_comment:
+        # 종료 투영과 완료 보고를 같은 트랜잭션에 접수 (R3: CAS 통과 후
+        # 별도 /comments 사이 회차 변경 창 제거 — 409면 코멘트도 없다).
+        # 접수 코어 공유로 버전 갱신·blocked 알림 부수효과 보존 (R9)
+        record_comment(c, issue_id,
+                       (p.author or "runner").strip() or "runner",
+                       p.comment[:4000])
+    return None
