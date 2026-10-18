@@ -18,6 +18,7 @@ import uuid
 
 from .providers import inspect_delivery  # noqa: F401 — _prepare_delivery_context 모듈 스코프용
 from verdicts import classify_rejection as _classify_rejection, first_line_verdict, verdicts_all  # 9WWK 단일 파서 + J2NJ 다중 판정
+from verdicts import is_machine_author as _is_machine_author  # 71NK RC — 반려 집계 기계 author 제외
 from datetime import datetime, timedelta
 
 import failure_rules
@@ -365,10 +366,14 @@ def _resolve_executor(cand, agents):
 # 반려 사유 버킷(키워드 분류 — 대소문자 무시, 순서 민감: migration이 contract의
 # '스키마' 키워드보다 우선). 미분류는 general — 구조화 대상에서 뺀다.
 def _rejection_verdicts(cur):
-    """카드의 request-changes 판정 코멘트(시간순). TT·레거시 PR 경로 공용 형식."""
+    """카드의 request-changes 판정 코멘트(시간순). TT·레거시 PR 경로 공용 형식.
+
+    71NK RC — 기계 author(runner 에코 등)의 첫 줄은 반려 집계에서 제외
+    (verdicts.is_machine_author — /rejections/summary와 동일 규칙)."""
     out = []
     for c in cur.get("comments") or []:
-        if first_line_verdict(c.get("body")) == "request-changes":
+        if first_line_verdict(c.get("body")) == "request-changes" \
+                and not _is_machine_author(c.get("author")):
             out.append(c)
     return out
 
