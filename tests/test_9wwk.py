@@ -30,8 +30,10 @@ def test_실제_판정_댓글은_집계된다():
     from server.verdicts import verdict_of
     assert verdict_of("agy", "review: request-changes\nTT#X@a1/s\n근거") == "request-changes"
     assert verdict_of("codex", "review: approve\nTT#X@a1/s") == "approve"
-    # 대소문자 규약 — 정확한 소문자만
-    assert verdict_of("agy", "Review: request-changes") is None
+    # 71NK 완화 — 대소문자 무시 + 같은 줄 사유 첨부도 판정(첫 줄 한정 유지)
+    assert verdict_of("agy", "Review: request-changes") == "request-changes"
+    assert verdict_of("agy", "review: approve — CI green") == "approve"
+    assert verdict_of("agy", "review: approves") is None  # 단어 경계 — 부분 일치 아님
 
 
 def test_세_소비처가_같은_입력에_같은_판정을_낸다():

@@ -204,15 +204,12 @@ def _requested_reviewers(i, pr_no, sha8):
 # 자기 리뷰 방지용 고정 가족 어휘 — TT_REVIEW_MAP 확장과 무관하게 이 어휘로만 제외한다
 # (매핑 키 codex-labs->codex로 가족 경유 자기 리뷰를 만들 수 없다)
 # cursor: cursor-review(읽기전용 리뷰 프로필)는 가족 동반 — 구현 cursor의 자기 리뷰 방지(XV84)
-REVIEW_FAMILIES = ("codex", "claude", "hermes", "opencode", "cursor")
-# 어댑터 별칭 — kanban-adapter는 hermes의 리뷰 대행자다(발령자 결정 2026-10-10)
-FAMILY_ALIASES = {"kanban-adapter": "hermes",
-                  # cursor-review는 cursor의 읽기전용 리뷰 프로필(별도 에이전트, 가족 동일) — XV84
-                  "cursor-review": "cursor"}
-# host 별칭 — assignee가 user@host 형식이고 base로 가족을 못 찾을 때 host로 추정한다(F2).
-# 실제 보드 assignee 2위 형식(skshim@tp-13)은 등록 에이전트명과 달라 가족 정규화에
-# 걸리지 않는다. 카드 표 "opencode (tp-13 포함)" — env TT_HOST_FAMILY_MAP으로 확장.
-HOST_FAMILY_ALIASES = {"tp-13": "opencode"}
+# 3QMV — 가족 어휘·해석 규칙은 server/identity.py 단일 소스로 이동. 아래
+# 임포트가 기존 소비처(core 내부·테스트·지표 스크립트)의 이름을 그대로 유지한다.
+from identity import (FAMILY_ALIASES, REVIEW_FAMILIES, agent_family,  # noqa: F401
+                      effective_host_family_map, parse_host_family_map)
+from identity import alias_resolve as _identity_alias_resolve
+from identity import resolve as _identity_resolve
 # 발령자 결정(2026-10-10) 기본 카운터파트 표 — TT_REVIEW_MAP env로 override·확장
 DEFAULT_REVIEW_MAP = {"codex": "claude", "claude": "codex",
                       "hermes": "codex", "opencode": "codex"}
@@ -288,44 +285,10 @@ def _assignable(a):
     return _receivable(a)
 
 
-def parse_host_family_map(raw):
-    """TT_HOST_FAMILY_MAP='tp-13->opencode,foo->claude' → dict. 빈 칸·불량 항목은 무시."""
-    out = {}
-    for part in (raw or "").split(","):
-        if "->" not in part:
-            continue
-        k, _, v = part.partition("->")
-        k, v = k.strip().lower(), v.strip().lower()
-        if k and v:
-            out[k] = v
-    return out
 
 
-def effective_host_family_map():
-    """기본 host 별칭 + env 확장 — agent_family가 host로 가족을 추정할 때 사용(F2)."""
-    return {**HOST_FAMILY_ALIASES, **parse_host_family_map(os.getenv("TT_HOST_FAMILY_MAP", ""))}
+# agent_family는 identity.py로 이동 — 위 임포트로 재수출된다.
 
-
-def agent_family(name):
-    """에이전트 가족 정규화(자기 리뷰 방지 기준) — host 접미사 흡수 + 고정 어휘 prefix.
-
-    어댑터 별칭 우선(kanban-adapter→hermes 대행). base에서 가족을 못 찾고 user@host
-    형식이면 host 별칭으로 가족을 추정한다(F2 — skshim@tp-13 → opencode). 미매칭
-    (None)은 가족 미지 에이전트(qw-flash, agy 등) — 본인 신원 제외만 적용되고
-    가족 제외는 없다.
-    """
-    s = (name or "").strip().lower()
-    base, _, host = s.partition("@")
-    if base in FAMILY_ALIASES:
-        return FAMILY_ALIASES[base]
-    for fam in sorted(REVIEW_FAMILIES, key=len, reverse=True):
-        if base.startswith(fam):
-            return fam
-    if host:
-        hmap = effective_host_family_map()
-        if host in hmap:
-            return hmap[host]
-    return None
 
 
 def _routing_family(name, rmap):
@@ -360,31 +323,17 @@ def route_reviewer(assignee, rmap):
 
 
 def _alias_resolve(cand, agents):
-    """별칭 사전(agent.aliases) 해석 — 서버 resolve_agent_identity의 스냅샷판(W0DF).
-    decide()는 DB가 없는 순수 함수라 스냅샷 agents의 aliases 필드로 같은 규칙을 적용."""
-    for a in agents or []:
-        if cand and cand in (a.get("aliases") or []):
-            return a.get("name")
-    return None
+    """별칭 사전 해석 — identity.alias_resolve 위임(3QMV 단일 소스)."""
+    return _identity_alias_resolve(cand, agents)
 
 
 def _resolve_agent(cand, agents):
     """후보 → 실제 dispatch 대상 등록 에이전트 이름. 정확 일치 → 별칭 → 가족 매칭.
 
     등록 에이전트 스냅샷(decide의 enabled+base_url 필터 통과 집합)에 없으면
-    None — 오프라인 판정의 기준.
+    None — 오프라인 판정의 기준. 규칙 본체는 identity.resolve(3QMV).
     """
-    fam = agent_family(cand)
-    for a in agents or []:
-        if a.get("name") == cand:
-            return cand
-    hit = _alias_resolve(cand, agents)
-    if hit:
-        return hit
-    for a in agents or []:
-        if fam and agent_family(a.get("name")) == fam:
-            return a.get("name")
-    return None
+    return _identity_resolve(cand, agents)
 
 
 def _resolve_executor(cand, agents):

@@ -14,6 +14,7 @@ from fastapi import HTTPException
 
 import config
 import db as dbmod
+import identity
 from verification import legacy_result
 
 _notify_reg_lock = threading.Lock()
@@ -62,20 +63,17 @@ def get_issue(c, issue_id):
 
 def resolve_agent_identity(c, cand: str) -> str | None:
     """DX88(M5283J3A-DX88) — 수령자 정규화: 등록명 정확 일치 우선, Z1HP 별칭
-    사전(agents.aliases) 매칭 시 등록명 반환. 미매칭 None. 공백은 호출부에서 정리."""
+    사전(agents.aliases) 매칭 시 등록명 반환. 미매칭 None. 공백은 호출부에서 정리.
+
+    3QMV — 규칙 본체는 identity.resolve 단일 소스. 서버 규약은 별칭까지만
+    해석(가족 폴백 없음)이므로 family_fallback=False로 위임한다."""
     s = (cand or "").strip()
     if not s:
         return None
-    if c.execute("SELECT 1 FROM agents WHERE name=?", (s,)).fetchone():
-        return s
-    for r in c.execute("SELECT name, aliases FROM agents").fetchall():
-        try:
-            aliases = json.loads(r["aliases"] or "[]")
-        except (ValueError, TypeError):
-            aliases = []
-        if s in aliases:
-            return r["name"]
-    return None
+    rows = [{"name": r["name"],
+             "aliases": json.loads(r["aliases"] or "[]")}
+            for r in c.execute("SELECT name, aliases FROM agents").fetchall()]
+    return identity.resolve(s, rows, family_fallback=False)
 
 
 def bump(c, issue_id, fields, expected_version=None):
@@ -179,8 +177,12 @@ def finish_submit_dispatches(c, issue_id, submitter):
         (issue_id, submitter, *config.ACTIVE_RUN_STATES)).fetchall()
     ts = dbmod.now()
     for r in rows:
-        c.execute("UPDATE dispatches SET run_state='finished', ended_at=? WHERE id=?",
-                  (ts, r["id"]))
+        # 3D5T RC — 미픽업(status='queued') 행은 배달 큐에서도 빼야 한다: run_state만
+        # finished로 두면 다음 폴링에 되살아난다(pending_inbox는 status='queued'를 배달).
+        # 픽업된 행(status='ok')은 status를 유지하고 run_state만 종결한다.
+        c.execute("UPDATE dispatches SET run_state='finished', ended_at=?, "
+                  "status=CASE WHEN status='queued' THEN 'superseded' ELSE status END "
+                  "WHERE id=?", (ts, r["id"]))
         log_event(c, "dispatch.updated", "dispatch", r["id"],
                   {"run_state": "finished", "via": "submit"})
 

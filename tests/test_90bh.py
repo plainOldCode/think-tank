@@ -102,3 +102,19 @@ def test_제출후_같은_에이전트_재발령_가드는_막지_않는다(clie
     card = client.get(f"/issues/{issue['id']}").json()
     assert not any(_occupies_card(r, card["execution_attempt"]) and r.get("agent") == "poller90bh"
                    for r in rows)
+
+
+def test_미픽업_행은_제출시_배달_큐에서도_빠진다(client):
+    # 3D5T RC — run_state만 finished면 다음 폴링에 status=queued 행이 되살아난다
+    _reg_poll(client)
+    issue = mk(client, title="90bh 미픽업 제출")
+    client.post(f"/issues/{issue['id']}/claim", json={"agent": "poller90bh"})
+    did = _dispatch(client, issue["id"], "poller90bh")   # 픽업 없이 제출
+
+    _submit(client, issue["id"])
+    row = _row(client, did)
+    assert row["run_state"] == "finished" and row["status"] == "superseded"
+    out = client.get("/agents/runner-90bh/pending",
+                     headers={"authorization": f"Bearer {SECRET}"})
+    assert out.json() == []                              # 재배달 없음
+    assert _row(client, did)["run_state"] == "finished"  # 되살아나지 않음
