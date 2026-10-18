@@ -12,6 +12,8 @@
 import re
 
 VERDICT_LINE = re.compile(r"review: (approve|request-changes)\s*$")
+# head-bound 판정 표기 'PR#<n>@<sha8>' — probe review_verdict와 동일 규격
+PR_SHA_RE = re.compile(r"PR#(\d+)@([0-9a-fA-F]{8})")
 MACHINE_AUTHOR = re.compile(r"^(probe|tt-server|tt-embedding-daemon|board)$|^runner@")
 
 REJECT_BUCKETS = {
@@ -51,3 +53,25 @@ def classify_rejection(body):
         if any(k.lower() in text for k in kws):
             return bucket
     return "general"
+
+
+def verdicts_all(comments, reviewers, pr_no, sha8):
+    """리뷰어별 최신 판정 사전 {author: verdict} — J2NJ 이중 판정 집계용.
+
+    review_verdict와 동일 자격(author 일치 + PR#n@sha8 head 일치)이지만
+    리뷰어마다 최신 판정을 개별 보관한다. 단일 리뷰어 흐름은 기존
+    review_verdict(latest-wins)를 그대로 쓴다(동작 불변)."""
+    out: dict = {}
+    if isinstance(reviewers, str):
+        reviewers = [reviewers]
+    for c in comments or []:
+        if c.get("author") not in (reviewers or []):
+            continue
+        body = c.get("body") or ""
+        m = PR_SHA_RE.search(body)
+        if not m or int(m.group(1)) != pr_no or m.group(2).lower() != (sha8 or "").lower():
+            continue
+        v = first_line_verdict(body)
+        if v:
+            out[c.get("author")] = v
+    return out

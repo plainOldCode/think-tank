@@ -17,7 +17,7 @@ import urllib.request
 import uuid
 
 from .providers import inspect_delivery  # noqa: F401 — _prepare_delivery_context 모듈 스코프용
-from verdicts import classify_rejection as _classify_rejection, first_line_verdict  # 9WWK 단일 파서
+from verdicts import classify_rejection as _classify_rejection, first_line_verdict, verdicts_all  # 9WWK 단일 파서 + J2NJ 다중 판정
 from datetime import datetime, timedelta
 
 import failure_rules
@@ -1249,6 +1249,58 @@ def _decide_in_progress(ctx, i, p, iid, pr_repo):
     return True
 
 
+def _sorted_names(names):
+    """판정 사유용 리뷰어 나열 — 결정적 순서(사전순)."""
+    return ",".join(sorted(names))
+
+
+def _agent_model_fam(agents, name):
+    """스냅샷 agents에서 name의 모델 계열(J2NJ) — 미등록·미판정은 None."""
+    for a in agents or []:
+        if a.get("name") == name:
+            return policy.model_family(a.get("model"))
+    return None
+
+
+def _pick_dual_reviewers(ctx, i, busy, judged=()):
+    """J2NJ — 모델 계열이 서로 다른 리뷰어 2인(주 라우팅+폴백 체인 순서 유지).
+
+    구현자 자기 리뷰 가드(agent_family 기존 규약)는 유지하고, 모델 계열이
+    겹치는 후보는 건너뛴다. 계열 미판정 에이전트는 이중 대상이 아니다.
+    judged는 이미 판정을 남긴 리뷰어(중재자 선정 시 제외). 2곳 미확보 시
+    빈 리스트 — 호출자가 단일 요청으로 폴백한다."""
+    a = (i.get("assignee") or "").strip()
+    impl_fam = _impl_family(a)
+    primary = route_reviewer(i.get("assignee"), ctx.rmap)
+    chain = [primary] + [c for c in (ctx.fb or REVIEW_FALLBACK) if c != primary]
+    picked = []
+    seen = set()
+    for cand in chain:
+        cand_fam = agent_family(cand)
+        if cand == a or cand in judged or (impl_fam and cand_fam == impl_fam):
+            continue  # 자기 리뷰·중복 판정자 방지
+        name = _resolve_agent(cand, ctx.agents)
+        if name is None or name in (busy or []):
+            continue
+        mfam = _agent_model_fam(ctx.agents, name)
+        if mfam is None or mfam in seen:
+            continue
+        picked.append((name, mfam))
+        seen.add(mfam)
+        if len(picked) == 2:
+            break
+    return picked
+
+
+def _pick_dual_mediator(ctx, i, judged=()):
+    """J2NJ — 불일치 중재자: 양측 판정자를 제외하고 계열이 다른 에이전트.
+
+    계열 2곳 미확보 시 None — 호출자가 사람 판단 노트로 종결."""
+    pairs = _pick_dual_reviewers(ctx, i, set(ctx.busy_agents) | set(ctx.claimed),
+                                 judged=judged)
+    return pairs[0][0] if pairs else None
+
+
 def _decide_verdict(ctx, i, p, iid, pr_repo, low_risk, high_risk, no_checks):
     """pr_no_checks(규칙표 §4)·CI green 판정 경로 — 리뷰어 판정 소비.
 
@@ -1266,6 +1318,35 @@ def _decide_verdict(ctx, i, p, iid, pr_repo, low_risk, high_risk, no_checks):
                              ({ctx.reviewer, i.get("reviewer")}
                               | _requested_reviewers(i, p["number"], sha8)) - {None},
                              p["number"], sha8)
+    # J2NJ(M54V6KY6-J2NJ) — 이중 판정 집계: 리뷰어별 최신 판정이 갈리면(승인+RC)
+    # 제3계열 중재자 1인에게 재요청한다(카드당 1회 — 마커 dedup). 중재 후에는
+    # latest-wins verdict가 최종(중재자 코멘트가 최신). 한쪽만 RC면 기존 단일
+    # 경로(review-fix)가 그대로 — 양측 승인은 아래 merge로 통과.
+    if policy.dual_review_eligible(i) and verdict is not None:
+        _vdict = verdicts_all(i.get("comments"),
+                              ({ctx.reviewer, i.get("reviewer")}
+                               | _requested_reviewers(i, p["number"], sha8)) - {None},
+                              p["number"], sha8)
+        _app = {a for a, v in _vdict.items() if v == "approve"}
+        _rcs = {a for a, v in _vdict.items() if v == "request-changes"}
+        if _app and _rcs and not _probe_marker(i, f"[dual-tiebreak #{p['number']}/{sha8}]") \
+                and not i.get("busy_agents"):
+            mediator = _pick_dual_mediator(ctx, i, judged=_app | _rcs)
+            if mediator:
+                actions.append({"agent": "probe", "issue": iid, "action": "review-request",
+                                "pr": p["number"], "repo": pr_repo,
+                                "branch": p.get("branch", ""),
+                                "head_sha": p.get("head_sha", ""),
+                                "marker": f"[dual-tiebreak #{p['number']}/{sha8}]",
+                                "dual": True, "reviewer": mediator,
+                                "reason": f"PR#{p['number']} 이중 판정 불일치"
+                                          f"(승인 {_sorted_names(_app)} vs RC {_sorted_names(_rcs)}) — "
+                                          f"제3계열 중재 → {mediator}"})
+            else:
+                actions.append({"agent": "probe", "issue": iid, "action": "review-note",
+                                "marker": f"[dual-tiebreak #{p['number']}/{sha8}]",
+                                "reason": "이중 판정 불일치 — 제3계열 중재자 없음, 사람 판단 대기"})
+            return True
     if verdict in ("approve", "request-changes") and i.get("reviewer"):
         # 리뷰어 claim 해제 — 판정 기록됐으면 점유 반납(review-fix 시 작업자 assignee 보존)
         actions.append({"agent": "probe", "issue": iid, "action": "release-reviewer",
@@ -1287,6 +1368,31 @@ def _decide_verdict(ctx, i, p, iid, pr_repo, low_risk, high_risk, no_checks):
         return True
     if verdict is None:  # 미리뷰 또는 stale — (재)요청
         marker = f"[review-req #{p['number']}/{sha8}]"
+        if policy.dual_review_eligible(i) and not _probe_marker(i, marker) \
+                and not i.get("busy_agents"):
+            # J2NJ — 계열 상이 2인 동시 요청(claim 없음: dual 카드는
+            # 단일 점유자가 없다 — 판정은 _requested_reviewers로 수집).
+            _pairs = _pick_dual_reviewers(ctx, i, busy_agents | claimed)
+            if len(_pairs) == 2:
+                for _nm, _fam in _pairs:
+                    actions.append({"agent": "probe", "issue": iid,
+                                    "action": "review-request",
+                                    "pr": p["number"], "repo": pr_repo,
+                                    "branch": p.get("branch", ""),
+                                    "head_sha": p.get("head_sha", ""),
+                                    "marker": marker, "dual": True,
+                                    "reviewer": _nm,
+                                    "reason": f"PR#{p['number']} CI green — 이중 판정 요청"
+                                              f"(계열 {_fam}) → {_nm}"})
+            else:
+                # 계열 2곳 미확보 — 기존 단일 요청으로 폴백(가용성 우선)
+                actions.append({"agent": "probe", "issue": iid,
+                                "action": "review-request",
+                                "pr": p["number"], "repo": pr_repo,
+                                "branch": p.get("branch", ""),
+                                "head_sha": p.get("head_sha", ""), "marker": marker,
+                                "reason": f"PR#{p['number']} CI green — 이중 판정 후보 부족, 단일 리뷰 요청"})
+            return True
         if _probe_marker(i, marker):
             # 12MZ reviewer_session_failed — 발령 이력 head에 판정 없음:
             # 세션 사망 정체 감지·재발령(W S3C 영구 정체 사고의 미커버 구간).
@@ -2355,8 +2461,10 @@ def _exec_review_request(url, act):
             return  # 진행 중 스폰 금지 — 마커 없이 다음 사이클 재판정
     # 동기 수령 — claim-review 거부(409)면 다음 후보로 폴백(R3). 성공 전에는
     # review-req 마커를 남기지 않아 전원 거부 시 다음 사이클이 재판정한다.
-    agent = None
-    for cand in cands:
+    # J2NJ — dual 요청은 claim 없이 발송(단일 점유자 없음 — 판정은
+    # _requested_reviewers 마커 수집). 대상은 decide가 계열 상이로 선정했다.
+    agent = act["reviewer"] if act.get("dual") else None
+    for cand in ([] if act.get("dual") else cands):
         try:
             api(url, f"/issues/{act['issue']}/claim-review", "POST", {"agent": cand})
             agent = cand
