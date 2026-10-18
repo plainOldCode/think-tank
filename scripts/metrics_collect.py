@@ -123,13 +123,13 @@ try:
             sys.path.insert(0, _rp)
             break
     from server.verdicts import first_line_verdict as _first_line_verdict
-except ImportError:  # 독립 실행(레포 없음) — X7DG RC 규칙 폴백(첫 줄 완전 일치)
-    _VERDICT_RE = re.compile(r"review: (approve|request-changes)\s*$")
+except ImportError:  # 독립 실행(레포 없음) — server/verdicts.py와 동일 규칙 폴백(71NK)
+    _VERDICT_RE = re.compile(r"review:\s*(approve|request-changes)\b", re.IGNORECASE)
 
     def _first_line_verdict(body):
         lines = (body or "").strip().splitlines()
         m = _VERDICT_RE.match(lines[0].strip()) if lines else None
-        return m.group(1) if m else None
+        return m.group(1).lower() if m else None
 
 
 def reviewer_calibration(events, window_start):

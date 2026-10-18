@@ -42,32 +42,10 @@ def test_계약_블록은_docs_정본과도_일치한다():
         assert latest in s, f"{f}: 최신 계약 {latest} 언급 없음 — 문서 동기화 누락(리뷰 지적 반복 유형)"
 
 
-# --- 9WWK/CJS6 문서 패리티 — 엔드포인트·응답 필드 스냅샷 ---
-# 새 엔드포인트/응답 필드 추가 시 이 목록과 server/static/api.md·skills/tt/references/api.md를
-# 함께 갱신한다(허용 목록으로 예외 관리 — 비워두면 전부 문서화가 기본).
-OPENAPI_PATHS = (
-    "/agents", "/agents/active", "/agents/{name}", "/agents/{runner_name}/pending",
-    "/events", "/events/stream", "/health", "/issues", "/issues/{issue_id}",
-    "/issues/{issue_id}/archive", "/issues/{issue_id}/claim", "/issues/{issue_id}/claim-review",
-    "/issues/{issue_id}/comments", "/issues/{issue_id}/dispatch", "/issues/{issue_id}/dispatches",
-    "/issues/{issue_id}/dispatches/{dispatch_id}/progress", "/issues/{issue_id}/lease",
-    "/issues/{issue_id}/ping", "/issues/{issue_id}/tree", "/issues/{issue_id}/verify",
-    "/issues/{issue_id}/why-blocked", "/maintenance/archive-sweep", "/messages",
-    "/messages/unread", "/messages/{mid}/read", "/pull", "/rejections/summary",
-    "/settings/{key}", "/work-contract",
-)
-ISSUE_FIELDS = (
-    "acceptance", "approval_path", "archived", "assignee", "blocked_default",
-    "blocked_detail", "blocked_notified_at", "blocked_options", "blocked_question",
-    "body", "brief_forbidden", "brief_scope", "brief_timebox", "brief_verify",
-    "children", "comments", "completed_at", "completion_report", "created_at",
-    "delayed", "delivery_receipt", "evidence_after_comment_id", "execution_attempt",
-    "heartbeat_at", "id", "labels", "lease_by", "lease_expires", "nominee",
-    "parent_id", "premise_rework", "priority", "review_subject", "reviewer",
-    "started_at", "state", "submission_revision", "title", "todo_since",
-    "updated_at", "verification_status", "verified", "verified_at",
-    "verified_evidence", "version", "waiting_actor", "waiting_for", "work_contract",
-)
+# --- 9WWK/CJS6 문서 패리티 — 엔드포인트·응답 필드 (GY52: 생성 기반) ---
+# 하드코딩 목록 대신 create_app().openapi()에서 경로를, GET /issues/{id} 응답에서
+# 필드를 생성한다 — 새 엔드포인트/필드가 생기면 테스트가 먼저 적색이 된다.
+# 예외만 allowlist로 관리(비워두면 전부 문서화가 기본).
 _PATH_ALLOWLIST = set()
 _FIELD_ALLOWLIST = set()
 
@@ -82,19 +60,46 @@ def _doc_path(p):
     return p
 
 
-def test_openapi_경로는_두_api문서에_모두_문서화돼_있다():
+def _undocumented(names, doc_text, allowlist=frozenset()):
+    return [n for n in names if n not in allowlist and n not in doc_text]
+
+
+def _generated_contract(tmp_path_factory):
+    """openapi paths + GET /issues/{id} 응답 필드를 실제 앱에서 생성(GY52)."""
+    import sys
+    sys.path.insert(0, str(ROOT))
+    from fastapi.testclient import TestClient
+    from app import create_app
+    app = create_app(str(tmp_path_factory.mktemp("parity") / "tt.db"))
+    with TestClient(app) as c:
+        r = c.post("/issues", json={"title": "parity", "acceptance": "완료 기준: 문서화"})
+        assert r.status_code in (200, 201), r.text
+        issue_keys = set(c.get(f"/issues/{r.json()['id']}").json().keys())
+    return set(app.openapi().get("paths", {})), issue_keys
+
+
+def test_openapi_경로는_두_api문서에_모두_문서화돼_있다(tmp_path_factory):
+    paths, _ = _generated_contract(tmp_path_factory)
     for f in ("server/static/api.md", "skills/tt/references/api.md"):
         s = (ROOT / f).read_text()
-        missing = [p for p in OPENAPI_PATHS
-                   if _doc_path(p) not in s and p not in _PATH_ALLOWLIST]
+        missing = _undocumented({_doc_path(p) for p in paths}, s, _PATH_ALLOWLIST)
         assert not missing, f"{f}: 미문서화 엔드포인트 {missing} — 문서 보강 또는 allowlist"
 
 
-def test_issue_응답_필드는_두_api문서에_모두_문서화돼_있다():
+def test_issue_응답_필드는_두_api문서에_모두_문서화돼_있다(tmp_path_factory):
+    _, fields = _generated_contract(tmp_path_factory)
     for f in ("server/static/api.md", "skills/tt/references/api.md"):
         s = (ROOT / f).read_text()
-        missing = [k for k in ISSUE_FIELDS if k not in s and k not in _FIELD_ALLOWLIST]
+        missing = _undocumented(fields, s, _FIELD_ALLOWLIST)
         assert not missing, f"{f}: 미문서화 응답 필드 {missing} — 문서 보강 또는 allowlist"
+
+
+def test_패리티는_미문서화_신규에서_적색이_된다(tmp_path_factory):
+    """GY52 RED 증명 — 생성 기반 검사가 드리프트를 잡는지 헬퍼 단위로 확인."""
+    assert _undocumented({"/issues/{issue_id}/new-undocumented"}, "", set()) == \
+        ["/issues/{issue_id}/new-undocumented"]
+    s = (ROOT / "server/static/api.md").read_text()
+    assert _undocumented({"/issues"}, s, set()) == []
 
 
 def test_두_api문서는_바이트_동일하다():
