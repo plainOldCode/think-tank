@@ -2102,7 +2102,741 @@ def _parse_iso(s):
         return None
 
 
+def _exec_release_reviewer(url, act):
+    cur = api(url, f"/issues/{act['issue']}")
+    if cur.get("reviewer") == act.get("reviewer"):
+        # 이 판정이 현재 head에 여전히 유효한지 — decide와 동일 필터(review_verdict)로 재확인.
+        # R7: author·PR 무관한 임의 판정 비교는 유효 반납까지 막는다 — 리뷰어 판정만 인정.
+        if review_verdict(cur.get("comments") or [], act.get("reviewer"),
+                          act.get("pr"), (act.get("head_sha") or "")[:8]) is None:
+            return
+        # decide 이후 카드가 변했다면(재claim·코멘트 등) 이번 라운드 폐기 — 다음 라운드 재판정.
+        # R5: 같은 판정 구간에서 리뷰어가 재claim한 새 lease를 오래된 액션이 지우지 않게.
+        if act.get("expected_version") is not None and cur.get("version") != act["expected_version"]:
+            return
+        # reviewer만 지우고, lease는 리뷰어 본인 것이 확실할 때만 —
+        # 재작업자가 새 lease를 잡은 뒤 오래된 반납 액션이 도착해도 보존(R5).
+        fields = {"reviewer": "", "expected_version": cur["version"]}
+        if cur.get("lease_by") == act.get("reviewer"):
+            fields.update({"lease_by": "", "lease_expires": None})
+        api(url, f"/issues/{act['issue']}", "PATCH", fields)
+    return
+
+def _exec_archive_sweep(url, act):
+    _archive_sweep(url, int(act.get("days") or 0))
+    return
+
+def _exec_merge(url, act):
+    repo = act.get("repo") or REPO
+    # 판정-집행 경합 흡수(t_501e6ec3 통합 회귀): collect 시점 head_sha와
+    # 병합 직전 현재 headRefOid가 다르면 폐기(다음 라운드 자연 재시도).
+    # 재시도 안전성: gh가 non-mergeable이면 merge 자체를 거부(405)하므로
+    # 스킵해도 중복 병합은 구조적으로 발생하지 않는다.
+    # 실측: gh pr view 는 번호 위치 인자, 단일 필드도 JSON 객체
+    # '{"headRefOid":"<sha>"}' 로 온다(문자열 strip('"')면 영구 불일치).
+    if act.get("low_risk"):
+        # 저위험 무계약 병합의 최종 경로 차단(M4DEK6WC-MQYS) — server/runner
+        # 변경은 사람 승인 대상이다. 라벨만으로 우회하지 않는다.
+        try:
+            info = gh_json("pr", "view", act["pr"], "--repo", repo,
+                           "--json", "files,changedFiles") or []
+            fl = info.get("files") or []
+            paths = [f.get("path", "") for f in fl]
+        except Exception as e:
+            _probe_flag(url, act, f"probe merge skip: 저위험 경로 확인 실패({e}) — 관측")
+            return
+        # gh files는 100개 컷오프(페이지네이션 없음) — changedFiles와 불일치면
+        # 목록이 불완전: 보수적으로 병합 거부(P76 리뷰 R2).
+        if len(paths) < (info.get("changedFiles") or 0):
+            _probe_flag(url, act, f"probe merge skip: 저위험 파일 목록 불완전 "
+                        f"({len(paths)}/{info.get('changedFiles')}) — 관측")
+            return
+        if any(p.startswith(("server/", "runner/")) for p in paths):
+            _probe_flag(url, act, "probe merge skip: 저위험 경로 아님 "
+                        "(server/runner 포함) — 표준 게이트로")
+            return
+    expected = act.get("head_sha") or ""
+    if expected:
+        try:
+            cur = gh_json("pr", "view", act["pr"], "--repo", repo,
+                          "--json", "headRefOid") or {}
+            current = cur.get("headRefOid") or ""
+        except Exception as e:
+            _probe_flag(url, act, f"probe merge skip: head 재확인 실패({e}) — 관측")
+            return
+        if current != expected:
+            _probe_flag(url, act, f"probe merge skip: head 변경됨 "
+                           f"({expected[:8]}→{current[:8]}) — 관측")
+            return
+    try:
+        gh_exec("pr", "merge", act["pr"], "--repo", repo, "--squash", "--delete-branch")
+    except Exception as e:
+        _probe_flag(url, act, f"probe merge skip: gh 오류 {str(e)[:120]} — 관측")
+        return
+    i = api(url, f"/issues/{act['issue']}")
+    st = i["state"]
+    cr = i.get("completion_report") or ""
+    if isinstance(cr, str) and cr:
+        try:
+            cr = json.loads(cr)
+        except Exception:
+            cr = None
+    if st == "review" and cr:
+        # 병합 성사 + 유효 보고 → verify 경로로만 done (M3R7M0ZR-YF99: done은 확인 직후)
+        ci_note = "" if act.get("no_ci") else "(CI green) "
+        try:
+            api(url, f"/issues/{act['issue']}/verify", "POST",
+                {"verifier": "probe", "completion_report": cr})
+            api(url, f"/issues/{act['issue']}/comments", "POST",
+                {"author": "probe", "body": f"probe: PR#{act['pr']} merged {ci_note}— "
+                                            "verify 통과 → done"})
+        except Exception as e:
+            api(url, f"/issues/{act['issue']}/comments", "POST",
+                {"author": "probe", "body": f"probe: PR#{act['pr']} merged — verify 실패"
+                                            f"({str(e)[:100]}). review 유지, 사람 판단 필요"})
+        return
+    if st == "review":
+        api(url, f"/issues/{act['issue']}/comments", "POST",
+            {"author": "probe", "body": f"probe: PR#{act['pr']} merged — 완료 보고 없음. "
+                                        "review 유지 (tt verify 또는 재작업 review→todo)"})
+        return
+    if st == "in_progress":
+        # 보고 제출(→review) 전에는 done 없음 — 브랜치만 반영되고 카드는 제출 대기
+        try:
+            api(url, f"/issues/{act['issue']}", "PATCH",
+                {"version": i["version"], "state": "review"})
+        except Exception:
+            pass
+        api(url, f"/issues/{act['issue']}/comments", "POST",
+            {"author": "probe", "body": f"probe: PR#{act['pr']} merged — agent 완료 보고 "
+                                        "대기(PATCH state=done + 보고 제출로 review 정지)"})
+    return
+
+def _exec_ci_fix(url, act):
+    cur = api(url, f"/issues/{act['issue']}")
+    if act.get("subject"):
+        from review_subject import subject
+        from delivery import TARGET_KEYS
+        from .providers import inspect_delivery
+        if cur.get("state") != "review" or subject(cur) != act["subject"]:
+            return
+        observed = inspect_delivery(act["delivery"], gh_json)
+        if (observed.get("state") != "OPEN" or observed.get("isDraft")
+                or any(act["delivery"].get(k) != observed.get(k) for k in TARGET_KEYS)
+                or not any(c.get("state") == "FAILURE" for c in observed.get("checks") or [])):
+            return
+    att = cur.get("execution_attempt") or 0
+    sha8 = (act.get("head_sha") or "")[:8]
+    # decide가 액션에 동봉한 마커 우선 — ip 변형([ci-fix-ip a{n} …])도
+    # 저장 마커와 판정 키가 일치해야 다음 사이클 재판정이 막힌다(JXYS R2).
+    marker = act.get("marker") or f"[ci-fix a{att} #{act['pr']}/{sha8}]"
+    if any(marker in (c.get("body") or "") for c in (cur.get("comments") or [])
+           if c.get("author") == "probe"):
+        return  # 경합 방어 — decide 판정 후 재확인
+    agent = os.environ.get("TT_CI_FIX_AGENT", "kanban-adapter")
+    target = os.environ.get("TT_CI_FIX_TARGET", "agy")
+    # S1(§5.3) — 실패 요약 annotate(advisory): 판단기 있으면 dispatch 본문에 첨부,
+    # 없으면 본문 불변. 판정·위임 여부는 규칙이 이미 정했다.
+    _s1 = judge.run_advisory("S1", {"card": act["issue"],
+                                    "pr": f"{act.get('repo','')}#{act['pr']}"
+                                          f"@{(act.get('head_sha') or '')[:8]}",
+                                    "input": {"checks_failed": act.get("checks_failed") or [],
+                                              "branch": act.get("branch", "")}},
+                             "ci-fix dispatch", cycle_id=act.get("cycle_id"))
+    _s1_txt = ""
+    if _s1 and isinstance(_s1.value, str) and _s1.value.strip():
+        # [judge-note <id>] — 기존 파서가 제어 정보로 읽지 않는 새 주석 kind(§5.2).
+        # 값은 소독(advisory가 마커 시퀀스를 운반하지 않음) + 한 줄 블록.
+        _s1_txt = (f"\n\n[judge-note {_s1.decision_id}] 실패 요약(참고용 — 판정 아님): "
+                   f"{judge.sanitize(_s1.value.strip()[:500].replace(chr(10), ' '))}")
+    msg = (f"[auto probe] PR #{act['pr']} ({act.get('repo','')}) CI 실패"
+           f"(failing: {','.join(act.get('checks_failed') or [])}). 임무: PR을 읽고 **수정**할 것"
+           f" — 단순 review 금지, 목적은 CI red 해소. 브랜치 {act.get('branch','')} 위에서 커밋 계속, "
+           f"범위는 CI 실패 수정만(리팩·스킵·assertion 약화 금지). push 후 즉시 종료 — "
+           f"CI 재판정·병합은 probe가 자동 진행하니 CI·리뷰를 기다리거나 폴링하지 말 것"
+            f"(다음 단계 필요 시 보드가 재호출). 인수: {target} 담당.{_s1_txt}")
+    if act.get("subject"):
+        msg += (" 수정 push 후 delivery.head_sha를 새 전체 SHA로 갱신하고 "
+                "tt submit --report로 같은 회차 보고를 재제출해야 재리뷰·병합된다. "
+                "PR 제목/브랜치와 변경 산출물을 보고에 명시하라.")
+    try:
+        api(url, f"/issues/{act['issue']}/dispatch", "POST", {"agent": agent, "message": msg})
+    except Exception as e:
+        api(url, f"/issues/{act['issue']}/comments", "POST",
+            {"author": "probe", "body": f"{marker} dispatch 실패({str(e)[:80]}) — "
+                                        "사람 판단 대기(needs-merge 회귀)"})
+        return
+    # 작업자 wake(M4T4WW0N-7FQH): assignee가 있으면 첫 줄에 [CI:fail] — relay가
+    # 이 신호로 터미널을 깨운다. preview가 120자로 잘리므로 첫 줄이어야 한다.
+    # 마커 dedup은 본문 전체 스캔이라 줄 순서는 자유.
+    assignee = cur.get("assignee") or ""
+    wake = (f"[CI:fail] @{assignee} #{act['pr']} — "
+            f"{', '.join(act.get('checks_failed') or ['?'])} 확인하라\n") if assignee else ""
+    api(url, f"/issues/{act['issue']}/comments", "POST",
+        {"author": "probe", "body": f"{wake}"
+                                    f"{marker} PR#{act['pr']} CI 실패 — {agent}({target}) "
+                                    "review+수정 위임"})
+    return
+
+def _exec_review_claim(url, act):
+    # TT 개선#3c — 교차리뷰 자동 수령: 서버 claim-review로 점유 표기 후 리뷰 dispatch
+    # R2: review-request와 동일한 마커 경합 재확인 + 영속화 — 재수령 루프 방지
+    cur = api(url, f"/issues/{act['issue']}")
+    if any(act["marker"] in (c.get("body") or "") for c in (cur.get("comments") or [])
+           if c.get("author") == "probe"):
+        return  # 경합 방어 — decide 판정 후 재확인
+    try:
+        api(url, f"/issues/{act['issue']}/claim-review", "POST", {"agent": act["agent"]})
+    except urllib.error.HTTPError as e:
+        # 수령 거부(점유 경합 등) — 사이클 전멸 대신 기록만 남기고 다음 사이클 재시도.
+        # review-req 마커를 남기지 않으므로 decide는 재판정한다(R3).
+        _claim_refused_note(url, act, cur, e.code)
+        return
+    try:
+        api(url, f"/issues/{act['issue']}/dispatch", "POST",
+            {"agent": act["agent"], "message": _review_dispatch_msg(act, act["agent"]),
+             "work_contract": REVIEW_CONTRACT})
+    except Exception as e:
+        # F4 — claim 점유만 남기고 죽으면 만료까지 타 리뷰어가 409다: 반납 후 기록
+        _reviewer_lease_release(url, act["issue"], act["agent"])
+        api(url, f"/issues/{act['issue']}/comments", "POST",
+            {"author": "probe", "body": f"{act['marker']} 리뷰 dispatch 실패({str(e)[:80]}) — "
+                                        "리뷰어 lease 반납, 사람 판단 대기"})
+        return
+    api(url, f"/issues/{act['issue']}/comments", "POST",
+        {"author": "probe", "body": f"{act['marker']} PR#{act['pr']} CI green — "
+                                    f"자동 수령 → {act['agent']}"})
+    return
+
+def _exec_review_request(url, act):
+    kind = act["action"]
+    # 리뷰 게이트 1단계 — 리뷰어 에이전트에 리뷰 요청 (docs/review-gate.md)
+    # review-retry(12MZ): 세션 사망 정체 재발령 — 회차 마커 dedup + 새 세션 지시문
+    cur = api(url, f"/issues/{act['issue']}")
+    if any(act["marker"] in (c.get("body") or "") for c in (cur.get("comments") or [])
+           if c.get("author") == "probe"):
+        return  # 경합 방어 — decide 판정 후 재확인
+    # M4JTJ970-WS3C: decide가 라우팅한 카운터파트 리뷰어 우선 — env는 레거시 폴백.
+    # 작성자 본인 신원·구현 가족(고정 어휘·어댑터 별칭)은 매핑 확장과 무관하게 제외(R2).
+    author = (cur.get("assignee") or "").strip()
+    author_fam = _impl_family(author)
+    if act.get("reviewer"):
+        # 런타임 설정 우선(XV84) — 조회 실패 시 코드 기본으로 회귀
+        try:
+            s = api(url, "/settings/review-routing")
+            rf = tuple(s.get("review_fallback") or REVIEW_FALLBACK) \
+                if isinstance(s, dict) and s.get("review_fallback") else REVIEW_FALLBACK
+        except Exception:
+            rf = REVIEW_FALLBACK
+        cands = [act["reviewer"]] + [c for c in rf if c != act["reviewer"]]
+    else:
+        legacy = os.environ.get("TT_REVIEW_AGENT", "").strip() or "kanban-adapter"
+        cands = [legacy]
+    cands = [c for c in cands
+             if c != author and not (author_fam and agent_family(c) == author_fam)]
+    # JWW0 — 진행 중 dispatch가 후보 에이전트를 점유하면 제외(동시 리뷰 방지).
+    # decide 이후 시간이 지났을 수 있어 실행 직전 재확인한다.
+    # review-retry(12MZ 정체 재발령)에는 적용하지 않는다 — 정체 세션은 판정 없이
+    # 끝난 좀비이고 재발령은 fresh: True 새 세션이라 동시 실행이 아니다. 여기서
+    # 막으면 회차 마커가 남지 않아 REVIEW_RETRY_MAX·[needs-human-review]
+    # 에스컬레이션까지 소리 없이 멈춘다(정체 dispatch도 _ACTIVE_RUN_STATES에
+    # 걸리는 함정 — 리뷰 블로커). 진짜 점유 충돌은 claim-review 409 폴백이 흡수.
+    if kind == "review-request":
+        try:
+            _d = api(url, f"/issues/{act['issue']}/dispatches") or []
+        except Exception:
+            # 조회 실패는 [] fail-open — decide 가드가 1차 방어(의도된 동작)
+            _d = []
+        _busy = {x.get("agent") for x in _d
+                 if _occupies_card(x, cur.get("execution_attempt")) and x.get("agent")}
+        _had_cands = bool(cands)
+        cands = [c for c in cands if c not in _busy]
+        if _had_cands and not cands:
+            return  # 진행 중 스폰 금지 — 마커 없이 다음 사이클 재판정
+    # 동기 수령 — claim-review 거부(409)면 다음 후보로 폴백(R3). 성공 전에는
+    # review-req 마커를 남기지 않아 전원 거부 시 다음 사이클이 재판정한다.
+    agent = None
+    for cand in cands:
+        try:
+            api(url, f"/issues/{act['issue']}/claim-review", "POST", {"agent": cand})
+            agent = cand
+            break
+        except urllib.error.HTTPError as e:
+            if e.code != 409:
+                raise
+    if agent is None:
+        # F4 — 가드로 후보가 전부 걸러진 경우와 실제 거부(409)는 사유가 다르다
+        if cands:
+            _claim_refused_note(url, act, cur, 409)
+        else:
+            _guard_skipped_note(url, act, cur)
+        return
+    msg = _review_dispatch_msg(act, agent)
+    if kind == "review-retry":
+        # 리뷰 R4: 회차 마커를 본문에 포함 — 서버 멱등키(issue+agent+attempt+message
+        # 해시)가 회차를 구분하게 해 a2+ 재발령이 a1 행으로 기수락되지 않는다.
+        msg += ("\n\n[12MZ] 이전 리뷰 세션이 판정 없이 종료됐다(reviewer_session_failed). "
+                "**새 세션에서 시작**하고 이전 세션 재사용 금지 — 컨텍스트 누적이 부수 원인이었다.\n"
+                + act["marker"])
+    dresp = None
+    try:
+        dresp = api(url, f"/issues/{act['issue']}/dispatch", "POST",
+                    {"agent": agent, "message": msg,
+                     # 12MZ 리뷰 R5: 재발령은 이전 세션 context 상속을 끊는다 — 새 세션 강제
+                     "work_contract": REVIEW_CONTRACT, "fresh": True} if kind == "review-retry" else
+                    {"agent": agent, "message": msg, "work_contract": REVIEW_CONTRACT})
+    except Exception as e:
+        # F4 — claim 점유만 남기고 죽으면 만료까지 타 리뷰어가 409다: 반납 후 기록
+        _reviewer_lease_release(url, act["issue"], agent)
+        api(url, f"/issues/{act['issue']}/comments", "POST",
+            {"author": "probe", "body": f"{act['marker']} 리뷰 dispatch 실패({str(e)[:80]}) — "
+                                        "리뷰어 lease 반납, 사람 판단 대기"})
+        return
+    # 12MZ 리뷰 R3 잔여: 발령 마커에 dispatch id를 남겨 runner 실패 코멘트의
+    # dispatch#N과 대조 — 구 회차·작업 dispatch의 늦은 실패가 새 세션 관망을 깨지 않게.
+    did = ""
+    if isinstance(dresp, dict):
+        did = str(dresp.get("id") or "")
+    api(url, f"/issues/{act['issue']}/comments", "POST",
+        {"author": "probe", "body": f"{act['marker']} PR#{act['pr']} CI green — "
+                                    f"리뷰 요청 → {agent}" + (f" (dispatch#{did})" if did else "")})
+    return
+
+def _exec_submit_remind(url, act):
+    # JXYS 2 — green 무보고 독려 1회. receive_mode=relay(기본)면 멘션이 닿지
+    # 않으므로 워치독 다이제스트(보드)에 릴레이 플래그.
+    cur = api(url, f"/issues/{act['issue']}")
+    marker = act.get("marker") or ""
+    if any(marker in (c.get("body") or "") for c in (cur.get("comments") or [])
+           if c.get("author") == "probe"):
+        return
+    who = cur.get("assignee") or ""
+    api(url, f"/issues/{act['issue']}/comments", "POST",
+        {"author": "probe",
+         "body": f"{marker} @{who} PR#{act['pr']} CI green — 완료 보고 제출"
+                 "(tt submit --report)이 review 진입. 무반응 시 타이머 경과 후 "
+                 "자동 승격됩니다(점진 push는 head 변경으로 타이머 리셋)."})
+    agents = [a for a in api(url, "/agents") or []]
+    if _relay_timer_s(who, agents) >= 6 * 3600:
+        api(url, "/messages", "POST",
+            {"author": "probe",
+             "body": (f"@{who} " if who else "")
+                     + f"[submit-remind] 카드 {act['issue']} PR#{act['pr']} — "
+                       "CI green 완료 보고 제출 요망 — tt submit --report(독려: 자동 승격 예정)"})
+    return
+
+def _exec_submission_adopt(url, act):
+    # JXYS 3 — 무반응 승격: in_progress → review. 완료(done)는 보고 의존 유지.
+    cur = api(url, f"/issues/{act['issue']}")
+    marker = act.get("marker") or ""
+    if any(marker in (c.get("body") or "") for c in (cur.get("comments") or [])
+           if c.get("author") == "probe"):
+        return
+    # 실행 직전 재확인 — decide 이후 상태가 바뀌었으면 폐기
+    if cur.get("state") != "in_progress" \
+            or (cur.get("execution_attempt") or 0) != (act.get("att") or 0) \
+            or _lease_held(cur) or cur.get("waiting_for") == "human":
+        return
+    try:
+        _dfx = api(url, f"/issues/{act['issue']}/dispatches") or []
+    except Exception:
+        _dfx = []
+    if any(_occupies_card(x, cur.get("execution_attempt")) for x in _dfx):
+        return
+    _rmdt = _iso(act.get("remind_ts") or "")
+    if _rmdt and any((x.get("author") or "") not in _RELAY_OBSERVERS
+                     and not str(x.get("author") or "").startswith("runner")
+                     and _comment_after(x, _rmdt, act.get("remind_id") or 0)
+                     for x in (cur.get("comments") or [])):
+        return  # decide 이후 응답·활동 — 승격 취소
+    if act.get("repo") and act.get("pr") and \
+            _gh_pr_head(act.get("repo"), act.get("pr")) != \
+            (act.get("head_sha") or "")[:8]:
+        return  # 실제 head 변경 — 타이머 리셋이므로 승격 폐기
+    try:
+        api(url, f"/issues/{act['issue']}", "PATCH",
+            {"state": "review",
+             "expected_version": act.get("expected_version")
+             or cur.get("version")})
+    except Exception:
+        return  # CAS 경합 — 다음 사이클 재판정
+    api(url, f"/issues/{act['issue']}/comments", "POST",
+        {"author": "probe",
+         "body": f"{marker} 기계적 승격 — green 무보고 독려 후 무반응"
+                 "(타이머 경과, head 불변). in_progress → review. "
+                 "완료 보고는 승격 후에도 유효 — 병합 verify는 유효 보고 필요"})
+    return
+
+def _exec_review_fix_relay(url, act):
+    # BG97 — [fix-stall] 소비: 위임 후 미실행 정체의 원 워커 재발령 1회.
+    # dedup 마커 [rework-relay #pr/sha a{att}]는 성공·실패 모두 남겨
+    # 같은 (사유,pr,sha,attempt) 재시도를 막는다(실패면 사람 릴레이로 종결).
+    cur = api(url, f"/issues/{act['issue']}")
+    att = act.get("att") or cur.get("execution_attempt") or 0
+    rmarker = f"[rework-relay #{act['pr']}/{(act.get('head_sha') or '')[:8]} a{att}]"
+    if any(rmarker in (c.get("body") or "") for c in (cur.get("comments") or [])
+           if c.get("author") == "probe"):
+        return
+    # R3 — decide 이후 현재 상태 재확인: 회차 변화·종결·임대·blocked·승인·
+    # 워커 응답이 하나라도 있으면 폐기(실행 직전 자격 재검증).
+    if cur.get("state") in ("done", "cancelled") \
+            or (cur.get("execution_attempt") or 0) != (act.get("att") or 0) \
+            or cur.get("state") != "review" or cur.get("waiting_for") == "human" \
+            or _lease_held(cur):
+        return
+    _revs = ({os.environ.get("TT_REVIEW_AGENT", "").strip(), cur.get("reviewer")}
+             | _requested_reviewers(cur, act["pr"], (act.get("head_sha") or "")[:8])
+             ) - {None, ""}
+    if review_verdict(cur.get("comments") or [], _revs, act["pr"],
+                      (act.get("head_sha") or "")[:8]) == "approve":
+        return  # stall 뒤 승인 — 재작업 대상 아님
+    _sdtv = _iso(act.get("stall_ts") or "")
+    if _sdtv and any(
+            (x.get("author") or "") not in _RELAY_OBSERVERS
+            and not str(x.get("author") or "").startswith("runner")
+            and _comment_after(x, _sdtv, act.get("stall_id") or 0)
+            for x in (cur.get("comments") or [])):
+        return  # decide 이후 워커 응답·진행 — 폐기(R2/R3)
+    if _gh_pr_head(act.get("repo"), act["pr"]) != (act.get("head_sha") or "")[:8]:
+        return  # 실제 PR head 변경·조회 불가 — 구 head 대상 스폰 금지(R3)
+    _dfix_all = api(url, f"/issues/{act['issue']}/dispatches") or [] if True else []
+    assignee = cur.get("assignee") or ""
+    agents = [a for a in api(url, "/agents") or [] if _receivable(a)]
+    # 전달 사다리(리뷰 R4) — 정확명 우선, hook 전달 실패 시 실행 가능한
+    # 같은 가족 수신처 재시도, 전부 실패면 사람 릴레이로 종결.
+    target = _resolve_executor(assignee, agents)
+    ladder = []
+    if target and target not in NON_EXECUTORS:
+        ladder.append(target)
+        fam = agent_family(target)
+        if fam:
+            ladder += [a.get("name") for a in agents
+                       if a.get("name") != target
+                       and a.get("name") not in NON_EXECUTORS
+                       and agent_family(a.get("name")) == fam]
+    ok = False
+    _dfix = []
+    if ladder:
+        try:
+            _dfix = api(url, f"/issues/{act['issue']}/dispatches") or []
+        except Exception:
+            _dfix = []  # 조회 실패 fail-open — decide 가드가 1차 방어(JWW0)
+    # 후보별이 아니라 카드 전체 가드 — 다른 실행자의 수동 dispatch도 동시 스폰 금지(R3)
+    if _dfix and ladder and any(_occupies_card(x, cur.get("execution_attempt"))
+                                for x in _dfix):
+        return
+    for cand in ladder:
+        if any(_occupies_card(x, cur.get("execution_attempt")) and x.get("agent") == cand
+               for x in _dfix):
+            if cand == target:
+                return  # 진행 중 — 다음 사이클(JWW0)
+            continue  # 가족 후보 진행 중 — 다음 후보
+        try:
+            _resp = api(url, f"/issues/{act['issue']}/dispatch", "POST",
+                        {"agent": cand,
+                         "message": (f"[auto review-fix] PR #{act['pr']} 리뷰 request-changes(재발령) — "
+                                     f"리뷰 코멘트(PR/카드)를 읽고 같은 브랜치 "
+                                     f"{act.get('branch', '')} 위에서 수정 커밋. "
+                                     f"head {(act.get('head_sha') or '')[:8]}. "
+                                     "push하면 probe가 재리뷰 요청.")})
+        except Exception:
+            continue  # 전달 실패 — 가족 후보로, 없으면 사람 릴레이(R4)
+        if isinstance(_resp, dict) and _resp.get("status") == "error":
+            continue  # hook 전달 실패(HTTP 5xx·연결 오류) — 성공으로 기록하지 않는다(R4)
+        ok = True
+        api(url, f"/issues/{act['issue']}/comments", "POST",
+            {"author": "probe",
+             "body": f"{rmarker} 원 워커 재발령 — {cand} 세션 실행 중"
+                     + ("" if cand == target else "(가족 대행)")})
+        break
+    if not ok:
+        api(url, f"/issues/{act['issue']}/comments", "POST",
+            {"author": "probe",
+             "body": f"{rmarker} 원 워커 재발령 불가(assignee: {assignee or '없음'}) — "
+                     "사람 세션 전달 요망"})
+        api(url, "/messages", "POST",
+            {"author": "probe",
+             "body": (f"@{assignee} " if assignee else "")
+                     + f"[rework-relay] 카드 {act['issue']} PR#{act['pr']} — 재작업 전달 필요"
+                     "(dispatch 미실행 정체[fix-stall], 사람이 세션에 전달)"})
+    return
+
+def _exec_rework_fallback(url, act):
+    # BG97 2순위 — relay 무반응 양도: assignee 해제+todo 회귀(판정 전문은 코멘트 보존).
+    cur = api(url, f"/issues/{act['issue']}")
+    marker = act.get("marker") or ""
+    if any(marker in (c.get("body") or "") for c in (cur.get("comments") or [])
+           if c.get("author") == "probe"):
+        return
+    # R3 — decide 이후 현재 상태 재확인: 새 워커가 수령했다면(회차 승격·state·
+    # 임대·진행 dispatch) 양도하지 않는다. 판정 대상과 현재 값의 일치 필수.
+    if cur.get("state") != "review" \
+            or (cur.get("execution_attempt") or 0) != (act.get("att") or 0) \
+            or cur.get("waiting_for") == "human" or _lease_held(cur):
+        return
+    # busy_agents는 스냅샷 파생값(GET에 없음) — 실제 dispatch 상태로 재확인(R3)
+    try:
+        _dfb = api(url, f"/issues/{act['issue']}/dispatches") or []
+    except Exception:
+        _dfb = []
+    if any(_occupies_card(x, cur.get("execution_attempt")) for x in _dfb):
+        return
+    _rdtv = _iso(act.get("relay_ts") or "")
+    _rid = act.get("relay_id") or 0
+    _rcmts = cur.get("comments") or []
+    if _rdtv and any(
+            (x.get("author") or "") not in _RELAY_OBSERVERS
+            and not str(x.get("author") or "").startswith("runner")
+            and _comment_after(x, _rdtv, _rid)
+            for x in _rcmts):
+        return  # decide 이후 워커 응답·활동 — 양도 취소(R3)
+    # 실제 head 마커 변화 — relay 시 head와 다른 probe 마커가 그 사이 생겼으면 회귀 금지
+    _rsha = (act.get("head_sha") or "")[:8]
+    if _rsha and any(x.get("author") == "probe" and _comment_ts(x)
+                     and _iso(_comment_ts(x)) is not None and _rdtv
+                     and _iso(_comment_ts(x)) > _rdtv
+                     and f"#{act.get('pr')}/" in (x.get("body") or "")
+                     and _rsha not in (x.get("body") or "")
+                     and ("[review-fix #" in (x.get("body") or "")
+                          or "[review-req #" in (x.get("body") or "")
+                          or "[ci-fix a" in (x.get("body") or ""))
+                     for x in _rcmts):
+        return
+    if act.get("repo") and act.get("pr") and \
+            _gh_pr_head(act.get("repo"), act.get("pr")) != \
+            (act.get("head_sha") or "")[:8]:
+        return  # 실제 PR head 변경·조회 불가 — 회귀 폐기(R3)
+    try:
+        # CAS — fetch·PATCH 사이 경합은 서버 409로 거절, 다음 사이클 재판정
+        labels = sorted(set(cur.get("labels") or []) | {"auto"})  # 자동 풀 재수령 경로(R7)
+        api(url, f"/issues/{act['issue']}", "PATCH",
+            {"assignee": "", "state": "todo", "labels": labels,
+             "expected_version": cur.get("version")})
+    except Exception:
+        return
+    api(url, f"/issues/{act['issue']}/comments", "POST",
+        {"author": "probe",
+         "body": f"{marker} relay 무반응(타이머 경과, head 불변) — assignee 해제+todo 회귀. "
+                 "판정 전문은 코멘트 보존 — 누구나 재수령 가능"})
+    return
+
+def _exec_review_fix(url, act):
+    # 리뷰 게이트 2단계 — request-changes: 카드 review 반납 + 배정 에이전트에 수정 위임
+    cur = api(url, f"/issues/{act['issue']}")
+    if any(act["marker"] in (c.get("body") or "") for c in (cur.get("comments") or [])
+           if c.get("author") == "probe"):
+        return
+    assignee = cur.get("assignee") or ""
+    delegated = False
+    rerouted = False
+    if assignee:
+        # R4(6XKC): assignee 발령자 식별코드(skshim@tp-13류)는 등록 러너명과 달라
+        # dispatch 404가 누적됐다(42건) — PR#80 가족 해석(_resolve_agent)으로
+        # 등록명을 찾아 재시도한다. 정확명 우선은 해석기 내부 규칙 그대로.
+        # 해석 실패 시 사람 통보 노트(마커 포함)로 종결 — 같은 head 무음 반복 방지.
+        # PXCJ: review-fix 발령은 실행자 한정 해석(_resolve_executor) — 가족 매칭이
+        # 어댑터를 돌려 수정 정체를 만들지 않는다.
+        agents = [a for a in api(url, "/agents") or [] if _receivable(a)]
+        target = _resolve_executor(assignee, agents)
+        # M5283HM4-0SZP: 원작업자 고정 해제 — 미도달·실행 불가면 등록 실행자 중
+        # 대체 선정(동일 tier 우선)해서 새 dispatch로 재위임한다.
+        if target is None or target in NON_EXECUTORS:
+            fb = _pick_rework_executor(url, act["issue"], assignee, agents)
+            if fb is not None:
+                rerouted = True
+                target = fb
+        msg = (f"[auto review-fix] PR #{act['pr']} 리뷰 request-changes — 리뷰 코멘트(PR/카드)를 "
+               f"읽고 같은 브랜치 {act.get('branch', '')} 위에서 수정 커밋. "
+               f"head {(act.get('head_sha') or '')[:8]}. push 후 즉시 종료 — "
+               f"재리뷰 요청·병합은 probe가 자동 진행하니 결과를 기다리거나 폴링하지 말 것"
+               f"(다음 단계 필요 시 보드가 재호출).")
+        if rerouted:
+            msg = _rework_brief(assignee, act, cur, msg, url=url)
+        if target is None:
+            _ratt = cur.get("execution_attempt") or 0
+            _rm = f"[rework-relay #{act['pr']}/{(act.get('head_sha') or '')[:8]} a{_ratt}]"
+            api(url, f"/issues/{act['issue']}/comments", "POST",
+                {"author": "probe", "body": f"{act['marker']} 수정 dispatch 실패"
+                                            f"(에이전트 미등록: {assignee}) — 사람 판단 대기"
+                                            f"\n{_rm} assignee={assignee} receive_mode=relay"
+                                            " — 세션 전달 요망"})
+            api(url, "/messages", "POST",
+                {"author": "probe",
+                 "body": (f"@{assignee} " if assignee else "")
+                         + f"[rework-relay] 카드 {act['issue']} PR#{act['pr']} — "
+                           "재작업 전달 필요(등록 에이전트 없음, 사람이 세션에 전달)"})
+        elif target in NON_EXECUTORS:
+            # PXCJ — 어댑터·리드온리는 코드 작업 불가: dispatch 낭비 대신 사람 통보.
+            # 원 워커 돌려주기 등 재라우팅은 M4MGV3B7-BG97 영역.
+            api(url, f"/issues/{act['issue']}/comments", "POST",
+                {"author": "probe", "body": f"{act['marker']} 수정 dispatch 대상이 실행 불가"
+                                            f" 에이전트({target}) — 사람/감독관 판단 대기"})
+        else:
+            # JWW0 — 대상 에이전트의 진행 중 dispatch가 있으면 스폰 금지(동시 실행 방지)
+            try:
+                _dfix = api(url, f"/issues/{act['issue']}/dispatches") or []
+            except Exception:
+                # 조회 실패는 [] fail-open — decide 가드가 1차 방어(의도된 동작)
+                _dfix = []
+            if any(_occupies_card(x, cur.get("execution_attempt"))
+                   and x.get("agent") == target for x in _dfix):
+                return
+            try:
+                _resp = api(url, f"/issues/{act['issue']}/dispatch", "POST",
+                            {"agent": target, "message": msg})
+                # R4 — hook 전달 실패 레코드(status=error)를 위임 성공으로 기록하지 않는다
+                if isinstance(_resp, dict) and _resp.get("status") == "error":
+                    api(url, f"/issues/{act['issue']}/comments", "POST",
+                        {"author": "probe",
+                         "body": f"{act['marker']} 수정 dispatch 실패(hook: "
+                                 f"{str(_resp.get('detail') or '전달 오류')[:80]}) — 사람 판단 대기"})
+                else:
+                    delegated = True
+            except Exception as e:
+                api(url, f"/issues/{act['issue']}/comments", "POST",
+                    {"author": "probe", "body": f"{act['marker']} 수정 dispatch 실패({str(e)[:80]}) — "
+                                                "사람 판단 대기"})
+    else:
+        api(url, f"/issues/{act['issue']}/comments", "POST",
+            {"author": "probe", "body": f"{act['marker']} 리뷰 request-changes — "
+                                        "배정 에이전트 없음, 사람 판단 대기"})
+    try:
+        api(url, f"/issues/{act['issue']}", "PATCH",
+            {"version": get_version(url, act["issue"]), "state": "review"})
+    except Exception:
+        pass
+    # PXCJ 리뷰 R1 — 위임 불가·실패인데 "수정 위임"으로 남기면 직전 통보와 모순
+    if delegated and rerouted:
+        _deleg = (f"review 반납+원작업자({assignee}) 미도달 — 등록 실행자 {target}"
+                  "에게 새 dispatch 재위임")
+    else:
+        _deleg = "review 반납+수정 위임" if delegated else "review 반납 — 수정 위임 없음, 사람 판단 대기"
+    api(url, f"/issues/{act['issue']}/comments", "POST",
+        {"author": "probe", "body": f"{act['marker']} PR#{act['pr']} request-changes — "
+                                    + _deleg})
+    return
+
+def _exec_review_note(url, act):
+    cur = api(url, f"/issues/{act['issue']}")
+    if "draft" in act.get("reason", ""):
+        # draft ready 요청 — decide가 넘긴 마커로 PR 단위 dedup
+        marker = act.get("marker") or ""
+        if any(marker in (c.get("body") or "") for c in (cur.get("comments") or [])
+               if c.get("author") == "probe"):
+            return
+        api(url, f"/issues/{act['issue']}/comments", "POST",
+            {"author": "probe", "body": f"{marker} {act['reason']}"})
+        return
+    if act.get("marker"):
+        # 전용 마커 노트(evidence-rejected 등) — needs-merge 마커와 독립 dedup.
+        # decide가 넘긴 마커를 그대로 영속화한다(리뷰 R3: 전용 마커 유지).
+        marker = act["marker"]
+        if "evidence-rejected" in marker:
+            # 액션의 대상 회차가 현재와 다르면 폐기(리뷰 R5: 재수령 뒤 옛
+            # 회차 액션 집행 금지 — 회차별 dedup 유지).
+            if (act.get("attempt") or 0) != (cur.get("execution_attempt") or 0):
+                return
+            # 판정과 같은 미해결 조건(JXYS R1 잔여) — done 거부 또는 무보고
+            # 병합 미접수. 후자는 _evidence_unresolved만으로 못 본다.
+            if not _ev_open(cur):
+                return  # 재조회 시점에 이미 해소(성공 보고 접수) — 리뷰 R5
+        if any(marker in (c.get("body") or "") for c in (cur.get("comments") or [])
+               if c.get("author") == "probe"):
+            return
+        api(url, f"/issues/{act['issue']}/comments", "POST",
+            {"author": "probe", "body": f"{marker} {act['reason']}"})
+        # S2(§5.3) — 거부 사유 요약 annotate(advisory): 마커 노트와 분리한 별도
+        # [judge-note] 코멘트로(리뷰 R2 — 요약이 기존 마커로 재해석되는 것 방지).
+        # 대응(재제출 요청)은 규칙이 이미 정했다.
+        _s2 = judge.run_advisory("S2", {"card": act["issue"],
+                                        "input": {"reason": act.get("reason", "")}},
+                                 "evidence-rejected note", cycle_id=act.get("cycle_id"))
+        if _s2 and isinstance(_s2.value, str) and _s2.value.strip():
+            api(url, f"/issues/{act['issue']}/comments", "POST",
+                {"author": "probe", "body": f"[judge-note {_s2.decision_id}] "
+                                            f"사유 요약(참고용 — 판정 아님): "
+                                            f"{judge.sanitize(_s2.value.strip()[:300].replace(chr(10), ' '))}"})
+        return
+    att = cur.get("execution_attempt") or 0
+    marker = f"[needs-merge a{att}]"
+    if any(marker in (c.get("body") or "") for c in (cur.get("comments") or [])
+           if c.get("author") == "probe"):
+        return
+    api(url, f"/issues/{act['issue']}/comments", "POST",
+        {"author": "probe", "body": f"{marker} {act['reason']} — "
+                                    "tt verify로 done 확정 또는 review→todo 재작업"})
+    return act
+
+def _exec_pr_adopt(url, act):
+    # 채택 기록만 남긴다. 본문 PATCH는 scope_changed로 처리되어 완료 보고를
+    # 삭제하고 attempt를 올린다(codex P1-2) — 하지 않는다. 실제 스캔 풀 편입은
+    # collect_repos가 review 카드 코멘트의 PR URL을 읽는다.
+    cur = api(url, f"/issues/{act['issue']}")
+    marker = act.get("marker") or ""
+    if any(marker in (c.get("body") or "") for c in (cur.get("comments") or [])):
+        return
+    api(url, f"/issues/{act['issue']}/comments", "POST",
+        {"author": "probe",
+         "body": f"{marker} 코멘트의 PR URL 채택 — 스캔 풀 편입(다음 사이클 관측)"})
+    return act
+
+def _exec_stale_notify(url, act):
+    # 'PR 없음' 지속 review 카드 — 메시지 보드 공지(멘션은 assignee 등록 에이전트에만 기록됨) + 카드 마커.
+    cur = api(url, f"/issues/{act['issue']}")
+    marker = act.get("marker") or ""
+    if any(marker in (c.get("body") or "") for c in (cur.get("comments") or [])):
+        return
+    who = cur.get("assignee") or ""
+    api(url, "/messages", "POST",
+        {"author": "probe",
+         "body": (f"@{who} " if who else "") + f"[stale] 카드 {act['issue']} — {act['reason']}"})
+    api(url, f"/issues/{act['issue']}/comments", "POST",
+        {"author": "probe", "body": f"{marker} {act['reason']}"})
+    return act
+
+def _exec_resume(url, act):
+    v = get_version(url, act["issue"])
+    api(url, f"/issues/{act['issue']}", "PATCH", {"state": "todo", "version": v})
+
+def _exec_needs_human(url, act):
+    suffix = "" if act.get("note") else "(30KP 예산 게이트)"
+    api(url, f"/issues/{act['issue']}/comments", "POST",
+        {"author": "dispatchd",
+         "body": f"[auto] {act.get('note') or act['reason']} — 라벨 needs-human 자동화 중단{suffix}"})
+    cur = api(url, f"/issues/{act['issue']}")
+    labels = sorted((set(cur.get("labels") or []) | {"needs-human"}) - {"auto"})
+    api(url, f"/issues/{act['issue']}", "PATCH", {"labels": labels})
+    return act
+
+def _exec_work(url, act):
+    # claim 409(선점·수신 계약 위반 등)는 경합 — 사이클 전체 중단 대신 폐기.
+    # 다음 사이클 판정이 다시 대상을 고른다(JXYS R1 패턴과 동일).
+    try:
+        api(url, f"/issues/{act['issue']}/claim", "POST", {"agent": act["agent"]})
+    except Exception as e:
+        print(time.strftime("%F %T"), f"[dispatchd] work claim 폐기 {act['issue']}"
+              f" → {act['agent']}: {str(e)[:120]}", flush=True)
+        return act
+    msg = (f"[auto dispatchd] 작업 {act['issue']}: {act['reason']}. 수령(claim)·lease heartbeat·"
+           f"3단계 완료 보고(계약 v2)를 준수할 것. tt pull(풀) 금지. "
+           f"자기 단계(구현·push·보고)가 끝나면 즉시 종료 — CI·리뷰 결과를 기다리거나 "
+           f"폴링하지 말 것(후속 전이는 probe 소유, 필요 시 보드가 재호출). "
+           f"코드 작업은 브랜치 tt/{act['issue']}-<slug> 등 해당 저장소 규약을 따르고 "
+           f"산출물·검증 증거를 TT에 제출하라. PR은 선택적 보조 수단(GitHub/Gitea/local 지원). "
+           f"병합·배포 권한은 사용자 지시를 따른다. tt show {act['issue']} 로 상세 확인 후 시작.")
+    api(url, f"/issues/{act['issue']}/dispatch", "POST",
+        {"agent": act["agent"], "message": msg})
+    api(url, f"/issues/{act['issue']}/comments", "POST",
+        {"author": "dispatchd", "body": f"[auto] dispatch → {act['agent']} ({act['reason']})"})
+
+    return act
+
+
 def execute(url, act):
+    """액션 집행 — kind별 핸들러 위임(AK87-2 dispatch table).
+
+    핸들러는 None(기록 완료) 또는 act(폐기·완료 신호)를 반환한다. 미지정 kind는
+    원 구현과 동일하게 tail 공유 get_version 후 act 반환(관측 동작 유지)."""
     kind = act["action"]
     if kind in {"tt-review", "tt-review-fix", "tt-verify", "tt-review-stalled", "tt-deliver", "tt-delivery-note"}:
         from . import tt_lifecycle
@@ -2113,712 +2847,34 @@ def execute(url, act):
             # the whole cycle or write a success/dedup marker.
             print(time.strftime("%F %T"), f"[tt-review] {act['issue']}: {e}", flush=True)
         return
-    if kind == "release-reviewer":
-        cur = api(url, f"/issues/{act['issue']}")
-        if cur.get("reviewer") == act.get("reviewer"):
-            # 이 판정이 현재 head에 여전히 유효한지 — decide와 동일 필터(review_verdict)로 재확인.
-            # R7: author·PR 무관한 임의 판정 비교는 유효 반납까지 막는다 — 리뷰어 판정만 인정.
-            if review_verdict(cur.get("comments") or [], act.get("reviewer"),
-                              act.get("pr"), (act.get("head_sha") or "")[:8]) is None:
-                return
-            # decide 이후 카드가 변했다면(재claim·코멘트 등) 이번 라운드 폐기 — 다음 라운드 재판정.
-            # R5: 같은 판정 구간에서 리뷰어가 재claim한 새 lease를 오래된 액션이 지우지 않게.
-            if act.get("expected_version") is not None and cur.get("version") != act["expected_version"]:
-                return
-            # reviewer만 지우고, lease는 리뷰어 본인 것이 확실할 때만 —
-            # 재작업자가 새 lease를 잡은 뒤 오래된 반납 액션이 도착해도 보존(R5).
-            fields = {"reviewer": "", "expected_version": cur["version"]}
-            if cur.get("lease_by") == act.get("reviewer"):
-                fields.update({"lease_by": "", "lease_expires": None})
-            api(url, f"/issues/{act['issue']}", "PATCH", fields)
-        return
-    if kind == "archive-sweep":
-        _archive_sweep(url, int(act.get("days") or 0))
-        return
-    if kind == "merge":
-        repo = act.get("repo") or REPO
-        # 판정-집행 경합 흡수(t_501e6ec3 통합 회귀): collect 시점 head_sha와
-        # 병합 직전 현재 headRefOid가 다르면 폐기(다음 라운드 자연 재시도).
-        # 재시도 안전성: gh가 non-mergeable이면 merge 자체를 거부(405)하므로
-        # 스킵해도 중복 병합은 구조적으로 발생하지 않는다.
-        # 실측: gh pr view 는 번호 위치 인자, 단일 필드도 JSON 객체
-        # '{"headRefOid":"<sha>"}' 로 온다(문자열 strip('"')면 영구 불일치).
-        if act.get("low_risk"):
-            # 저위험 무계약 병합의 최종 경로 차단(M4DEK6WC-MQYS) — server/runner
-            # 변경은 사람 승인 대상이다. 라벨만으로 우회하지 않는다.
-            try:
-                info = gh_json("pr", "view", act["pr"], "--repo", repo,
-                               "--json", "files,changedFiles") or []
-                fl = info.get("files") or []
-                paths = [f.get("path", "") for f in fl]
-            except Exception as e:
-                _probe_flag(url, act, f"probe merge skip: 저위험 경로 확인 실패({e}) — 관측")
-                return
-            # gh files는 100개 컷오프(페이지네이션 없음) — changedFiles와 불일치면
-            # 목록이 불완전: 보수적으로 병합 거부(P76 리뷰 R2).
-            if len(paths) < (info.get("changedFiles") or 0):
-                _probe_flag(url, act, f"probe merge skip: 저위험 파일 목록 불완전 "
-                            f"({len(paths)}/{info.get('changedFiles')}) — 관측")
-                return
-            if any(p.startswith(("server/", "runner/")) for p in paths):
-                _probe_flag(url, act, "probe merge skip: 저위험 경로 아님 "
-                            "(server/runner 포함) — 표준 게이트로")
-                return
-        expected = act.get("head_sha") or ""
-        if expected:
-            try:
-                cur = gh_json("pr", "view", act["pr"], "--repo", repo,
-                              "--json", "headRefOid") or {}
-                current = cur.get("headRefOid") or ""
-            except Exception as e:
-                _probe_flag(url, act, f"probe merge skip: head 재확인 실패({e}) — 관측")
-                return
-            if current != expected:
-                _probe_flag(url, act, f"probe merge skip: head 변경됨 "
-                               f"({expected[:8]}→{current[:8]}) — 관측")
-                return
-        try:
-            gh_exec("pr", "merge", act["pr"], "--repo", repo, "--squash", "--delete-branch")
-        except Exception as e:
-            _probe_flag(url, act, f"probe merge skip: gh 오류 {str(e)[:120]} — 관측")
-            return
-        i = api(url, f"/issues/{act['issue']}")
-        st = i["state"]
-        cr = i.get("completion_report") or ""
-        if isinstance(cr, str) and cr:
-            try:
-                cr = json.loads(cr)
-            except Exception:
-                cr = None
-        if st == "review" and cr:
-            # 병합 성사 + 유효 보고 → verify 경로로만 done (M3R7M0ZR-YF99: done은 확인 직후)
-            ci_note = "" if act.get("no_ci") else "(CI green) "
-            try:
-                api(url, f"/issues/{act['issue']}/verify", "POST",
-                    {"verifier": "probe", "completion_report": cr})
-                api(url, f"/issues/{act['issue']}/comments", "POST",
-                    {"author": "probe", "body": f"probe: PR#{act['pr']} merged {ci_note}— "
-                                                "verify 통과 → done"})
-            except Exception as e:
-                api(url, f"/issues/{act['issue']}/comments", "POST",
-                    {"author": "probe", "body": f"probe: PR#{act['pr']} merged — verify 실패"
-                                                f"({str(e)[:100]}). review 유지, 사람 판단 필요"})
-            return
-        if st == "review":
-            api(url, f"/issues/{act['issue']}/comments", "POST",
-                {"author": "probe", "body": f"probe: PR#{act['pr']} merged — 완료 보고 없음. "
-                                            "review 유지 (tt verify 또는 재작업 review→todo)"})
-            return
-        if st == "in_progress":
-            # 보고 제출(→review) 전에는 done 없음 — 브랜치만 반영되고 카드는 제출 대기
-            try:
-                api(url, f"/issues/{act['issue']}", "PATCH",
-                    {"version": i["version"], "state": "review"})
-            except Exception:
-                pass
-            api(url, f"/issues/{act['issue']}/comments", "POST",
-                {"author": "probe", "body": f"probe: PR#{act['pr']} merged — agent 완료 보고 "
-                                            "대기(PATCH state=done + 보고 제출로 review 정지)"})
-        return
-    if kind == "ci-fix":
-        cur = api(url, f"/issues/{act['issue']}")
-        if act.get("subject"):
-            from review_subject import subject
-            from delivery import TARGET_KEYS
-            from .providers import inspect_delivery
-            if cur.get("state") != "review" or subject(cur) != act["subject"]:
-                return
-            observed = inspect_delivery(act["delivery"], gh_json)
-            if (observed.get("state") != "OPEN" or observed.get("isDraft")
-                    or any(act["delivery"].get(k) != observed.get(k) for k in TARGET_KEYS)
-                    or not any(c.get("state") == "FAILURE" for c in observed.get("checks") or [])):
-                return
-        att = cur.get("execution_attempt") or 0
-        sha8 = (act.get("head_sha") or "")[:8]
-        # decide가 액션에 동봉한 마커 우선 — ip 변형([ci-fix-ip a{n} …])도
-        # 저장 마커와 판정 키가 일치해야 다음 사이클 재판정이 막힌다(JXYS R2).
-        marker = act.get("marker") or f"[ci-fix a{att} #{act['pr']}/{sha8}]"
-        if any(marker in (c.get("body") or "") for c in (cur.get("comments") or [])
-               if c.get("author") == "probe"):
-            return  # 경합 방어 — decide 판정 후 재확인
-        agent = os.environ.get("TT_CI_FIX_AGENT", "kanban-adapter")
-        target = os.environ.get("TT_CI_FIX_TARGET", "agy")
-        # S1(§5.3) — 실패 요약 annotate(advisory): 판단기 있으면 dispatch 본문에 첨부,
-        # 없으면 본문 불변. 판정·위임 여부는 규칙이 이미 정했다.
-        _s1 = judge.run_advisory("S1", {"card": act["issue"],
-                                        "pr": f"{act.get('repo','')}#{act['pr']}"
-                                              f"@{(act.get('head_sha') or '')[:8]}",
-                                        "input": {"checks_failed": act.get("checks_failed") or [],
-                                                  "branch": act.get("branch", "")}},
-                                 "ci-fix dispatch", cycle_id=act.get("cycle_id"))
-        _s1_txt = ""
-        if _s1 and isinstance(_s1.value, str) and _s1.value.strip():
-            # [judge-note <id>] — 기존 파서가 제어 정보로 읽지 않는 새 주석 kind(§5.2).
-            # 값은 소독(advisory가 마커 시퀀스를 운반하지 않음) + 한 줄 블록.
-            _s1_txt = (f"\n\n[judge-note {_s1.decision_id}] 실패 요약(참고용 — 판정 아님): "
-                       f"{judge.sanitize(_s1.value.strip()[:500].replace(chr(10), ' '))}")
-        msg = (f"[auto probe] PR #{act['pr']} ({act.get('repo','')}) CI 실패"
-               f"(failing: {','.join(act.get('checks_failed') or [])}). 임무: PR을 읽고 **수정**할 것"
-               f" — 단순 review 금지, 목적은 CI red 해소. 브랜치 {act.get('branch','')} 위에서 커밋 계속, "
-               f"범위는 CI 실패 수정만(리팩·스킵·assertion 약화 금지). push 후 즉시 종료 — "
-               f"CI 재판정·병합은 probe가 자동 진행하니 CI·리뷰를 기다리거나 폴링하지 말 것"
-                f"(다음 단계 필요 시 보드가 재호출). 인수: {target} 담당.{_s1_txt}")
-        if act.get("subject"):
-            msg += (" 수정 push 후 delivery.head_sha를 새 전체 SHA로 갱신하고 "
-                    "tt submit --report로 같은 회차 보고를 재제출해야 재리뷰·병합된다. "
-                    "PR 제목/브랜치와 변경 산출물을 보고에 명시하라.")
-        try:
-            api(url, f"/issues/{act['issue']}/dispatch", "POST", {"agent": agent, "message": msg})
-        except Exception as e:
-            api(url, f"/issues/{act['issue']}/comments", "POST",
-                {"author": "probe", "body": f"{marker} dispatch 실패({str(e)[:80]}) — "
-                                            "사람 판단 대기(needs-merge 회귀)"})
-            return
-        # 작업자 wake(M4T4WW0N-7FQH): assignee가 있으면 첫 줄에 [CI:fail] — relay가
-        # 이 신호로 터미널을 깨운다. preview가 120자로 잘리므로 첫 줄이어야 한다.
-        # 마커 dedup은 본문 전체 스캔이라 줄 순서는 자유.
-        assignee = cur.get("assignee") or ""
-        wake = (f"[CI:fail] @{assignee} #{act['pr']} — "
-                f"{', '.join(act.get('checks_failed') or ['?'])} 확인하라\n") if assignee else ""
-        api(url, f"/issues/{act['issue']}/comments", "POST",
-            {"author": "probe", "body": f"{wake}"
-                                        f"{marker} PR#{act['pr']} CI 실패 — {agent}({target}) "
-                                        "review+수정 위임"})
-        return
-    if kind == "review-claim":
-        # TT 개선#3c — 교차리뷰 자동 수령: 서버 claim-review로 점유 표기 후 리뷰 dispatch
-        # R2: review-request와 동일한 마커 경합 재확인 + 영속화 — 재수령 루프 방지
-        cur = api(url, f"/issues/{act['issue']}")
-        if any(act["marker"] in (c.get("body") or "") for c in (cur.get("comments") or [])
-               if c.get("author") == "probe"):
-            return  # 경합 방어 — decide 판정 후 재확인
-        try:
-            api(url, f"/issues/{act['issue']}/claim-review", "POST", {"agent": act["agent"]})
-        except urllib.error.HTTPError as e:
-            # 수령 거부(점유 경합 등) — 사이클 전멸 대신 기록만 남기고 다음 사이클 재시도.
-            # review-req 마커를 남기지 않으므로 decide는 재판정한다(R3).
-            _claim_refused_note(url, act, cur, e.code)
-            return
-        try:
-            api(url, f"/issues/{act['issue']}/dispatch", "POST",
-                {"agent": act["agent"], "message": _review_dispatch_msg(act, act["agent"]),
-                 "work_contract": REVIEW_CONTRACT})
-        except Exception as e:
-            # F4 — claim 점유만 남기고 죽으면 만료까지 타 리뷰어가 409다: 반납 후 기록
-            _reviewer_lease_release(url, act["issue"], act["agent"])
-            api(url, f"/issues/{act['issue']}/comments", "POST",
-                {"author": "probe", "body": f"{act['marker']} 리뷰 dispatch 실패({str(e)[:80]}) — "
-                                            "리뷰어 lease 반납, 사람 판단 대기"})
-            return
-        api(url, f"/issues/{act['issue']}/comments", "POST",
-            {"author": "probe", "body": f"{act['marker']} PR#{act['pr']} CI green — "
-                                        f"자동 수령 → {act['agent']}"})
-        return
-    if kind in ("review-request", "review-retry"):
-        # 리뷰 게이트 1단계 — 리뷰어 에이전트에 리뷰 요청 (docs/review-gate.md)
-        # review-retry(12MZ): 세션 사망 정체 재발령 — 회차 마커 dedup + 새 세션 지시문
-        cur = api(url, f"/issues/{act['issue']}")
-        if any(act["marker"] in (c.get("body") or "") for c in (cur.get("comments") or [])
-               if c.get("author") == "probe"):
-            return  # 경합 방어 — decide 판정 후 재확인
-        # M4JTJ970-WS3C: decide가 라우팅한 카운터파트 리뷰어 우선 — env는 레거시 폴백.
-        # 작성자 본인 신원·구현 가족(고정 어휘·어댑터 별칭)은 매핑 확장과 무관하게 제외(R2).
-        author = (cur.get("assignee") or "").strip()
-        author_fam = _impl_family(author)
-        if act.get("reviewer"):
-            # 런타임 설정 우선(XV84) — 조회 실패 시 코드 기본으로 회귀
-            try:
-                s = api(url, "/settings/review-routing")
-                rf = tuple(s.get("review_fallback") or REVIEW_FALLBACK) \
-                    if isinstance(s, dict) and s.get("review_fallback") else REVIEW_FALLBACK
-            except Exception:
-                rf = REVIEW_FALLBACK
-            cands = [act["reviewer"]] + [c for c in rf if c != act["reviewer"]]
-        else:
-            legacy = os.environ.get("TT_REVIEW_AGENT", "").strip() or "kanban-adapter"
-            cands = [legacy]
-        cands = [c for c in cands
-                 if c != author and not (author_fam and agent_family(c) == author_fam)]
-        # JWW0 — 진행 중 dispatch가 후보 에이전트를 점유하면 제외(동시 리뷰 방지).
-        # decide 이후 시간이 지났을 수 있어 실행 직전 재확인한다.
-        # review-retry(12MZ 정체 재발령)에는 적용하지 않는다 — 정체 세션은 판정 없이
-        # 끝난 좀비이고 재발령은 fresh: True 새 세션이라 동시 실행이 아니다. 여기서
-        # 막으면 회차 마커가 남지 않아 REVIEW_RETRY_MAX·[needs-human-review]
-        # 에스컬레이션까지 소리 없이 멈춘다(정체 dispatch도 _ACTIVE_RUN_STATES에
-        # 걸리는 함정 — 리뷰 블로커). 진짜 점유 충돌은 claim-review 409 폴백이 흡수.
-        if kind == "review-request":
-            try:
-                _d = api(url, f"/issues/{act['issue']}/dispatches") or []
-            except Exception:
-                # 조회 실패는 [] fail-open — decide 가드가 1차 방어(의도된 동작)
-                _d = []
-            _busy = {x.get("agent") for x in _d
-                     if _occupies_card(x, cur.get("execution_attempt")) and x.get("agent")}
-            _had_cands = bool(cands)
-            cands = [c for c in cands if c not in _busy]
-            if _had_cands and not cands:
-                return  # 진행 중 스폰 금지 — 마커 없이 다음 사이클 재판정
-        # 동기 수령 — claim-review 거부(409)면 다음 후보로 폴백(R3). 성공 전에는
-        # review-req 마커를 남기지 않아 전원 거부 시 다음 사이클이 재판정한다.
-        agent = None
-        for cand in cands:
-            try:
-                api(url, f"/issues/{act['issue']}/claim-review", "POST", {"agent": cand})
-                agent = cand
-                break
-            except urllib.error.HTTPError as e:
-                if e.code != 409:
-                    raise
-        if agent is None:
-            # F4 — 가드로 후보가 전부 걸러진 경우와 실제 거부(409)는 사유가 다르다
-            if cands:
-                _claim_refused_note(url, act, cur, 409)
-            else:
-                _guard_skipped_note(url, act, cur)
-            return
-        msg = _review_dispatch_msg(act, agent)
-        if kind == "review-retry":
-            # 리뷰 R4: 회차 마커를 본문에 포함 — 서버 멱등키(issue+agent+attempt+message
-            # 해시)가 회차를 구분하게 해 a2+ 재발령이 a1 행으로 기수락되지 않는다.
-            msg += ("\n\n[12MZ] 이전 리뷰 세션이 판정 없이 종료됐다(reviewer_session_failed). "
-                    "**새 세션에서 시작**하고 이전 세션 재사용 금지 — 컨텍스트 누적이 부수 원인이었다.\n"
-                    + act["marker"])
-        dresp = None
-        try:
-            dresp = api(url, f"/issues/{act['issue']}/dispatch", "POST",
-                        {"agent": agent, "message": msg,
-                         # 12MZ 리뷰 R5: 재발령은 이전 세션 context 상속을 끊는다 — 새 세션 강제
-                         "work_contract": REVIEW_CONTRACT, "fresh": True} if kind == "review-retry" else
-                        {"agent": agent, "message": msg, "work_contract": REVIEW_CONTRACT})
-        except Exception as e:
-            # F4 — claim 점유만 남기고 죽으면 만료까지 타 리뷰어가 409다: 반납 후 기록
-            _reviewer_lease_release(url, act["issue"], agent)
-            api(url, f"/issues/{act['issue']}/comments", "POST",
-                {"author": "probe", "body": f"{act['marker']} 리뷰 dispatch 실패({str(e)[:80]}) — "
-                                            "리뷰어 lease 반납, 사람 판단 대기"})
-            return
-        # 12MZ 리뷰 R3 잔여: 발령 마커에 dispatch id를 남겨 runner 실패 코멘트의
-        # dispatch#N과 대조 — 구 회차·작업 dispatch의 늦은 실패가 새 세션 관망을 깨지 않게.
-        did = ""
-        if isinstance(dresp, dict):
-            did = str(dresp.get("id") or "")
-        api(url, f"/issues/{act['issue']}/comments", "POST",
-            {"author": "probe", "body": f"{act['marker']} PR#{act['pr']} CI green — "
-                                        f"리뷰 요청 → {agent}" + (f" (dispatch#{did})" if did else "")})
-        return
-    if kind == "submit-remind":
-        # JXYS 2 — green 무보고 독려 1회. receive_mode=relay(기본)면 멘션이 닿지
-        # 않으므로 워치독 다이제스트(보드)에 릴레이 플래그.
-        cur = api(url, f"/issues/{act['issue']}")
-        marker = act.get("marker") or ""
-        if any(marker in (c.get("body") or "") for c in (cur.get("comments") or [])
-               if c.get("author") == "probe"):
-            return
-        who = cur.get("assignee") or ""
-        api(url, f"/issues/{act['issue']}/comments", "POST",
-            {"author": "probe",
-             "body": f"{marker} @{who} PR#{act['pr']} CI green — 완료 보고 제출"
-                     "(tt submit --report)이 review 진입. 무반응 시 타이머 경과 후 "
-                     "자동 승격됩니다(점진 push는 head 변경으로 타이머 리셋)."})
-        agents = [a for a in api(url, "/agents") or []]
-        if _relay_timer_s(who, agents) >= 6 * 3600:
-            api(url, "/messages", "POST",
-                {"author": "probe",
-                 "body": (f"@{who} " if who else "")
-                         + f"[submit-remind] 카드 {act['issue']} PR#{act['pr']} — "
-                           "CI green 완료 보고 제출 요망 — tt submit --report(독려: 자동 승격 예정)"})
-        return
-    if kind == "submission-adopt":
-        # JXYS 3 — 무반응 승격: in_progress → review. 완료(done)는 보고 의존 유지.
-        cur = api(url, f"/issues/{act['issue']}")
-        marker = act.get("marker") or ""
-        if any(marker in (c.get("body") or "") for c in (cur.get("comments") or [])
-               if c.get("author") == "probe"):
-            return
-        # 실행 직전 재확인 — decide 이후 상태가 바뀌었으면 폐기
-        if cur.get("state") != "in_progress" \
-                or (cur.get("execution_attempt") or 0) != (act.get("att") or 0) \
-                or _lease_held(cur) or cur.get("waiting_for") == "human":
-            return
-        try:
-            _dfx = api(url, f"/issues/{act['issue']}/dispatches") or []
-        except Exception:
-            _dfx = []
-        if any(_occupies_card(x, cur.get("execution_attempt")) for x in _dfx):
-            return
-        _rmdt = _iso(act.get("remind_ts") or "")
-        if _rmdt and any((x.get("author") or "") not in _RELAY_OBSERVERS
-                         and not str(x.get("author") or "").startswith("runner")
-                         and _comment_after(x, _rmdt, act.get("remind_id") or 0)
-                         for x in (cur.get("comments") or [])):
-            return  # decide 이후 응답·활동 — 승격 취소
-        if act.get("repo") and act.get("pr") and \
-                _gh_pr_head(act.get("repo"), act.get("pr")) != \
-                (act.get("head_sha") or "")[:8]:
-            return  # 실제 head 변경 — 타이머 리셋이므로 승격 폐기
-        try:
-            api(url, f"/issues/{act['issue']}", "PATCH",
-                {"state": "review",
-                 "expected_version": act.get("expected_version")
-                 or cur.get("version")})
-        except Exception:
-            return  # CAS 경합 — 다음 사이클 재판정
-        api(url, f"/issues/{act['issue']}/comments", "POST",
-            {"author": "probe",
-             "body": f"{marker} 기계적 승격 — green 무보고 독려 후 무반응"
-                     "(타이머 경과, head 불변). in_progress → review. "
-                     "완료 보고는 승격 후에도 유효 — 병합 verify는 유효 보고 필요"})
-        return
-    if kind == "review-fix-relay":
-        # BG97 — [fix-stall] 소비: 위임 후 미실행 정체의 원 워커 재발령 1회.
-        # dedup 마커 [rework-relay #pr/sha a{att}]는 성공·실패 모두 남겨
-        # 같은 (사유,pr,sha,attempt) 재시도를 막는다(실패면 사람 릴레이로 종결).
-        cur = api(url, f"/issues/{act['issue']}")
-        att = act.get("att") or cur.get("execution_attempt") or 0
-        rmarker = f"[rework-relay #{act['pr']}/{(act.get('head_sha') or '')[:8]} a{att}]"
-        if any(rmarker in (c.get("body") or "") for c in (cur.get("comments") or [])
-               if c.get("author") == "probe"):
-            return
-        # R3 — decide 이후 현재 상태 재확인: 회차 변화·종결·임대·blocked·승인·
-        # 워커 응답이 하나라도 있으면 폐기(실행 직전 자격 재검증).
-        if cur.get("state") in ("done", "cancelled") \
-                or (cur.get("execution_attempt") or 0) != (act.get("att") or 0) \
-                or cur.get("state") != "review" or cur.get("waiting_for") == "human" \
-                or _lease_held(cur):
-            return
-        _revs = ({os.environ.get("TT_REVIEW_AGENT", "").strip(), cur.get("reviewer")}
-                 | _requested_reviewers(cur, act["pr"], (act.get("head_sha") or "")[:8])
-                 ) - {None, ""}
-        if review_verdict(cur.get("comments") or [], _revs, act["pr"],
-                          (act.get("head_sha") or "")[:8]) == "approve":
-            return  # stall 뒤 승인 — 재작업 대상 아님
-        _sdtv = _iso(act.get("stall_ts") or "")
-        if _sdtv and any(
-                (x.get("author") or "") not in _RELAY_OBSERVERS
-                and not str(x.get("author") or "").startswith("runner")
-                and _comment_after(x, _sdtv, act.get("stall_id") or 0)
-                for x in (cur.get("comments") or [])):
-            return  # decide 이후 워커 응답·진행 — 폐기(R2/R3)
-        if _gh_pr_head(act.get("repo"), act["pr"]) != (act.get("head_sha") or "")[:8]:
-            return  # 실제 PR head 변경·조회 불가 — 구 head 대상 스폰 금지(R3)
-        _dfix_all = api(url, f"/issues/{act['issue']}/dispatches") or [] if True else []
-        assignee = cur.get("assignee") or ""
-        agents = [a for a in api(url, "/agents") or [] if _receivable(a)]
-        # 전달 사다리(리뷰 R4) — 정확명 우선, hook 전달 실패 시 실행 가능한
-        # 같은 가족 수신처 재시도, 전부 실패면 사람 릴레이로 종결.
-        target = _resolve_executor(assignee, agents)
-        ladder = []
-        if target and target not in NON_EXECUTORS:
-            ladder.append(target)
-            fam = agent_family(target)
-            if fam:
-                ladder += [a.get("name") for a in agents
-                           if a.get("name") != target
-                           and a.get("name") not in NON_EXECUTORS
-                           and agent_family(a.get("name")) == fam]
-        ok = False
-        _dfix = []
-        if ladder:
-            try:
-                _dfix = api(url, f"/issues/{act['issue']}/dispatches") or []
-            except Exception:
-                _dfix = []  # 조회 실패 fail-open — decide 가드가 1차 방어(JWW0)
-        # 후보별이 아니라 카드 전체 가드 — 다른 실행자의 수동 dispatch도 동시 스폰 금지(R3)
-        if _dfix and ladder and any(_occupies_card(x, cur.get("execution_attempt"))
-                                    for x in _dfix):
-            return
-        for cand in ladder:
-            if any(_occupies_card(x, cur.get("execution_attempt")) and x.get("agent") == cand
-                   for x in _dfix):
-                if cand == target:
-                    return  # 진행 중 — 다음 사이클(JWW0)
-                continue  # 가족 후보 진행 중 — 다음 후보
-            try:
-                _resp = api(url, f"/issues/{act['issue']}/dispatch", "POST",
-                            {"agent": cand,
-                             "message": (f"[auto review-fix] PR #{act['pr']} 리뷰 request-changes(재발령) — "
-                                         f"리뷰 코멘트(PR/카드)를 읽고 같은 브랜치 "
-                                         f"{act.get('branch', '')} 위에서 수정 커밋. "
-                                         f"head {(act.get('head_sha') or '')[:8]}. "
-                                         "push하면 probe가 재리뷰 요청.")})
-            except Exception:
-                continue  # 전달 실패 — 가족 후보로, 없으면 사람 릴레이(R4)
-            if isinstance(_resp, dict) and _resp.get("status") == "error":
-                continue  # hook 전달 실패(HTTP 5xx·연결 오류) — 성공으로 기록하지 않는다(R4)
-            ok = True
-            api(url, f"/issues/{act['issue']}/comments", "POST",
-                {"author": "probe",
-                 "body": f"{rmarker} 원 워커 재발령 — {cand} 세션 실행 중"
-                         + ("" if cand == target else "(가족 대행)")})
-            break
-        if not ok:
-            api(url, f"/issues/{act['issue']}/comments", "POST",
-                {"author": "probe",
-                 "body": f"{rmarker} 원 워커 재발령 불가(assignee: {assignee or '없음'}) — "
-                         "사람 세션 전달 요망"})
-            api(url, "/messages", "POST",
-                {"author": "probe",
-                 "body": (f"@{assignee} " if assignee else "")
-                         + f"[rework-relay] 카드 {act['issue']} PR#{act['pr']} — 재작업 전달 필요"
-                         "(dispatch 미실행 정체[fix-stall], 사람이 세션에 전달)"})
-        return
-    if kind == "rework-fallback":
-        # BG97 2순위 — relay 무반응 양도: assignee 해제+todo 회귀(판정 전문은 코멘트 보존).
-        cur = api(url, f"/issues/{act['issue']}")
-        marker = act.get("marker") or ""
-        if any(marker in (c.get("body") or "") for c in (cur.get("comments") or [])
-               if c.get("author") == "probe"):
-            return
-        # R3 — decide 이후 현재 상태 재확인: 새 워커가 수령했다면(회차 승격·state·
-        # 임대·진행 dispatch) 양도하지 않는다. 판정 대상과 현재 값의 일치 필수.
-        if cur.get("state") != "review" \
-                or (cur.get("execution_attempt") or 0) != (act.get("att") or 0) \
-                or cur.get("waiting_for") == "human" or _lease_held(cur):
-            return
-        # busy_agents는 스냅샷 파생값(GET에 없음) — 실제 dispatch 상태로 재확인(R3)
-        try:
-            _dfb = api(url, f"/issues/{act['issue']}/dispatches") or []
-        except Exception:
-            _dfb = []
-        if any(_occupies_card(x, cur.get("execution_attempt")) for x in _dfb):
-            return
-        _rdtv = _iso(act.get("relay_ts") or "")
-        _rid = act.get("relay_id") or 0
-        _rcmts = cur.get("comments") or []
-        if _rdtv and any(
-                (x.get("author") or "") not in _RELAY_OBSERVERS
-                and not str(x.get("author") or "").startswith("runner")
-                and _comment_after(x, _rdtv, _rid)
-                for x in _rcmts):
-            return  # decide 이후 워커 응답·활동 — 양도 취소(R3)
-        # 실제 head 마커 변화 — relay 시 head와 다른 probe 마커가 그 사이 생겼으면 회귀 금지
-        _rsha = (act.get("head_sha") or "")[:8]
-        if _rsha and any(x.get("author") == "probe" and _comment_ts(x)
-                         and _iso(_comment_ts(x)) is not None and _rdtv
-                         and _iso(_comment_ts(x)) > _rdtv
-                         and f"#{act.get('pr')}/" in (x.get("body") or "")
-                         and _rsha not in (x.get("body") or "")
-                         and ("[review-fix #" in (x.get("body") or "")
-                              or "[review-req #" in (x.get("body") or "")
-                              or "[ci-fix a" in (x.get("body") or ""))
-                         for x in _rcmts):
-            return
-        if act.get("repo") and act.get("pr") and \
-                _gh_pr_head(act.get("repo"), act.get("pr")) != \
-                (act.get("head_sha") or "")[:8]:
-            return  # 실제 PR head 변경·조회 불가 — 회귀 폐기(R3)
-        try:
-            # CAS — fetch·PATCH 사이 경합은 서버 409로 거절, 다음 사이클 재판정
-            labels = sorted(set(cur.get("labels") or []) | {"auto"})  # 자동 풀 재수령 경로(R7)
-            api(url, f"/issues/{act['issue']}", "PATCH",
-                {"assignee": "", "state": "todo", "labels": labels,
-                 "expected_version": cur.get("version")})
-        except Exception:
-            return
-        api(url, f"/issues/{act['issue']}/comments", "POST",
-            {"author": "probe",
-             "body": f"{marker} relay 무반응(타이머 경과, head 불변) — assignee 해제+todo 회귀. "
-                     "판정 전문은 코멘트 보존 — 누구나 재수령 가능"})
-        return
-    if kind == "review-fix":
-        # 리뷰 게이트 2단계 — request-changes: 카드 review 반납 + 배정 에이전트에 수정 위임
-        cur = api(url, f"/issues/{act['issue']}")
-        if any(act["marker"] in (c.get("body") or "") for c in (cur.get("comments") or [])
-               if c.get("author") == "probe"):
-            return
-        assignee = cur.get("assignee") or ""
-        delegated = False
-        rerouted = False
-        if assignee:
-            # R4(6XKC): assignee 발령자 식별코드(skshim@tp-13류)는 등록 러너명과 달라
-            # dispatch 404가 누적됐다(42건) — PR#80 가족 해석(_resolve_agent)으로
-            # 등록명을 찾아 재시도한다. 정확명 우선은 해석기 내부 규칙 그대로.
-            # 해석 실패 시 사람 통보 노트(마커 포함)로 종결 — 같은 head 무음 반복 방지.
-            # PXCJ: review-fix 발령은 실행자 한정 해석(_resolve_executor) — 가족 매칭이
-            # 어댑터를 돌려 수정 정체를 만들지 않는다.
-            agents = [a for a in api(url, "/agents") or [] if _receivable(a)]
-            target = _resolve_executor(assignee, agents)
-            # M5283HM4-0SZP: 원작업자 고정 해제 — 미도달·실행 불가면 등록 실행자 중
-            # 대체 선정(동일 tier 우선)해서 새 dispatch로 재위임한다.
-            if target is None or target in NON_EXECUTORS:
-                fb = _pick_rework_executor(url, act["issue"], assignee, agents)
-                if fb is not None:
-                    rerouted = True
-                    target = fb
-            msg = (f"[auto review-fix] PR #{act['pr']} 리뷰 request-changes — 리뷰 코멘트(PR/카드)를 "
-                   f"읽고 같은 브랜치 {act.get('branch', '')} 위에서 수정 커밋. "
-                   f"head {(act.get('head_sha') or '')[:8]}. push 후 즉시 종료 — "
-                   f"재리뷰 요청·병합은 probe가 자동 진행하니 결과를 기다리거나 폴링하지 말 것"
-                   f"(다음 단계 필요 시 보드가 재호출).")
-            if rerouted:
-                msg = _rework_brief(assignee, act, cur, msg, url=url)
-            if target is None:
-                _ratt = cur.get("execution_attempt") or 0
-                _rm = f"[rework-relay #{act['pr']}/{(act.get('head_sha') or '')[:8]} a{_ratt}]"
-                api(url, f"/issues/{act['issue']}/comments", "POST",
-                    {"author": "probe", "body": f"{act['marker']} 수정 dispatch 실패"
-                                                f"(에이전트 미등록: {assignee}) — 사람 판단 대기"
-                                                f"\n{_rm} assignee={assignee} receive_mode=relay"
-                                                " — 세션 전달 요망"})
-                api(url, "/messages", "POST",
-                    {"author": "probe",
-                     "body": (f"@{assignee} " if assignee else "")
-                             + f"[rework-relay] 카드 {act['issue']} PR#{act['pr']} — "
-                               "재작업 전달 필요(등록 에이전트 없음, 사람이 세션에 전달)"})
-            elif target in NON_EXECUTORS:
-                # PXCJ — 어댑터·리드온리는 코드 작업 불가: dispatch 낭비 대신 사람 통보.
-                # 원 워커 돌려주기 등 재라우팅은 M4MGV3B7-BG97 영역.
-                api(url, f"/issues/{act['issue']}/comments", "POST",
-                    {"author": "probe", "body": f"{act['marker']} 수정 dispatch 대상이 실행 불가"
-                                                f" 에이전트({target}) — 사람/감독관 판단 대기"})
-            else:
-                # JWW0 — 대상 에이전트의 진행 중 dispatch가 있으면 스폰 금지(동시 실행 방지)
-                try:
-                    _dfix = api(url, f"/issues/{act['issue']}/dispatches") or []
-                except Exception:
-                    # 조회 실패는 [] fail-open — decide 가드가 1차 방어(의도된 동작)
-                    _dfix = []
-                if any(_occupies_card(x, cur.get("execution_attempt"))
-                       and x.get("agent") == target for x in _dfix):
-                    return
-                try:
-                    _resp = api(url, f"/issues/{act['issue']}/dispatch", "POST",
-                                {"agent": target, "message": msg})
-                    # R4 — hook 전달 실패 레코드(status=error)를 위임 성공으로 기록하지 않는다
-                    if isinstance(_resp, dict) and _resp.get("status") == "error":
-                        api(url, f"/issues/{act['issue']}/comments", "POST",
-                            {"author": "probe",
-                             "body": f"{act['marker']} 수정 dispatch 실패(hook: "
-                                     f"{str(_resp.get('detail') or '전달 오류')[:80]}) — 사람 판단 대기"})
-                    else:
-                        delegated = True
-                except Exception as e:
-                    api(url, f"/issues/{act['issue']}/comments", "POST",
-                        {"author": "probe", "body": f"{act['marker']} 수정 dispatch 실패({str(e)[:80]}) — "
-                                                    "사람 판단 대기"})
-        else:
-            api(url, f"/issues/{act['issue']}/comments", "POST",
-                {"author": "probe", "body": f"{act['marker']} 리뷰 request-changes — "
-                                            "배정 에이전트 없음, 사람 판단 대기"})
-        try:
-            api(url, f"/issues/{act['issue']}", "PATCH",
-                {"version": get_version(url, act["issue"]), "state": "review"})
-        except Exception:
-            pass
-        # PXCJ 리뷰 R1 — 위임 불가·실패인데 "수정 위임"으로 남기면 직전 통보와 모순
-        if delegated and rerouted:
-            _deleg = (f"review 반납+원작업자({assignee}) 미도달 — 등록 실행자 {target}"
-                      "에게 새 dispatch 재위임")
-        else:
-            _deleg = "review 반납+수정 위임" if delegated else "review 반납 — 수정 위임 없음, 사람 판단 대기"
-        api(url, f"/issues/{act['issue']}/comments", "POST",
-            {"author": "probe", "body": f"{act['marker']} PR#{act['pr']} request-changes — "
-                                        + _deleg})
-        return
-    v = get_version(url, act["issue"])
-    if kind == "review-note":
-        cur = api(url, f"/issues/{act['issue']}")
-        if "draft" in act.get("reason", ""):
-            # draft ready 요청 — decide가 넘긴 마커로 PR 단위 dedup
-            marker = act.get("marker") or ""
-            if any(marker in (c.get("body") or "") for c in (cur.get("comments") or [])
-                   if c.get("author") == "probe"):
-                return
-            api(url, f"/issues/{act['issue']}/comments", "POST",
-                {"author": "probe", "body": f"{marker} {act['reason']}"})
-            return
-        if act.get("marker"):
-            # 전용 마커 노트(evidence-rejected 등) — needs-merge 마커와 독립 dedup.
-            # decide가 넘긴 마커를 그대로 영속화한다(리뷰 R3: 전용 마커 유지).
-            marker = act["marker"]
-            if "evidence-rejected" in marker:
-                # 액션의 대상 회차가 현재와 다르면 폐기(리뷰 R5: 재수령 뒤 옛
-                # 회차 액션 집행 금지 — 회차별 dedup 유지).
-                if (act.get("attempt") or 0) != (cur.get("execution_attempt") or 0):
-                    return
-                # 판정과 같은 미해결 조건(JXYS R1 잔여) — done 거부 또는 무보고
-                # 병합 미접수. 후자는 _evidence_unresolved만으로 못 본다.
-                if not _ev_open(cur):
-                    return  # 재조회 시점에 이미 해소(성공 보고 접수) — 리뷰 R5
-            if any(marker in (c.get("body") or "") for c in (cur.get("comments") or [])
-                   if c.get("author") == "probe"):
-                return
-            api(url, f"/issues/{act['issue']}/comments", "POST",
-                {"author": "probe", "body": f"{marker} {act['reason']}"})
-            # S2(§5.3) — 거부 사유 요약 annotate(advisory): 마커 노트와 분리한 별도
-            # [judge-note] 코멘트로(리뷰 R2 — 요약이 기존 마커로 재해석되는 것 방지).
-            # 대응(재제출 요청)은 규칙이 이미 정했다.
-            _s2 = judge.run_advisory("S2", {"card": act["issue"],
-                                            "input": {"reason": act.get("reason", "")}},
-                                     "evidence-rejected note", cycle_id=act.get("cycle_id"))
-            if _s2 and isinstance(_s2.value, str) and _s2.value.strip():
-                api(url, f"/issues/{act['issue']}/comments", "POST",
-                    {"author": "probe", "body": f"[judge-note {_s2.decision_id}] "
-                                                f"사유 요약(참고용 — 판정 아님): "
-                                                f"{judge.sanitize(_s2.value.strip()[:300].replace(chr(10), ' '))}"})
-            return
-        att = cur.get("execution_attempt") or 0
-        marker = f"[needs-merge a{att}]"
-        if any(marker in (c.get("body") or "") for c in (cur.get("comments") or [])
-               if c.get("author") == "probe"):
-            return
-        api(url, f"/issues/{act['issue']}/comments", "POST",
-            {"author": "probe", "body": f"{marker} {act['reason']} — "
-                                        "tt verify로 done 확정 또는 review→todo 재작업"})
-    elif kind == "pr-adopt":
-        # 채택 기록만 남긴다. 본문 PATCH는 scope_changed로 처리되어 완료 보고를
-        # 삭제하고 attempt를 올린다(codex P1-2) — 하지 않는다. 실제 스캔 풀 편입은
-        # collect_repos가 review 카드 코멘트의 PR URL을 읽는다.
-        cur = api(url, f"/issues/{act['issue']}")
-        marker = act.get("marker") or ""
-        if any(marker in (c.get("body") or "") for c in (cur.get("comments") or [])):
-            return
-        api(url, f"/issues/{act['issue']}/comments", "POST",
-            {"author": "probe",
-             "body": f"{marker} 코멘트의 PR URL 채택 — 스캔 풀 편입(다음 사이클 관측)"})
-    elif kind == "stale-notify":
-        # 'PR 없음' 지속 review 카드 — 메시지 보드 공지(멘션은 assignee 등록 에이전트에만 기록됨) + 카드 마커.
-        cur = api(url, f"/issues/{act['issue']}")
-        marker = act.get("marker") or ""
-        if any(marker in (c.get("body") or "") for c in (cur.get("comments") or [])):
-            return
-        who = cur.get("assignee") or ""
-        api(url, "/messages", "POST",
-            {"author": "probe",
-             "body": (f"@{who} " if who else "") + f"[stale] 카드 {act['issue']} — {act['reason']}"})
-        api(url, f"/issues/{act['issue']}/comments", "POST",
-            {"author": "probe", "body": f"{marker} {act['reason']}"})
-    elif kind == "resume":
-        api(url, f"/issues/{act['issue']}", "PATCH", {"state": "todo", "version": v})
-    elif kind == "needs-human":
-        suffix = "" if act.get("note") else "(30KP 예산 게이트)"
-        api(url, f"/issues/{act['issue']}/comments", "POST",
-            {"author": "dispatchd",
-             "body": f"[auto] {act.get('note') or act['reason']} — 라벨 needs-human 자동화 중단{suffix}"})
-        cur = api(url, f"/issues/{act['issue']}")
-        labels = sorted((set(cur.get("labels") or []) | {"needs-human"}) - {"auto"})
-        api(url, f"/issues/{act['issue']}", "PATCH", {"labels": labels})
-    elif kind == "work":
-        # claim 409(선점·수신 계약 위반 등)는 경합 — 사이클 전체 중단 대신 폐기.
-        # 다음 사이클 판정이 다시 대상을 고른다(JXYS R1 패턴과 동일).
-        try:
-            api(url, f"/issues/{act['issue']}/claim", "POST", {"agent": act["agent"]})
-        except Exception as e:
-            print(time.strftime("%F %T"), f"[dispatchd] work claim 폐기 {act['issue']}"
-                  f" → {act['agent']}: {str(e)[:120]}", flush=True)
-            return act
-        msg = (f"[auto dispatchd] 작업 {act['issue']}: {act['reason']}. 수령(claim)·lease heartbeat·"
-               f"3단계 완료 보고(계약 v2)를 준수할 것. tt pull(풀) 금지. "
-               f"자기 단계(구현·push·보고)가 끝나면 즉시 종료 — CI·리뷰 결과를 기다리거나 "
-               f"폴링하지 말 것(후속 전이는 probe 소유, 필요 시 보드가 재호출). "
-               f"코드 작업은 브랜치 tt/{act['issue']}-<slug> 등 해당 저장소 규약을 따르고 "
-               f"산출물·검증 증거를 TT에 제출하라. PR은 선택적 보조 수단(GitHub/Gitea/local 지원). "
-               f"병합·배포 권한은 사용자 지시를 따른다. tt show {act['issue']} 로 상세 확인 후 시작.")
-        api(url, f"/issues/{act['issue']}/dispatch", "POST",
-            {"agent": act["agent"], "message": msg})
-        api(url, f"/issues/{act['issue']}/comments", "POST",
-            {"author": "dispatchd", "body": f"[auto] dispatch → {act['agent']} ({act['reason']})"})
+    handler = _EXEC_HANDLERS.get(kind)
+    if handler is not None:
+        return handler(url, act)
+    get_version(url, act["issue"])
     return act
+
+
+# action kind → 실행 함수 (원 if/elif 체인의 1:1 이관 — 각 본문 불변)
+_EXEC_HANDLERS = {
+    "release-reviewer": _exec_release_reviewer,
+    "archive-sweep": _exec_archive_sweep,
+    "merge": _exec_merge,
+    "ci-fix": _exec_ci_fix,
+    "review-claim": _exec_review_claim,
+    "review-request": _exec_review_request,
+    "review-retry": _exec_review_request,
+    "submit-remind": _exec_submit_remind,
+    "submission-adopt": _exec_submission_adopt,
+    "review-fix-relay": _exec_review_fix_relay,
+    "rework-fallback": _exec_rework_fallback,
+    "review-fix": _exec_review_fix,
+    "review-note": _exec_review_note,
+    "pr-adopt": _exec_pr_adopt,
+    "stale-notify": _exec_stale_notify,
+    "resume": _exec_resume,
+    "needs-human": _exec_needs_human,
+    "work": _exec_work,
+}
 
 
 def snapshot(url):
