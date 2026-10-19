@@ -24,28 +24,12 @@ from verdicts import classify_rejection, first_line_verdict, is_machine_author  
 CITES_ENUM = ("File", "Contract", "Test")
 
 
-def _propose_judge(view):
-    """등록 판단기 어댑터 — Proposal.value가 enum 제안. 미구성이면 None(fail-to-rules)."""
-    import judge
-    j = judge.get_judge()
-    if j is None:
-        return None
-    p = j.propose("rejection-cites", view)
-    return None if p is None else getattr(p, "value", None)
-
-
-def make_proposer(model):
-    """--model 어댑터. none이면 None — enrich는 규칙 버킷만 남긴다."""
-    if model == "none":
-        return None
-    return lambda body: _propose_judge({"body": body})
-
-
-def enrich(comments, card, propose=None, counts=None):
+def enrich(comments, card, counts=None):
     """카드 1장의 코멘트 → cites 트리플(id만) + counts 누적.
 
     대상: request-changes 판정 코멘트 중 규칙 버킷이 general인 것.
-    propose=None(미구성)이면 아무 것도 추가하지 않는다(fail-to-rules)."""
+    U5(M5A4HZAT-RNT4) — 판단기 어댑터는 퇴역(골격 미구성). 규칙 버킷 집계만
+    남긴다: general 버킷은 트리플 없이 counts["target"]만 늘린다."""
     counts = counts if counts is not None else {"target": 0, "accepted": 0, "rejected": 0}
     triples = []
     for c in comments or []:
@@ -62,30 +46,15 @@ def enrich(comments, card, propose=None, counts=None):
         if classify_rejection("\n".join(lines[1:]) if len(lines) > 1 else body) != "general":
             continue  # 규칙 버킷이 결정된 반려 — enrich 대상 아님
         counts["target"] += 1
-        if propose is None:
-            continue
-        try:
-            out = propose(body)
-        except Exception:
-            out = None
-        if out in CITES_ENUM:
-            triples.append({"s": f"{card}#c{c.get('id')}", "p": "cites", "o": out,
-                            "subject": tokens[0]})
-            counts["accepted"] += 1
-        else:
-            counts["rejected"] += 1  # enum 밖·오류 — 버림+count
     return triples
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--model", choices=["none", "judge"], default="none",
-                    help="none=규칙 버킷만(fail-to-rules), judge=등록 판단기 사용")
     ap.add_argument("--out", default="rejection-cites.jsonl")
     args = ap.parse_args()
     url = os.environ.get("TT_URL", "http://127.0.0.1:7800")
     issues, _agents, detail = fetch_all(url)
-    propose = make_proposer(args.model)
     counts = {"target": 0, "accepted": 0, "rejected": 0}
     triples = []
     for i in issues:
@@ -93,12 +62,11 @@ def main():
         card = catalog.resolve("card", i["id"])
         if not card:
             continue  # 형식 불일치 카드 — 투영 없음(unknown만 기록됨)
-        triples.extend(enrich(d.get("comments"), card, propose, counts))
+        triples.extend(enrich(d.get("comments"), card, counts))
     with open(args.out, "w", encoding="utf-8") as f:
         for t in triples:
             f.write(json.dumps(t, ensure_ascii=False) + "\n")
-    print(json.dumps({"model": args.model, "file": args.out, **counts},
-                     ensure_ascii=False))
+    print(json.dumps({"file": args.out, **counts}, ensure_ascii=False))
 
 
 if __name__ == "__main__":

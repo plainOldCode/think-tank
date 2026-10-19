@@ -49,7 +49,6 @@ def _pc(body, ts=OLD, author="probe"):
 def env(monkeypatch):
     monkeypatch.setenv("TT_REVIEW_GRACE_MIN", "0")
     monkeypatch.setenv("TT_REVIEW_AGENT", "fallback@t")
-    monkeypatch.delenv("TT_DRAFT_STALL_H", raising=False)
 
 
 # --- 데이터 모듈 ---

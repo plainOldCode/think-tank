@@ -108,6 +108,13 @@ probe-restructure-design.md §5.2의 단조성 — LLM 출력은 `hold`/`escalat
 
 ## 5. LLM 잔여 지점 — 3곳으로 한정
 
+> **퇴역 (2026-10-20, U5 M5A4HZAT-RNT4)**: 이 절의 C1/S1/S2 advisory 지점과
+> 판단기 인터페이스(제안 클래스·주입 지점·advisory 실행기)는 운영 코드에서
+> 제거됐다 — 미구성 골격이었고(운영 호출 0), 실제 판단기는 별도 연구로 분리
+> (K0C8 §11 Q2 보류). 골격은 `research/judge-c1` 브랜치로 보존. 살아 있는 것은
+> §8.1 판단 로그(JudgeLog.record·회전)와 decide action 1행 기록(7AMG),
+> review 반복 경고(90Y9)뿐이다. 아래는 역사 기록이다.
+
 매트릭스 전체에서 LLM이 관여하는 지점은 다음 3곳뿐이다. 모두 advisory이고, 출력 타입은 §3.2 매핑을 따른다.
 
 ### 5.1 C1 — unknown 분류 (R+C)
@@ -166,6 +173,10 @@ probe-restructure-design.md §5.2의 단조성 — LLM 출력은 `hold`/`escalat
   진행, 같은 동작의 기계적 재시도는 억제.
 
 ## 7. 소형 모델 그림자 모드 — unknown 행 전용
+
+> **퇴역 (2026-10-20, U5 M5A4HZAT-RNT4)** — §5과 함께 판단기 그림자 모드는
+> 운영에서 제거됐다. 규칙표 행 승격은 사람 검토(TT 카드 코멘트)로 한다.
+> 아래는 역사 기록이다.
 
 - **적용 범위 한정**: C1(unknown 분류)만. C2·S1/S2는 규칙이 1차이고 모델은 보조라, 그림자 시작은 unknown 한 행부터다.
 - **런타임**: dgx-local shadow로 시작(probe-restructure-design.md §7.2 계승 — 판단 로그·게이트 불변). mini 상주는 TT 서버 응답시간 회귀 count 실측(W0~W2)을 통과한 다음에만 검토. 9B급 후보의 구체 모델명·수치는 출처 카드(M4GQ1HSK-P7KQ)의 "계획 가정" 뉘앙스를 유지하며 표기한다 — **실효 성능은 확인 안 됨**.
