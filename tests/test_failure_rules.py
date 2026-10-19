@@ -6,7 +6,7 @@ CI 실패 위임은 ci_failed(in_progress·TT 경로)가 담당한다.
 """
 import pytest
 
-import dispatchd
+from probe import core as dispatchd
 import failure_rules
 
 SHA8 = "b" * 8

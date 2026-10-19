@@ -8,7 +8,6 @@ import os
 import pytest
 from fastapi.testclient import TestClient
 
-import dispatchd
 import probe.core
 import work_contract
 from app import create_app
@@ -46,11 +45,11 @@ def test_round_claims_and_records_dispatch(live):
         i = new_issue(live, "do work")
         live.post("/agents", json={"name": "r1@mini", "base_url": "http://127.0.0.1:1",
                            "receive_mode": "hook"})
-        snap = dispatchd.snapshot("http://x")
+        snap = probe.core.snapshot("http://x")
         assert any(x["id"] == i["id"] for x in snap["issues"])
-        acts = dispatchd.decide(snap)
+        acts = probe.core.decide(snap)
         assert acts and acts[0]["issue"] == i["id"] and acts[0]["action"] == "work"
-        dispatchd.execute("http://x", acts[0])
+        probe.core.execute("http://x", acts[0])
         got = live.get(f"/issues/{i['id']}").json()
         assert got["state"] == "in_progress" and got["assignee"] == "r1@mini"
         assert got["lease_by"] == "r1@mini"
@@ -68,12 +67,12 @@ def test_needs_human_drops_auto_and_notes(live):
         for n in range(2):
             live.post(f"/issues/{i['id']}/dispatch",
                       json={"agent": "r0@mini", "message": f"try {n}"})
-        snap = dispatchd.snapshot("http://x")
+        snap = probe.core.snapshot("http://x")
         card = next(x for x in snap["issues"] if x["id"] == i["id"])
         assert card["dispatches"] >= 2
-        acts = dispatchd.decide(snap)
+        acts = probe.core.decide(snap)
         assert acts[0]["action"] == "needs-human"
-        dispatchd.execute("http://x", acts[0])
+        probe.core.execute("http://x", acts[0])
         got = live.get(f"/issues/{i['id']}").json()
         assert "auto" not in got["labels"] and "needs-human" in got["labels"]
         got2 = live.get(f"/issues/{i['id']}").json()

@@ -7,7 +7,7 @@ import re
 
 import pytest
 
-import dispatchd
+from probe import core as dispatchd
 import failure_rules
 
 NOW = "2026-10-09T10:00:00+0900"

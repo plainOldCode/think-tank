@@ -63,7 +63,8 @@ def require_known_agent() -> bool:
 
 def probe_interval() -> int:
     """probe 내장 루프 주기(초) — TT_PROBE_INTERVAL. 0/unset/파싱불가=비활성(기본 off).
-    서버 임베드 모드 전용(M3ZW8E8A-ZK3G); standalone dispatchd는 TT_DISPATCH_INTERVAL 사용."""
+    서버 임베드 모드 전용(M3ZW8E8A-ZK3G). standalone dispatchd는 U6(M5A4HZQB-AT3N)으로
+    퇴역 — TT_DISPATCH_INTERVAL·TT_DISPATCH_DRYRUN·shim·plist 함께 제거."""
     try:
         return max(0, int(os.environ.get("TT_PROBE_INTERVAL", "0")))
     except ValueError:

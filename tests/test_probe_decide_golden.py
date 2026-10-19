@@ -17,7 +17,7 @@ import os
 import pathlib
 
 import pytest
-from dispatchd import decide
+from probe.core import decide
 
 GOLDEN = pathlib.Path(__file__).parent / "golden"
 CASES = GOLDEN / "decide_cases"

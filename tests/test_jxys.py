@@ -1,7 +1,7 @@
 """JXYS(M4MGV3BY) — in_progress 자동화: ci-fix 확장 + green 무보고 독려→승격."""
 import pytest
 
-import dispatchd
+from probe import core as dispatchd
 from probe import core as probe_core
 
 SHA8 = "b" * 8

@@ -11,7 +11,7 @@
 """
 import pytest
 
-import dispatchd
+from probe import core as dispatchd
 import probe.core
 from probe.core import agent_family, pick_reviewer, route_reviewer
 
