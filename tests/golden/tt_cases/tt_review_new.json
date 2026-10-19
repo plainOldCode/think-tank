@@ -1,0 +1,70 @@
+{
+ "auto": true,
+ "now": "2026-10-20T02:00:00+0900",
+ "issues": [
+  {
+   "id": "M4TTTT-GH01",
+   "state": "review",
+   "parent_id": null,
+   "assignee": "worker",
+   "lease_expires": null,
+   "labels": [],
+   "priority": null,
+   "execution_attempt": 1,
+   "dispatches": 1,
+   "release_ready": false,
+   "waiting_for": null,
+   "title": "tt card",
+   "brief_verify": "pytest -q",
+   "reviewer": "",
+   "archived": 0,
+   "version": 3,
+   "comments": [],
+   "updated_at": "2026-10-20T00:00:00+0900",
+   "busy_agents": [],
+   "work_contract": {
+    "version": "tt-tdd-v2.2:018f6c6fc87d07e6c7a9ddf07e3986aff5b828dcb4009719bc1695b8f175f96d"
+   },
+   "completion_report": {
+    "contract_version": "tt-tdd-v2.2:018f6c6fc87d07e6c7a9ddf07e3986aff5b828dcb4009719bc1695b8f175f96d",
+    "attempt": 1,
+    "method": "planned",
+    "result": "passed",
+    "design": {
+     "criteria": "c",
+     "verification": "v"
+    },
+    "implementation": {
+     "summary": "s",
+     "commands": "cmd"
+    },
+    "verification": {
+     "commands": "pytest -q",
+     "evidence": "1 passed",
+     "verification_level": "unit-test-verified"
+    }
+   }
+  }
+ ],
+ "prs": [],
+ "agents": [
+  {
+   "name": "worker",
+   "enabled": true,
+   "base_url": "http://x/hook",
+   "receive_mode": "hook"
+  },
+  {
+   "name": "codex",
+   "enabled": true,
+   "base_url": "http://x/hook",
+   "receive_mode": "hook"
+  },
+  {
+   "name": "claude",
+   "enabled": true,
+   "base_url": "http://x/hook",
+   "receive_mode": "hook"
+  }
+ ]
+}
