@@ -91,10 +91,3 @@ def test_probe_loop_에러_백오프_후_계속(tmp_path, monkeypatch):
     t.join(timeout=5)
     assert not t.is_alive()
 
-
-def test_dispatchd_shim_하위호환_리export():
-    import dispatchd
-
-    for name in ("decide", "execute", "snapshot", "collect_prs", "collect_repos", "ci_passed",
-                 "card_repo", "run_once", "loop", "main", "api"):
-        assert callable(getattr(dispatchd, name)), f"dispatchd.{name} 미노출"

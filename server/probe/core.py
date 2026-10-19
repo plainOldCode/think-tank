@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""tt-dispatchd — TT 자율 스케줄러. decide()는 판정 순수 함수, 실행기는 public API만 소비.
+"""tt probe — TT 자율 스케줄러. decide()는 판정 순수 함수, 실행기는 public API만 소비.
 
-30KP 설계 docs/dispatchd.md. 서브프로세스·서버 수정 없음. 상태 비저장: 근거는 카드·이력.
-launchd com.tt.dispatchd (mini), TT_AUTO_DISPATCH=1 이어야 동작.
+30KP 설계 docs/dispatchd.md. 서버 프로세스 내장 스레드(TT_PROBE_INTERVAL, app.py)로만
+구동 — standalone dispatchd shim·plist·TT_DISPATCH_* 는 U6(M5A4HZQB-AT3N)으로 퇴역.
 """
 import json
 import os
@@ -1602,8 +1602,8 @@ def _prepare_delivery_context(snap: dict, _req, gh_json) -> dict:
     return snap
 
 
-def run_once(url, dry=False):
-    """1회 스캔→판정→집행. 내장화(서버 스레드)와 standalone이 공유."""
+def run_once(url):
+    """1회 스캔→판정→집행 — 서버 내장 스레드 전용(U6로 standalone 퇴역)."""
     snap = snapshot(url)
     repos = list(_repos_default())
     for r in collect_repos(snap.get("issues") or []):
@@ -1627,8 +1627,7 @@ def run_once(url, dry=False):
     judge.log_decide_actions(snap, acts)  # 7AMG — action마다 1행(shadow, 동작 불변)
     for a in acts:
         print(time.strftime("%F %T"), a, flush=True)
-        if not dry:
-            execute(url, a)
+        execute(url, a)
     # 내장화 관측점: 서버 로그에서 사이클 생존을 확인 가능하게(빈 라운드도 1행)
     skips = snap.get("probe_skips") or {}
     print(time.strftime("%F %T"),
@@ -1663,16 +1662,13 @@ def _acquire_probe_lock(db_path):
         return None
 
 
-def loop(url=None, interval=30, stop=None, dry=None, db_path=None):
+def loop(url=None, interval=30, stop=None, db_path=None):
     """주기 실행 루프. stop 이벤트(선택)로 즉시 종료. 서버 장애 시 지수 백오프(≤300s).
 
     BTRS(하드닝): ①url=None이면 매 사이클 TT_URL을 재평가한다 — 내장 스레드가
-    부팅 시 고정한 URL이라 멀티워커·URL 변경마다 재시작이 필요했던 것 제거
-    (standalone과 동일 계약). ②db_path가 주어지면 파일 잠금 단일 구동 가드 —
-    멀티워커에서 워커당 중복 구동 방지(선점 실패 시 파킹, 리더 종료 시 인수계).
-    """
-    if dry is None:
-        dry = os.getenv("TT_DISPATCH_DRYRUN") == "1"
+    부팅 시 고정한 URL이라 멀티워커·URL 변경마다 재시작이 필요했던 것 제거.
+    ②db_path가 주어지면 파일 잠금 단일 구동 가드 — 멀티워커에서 워커당 중복
+    구동 방지(선점 실패 시 파킹, 리더 종료 시 인수계)."""
     lock_fd = None
     if db_path:
         lock_fd = _acquire_probe_lock(db_path)
@@ -1690,7 +1686,7 @@ def loop(url=None, interval=30, stop=None, dry=None, db_path=None):
         while not (stop is not None and stop.is_set()):
             cur = url or os.environ.get("TT_URL", "http://127.0.0.1:7800")
             try:
-                run_once(cur, dry=dry)
+                run_once(cur)
                 fails = 0
             except Exception as e:  # 서버 장애 — 백오프. 쓰기가 없으면 lease는 TTL로 자연 해금.
                 fails += 1
@@ -1707,9 +1703,3 @@ def loop(url=None, interval=30, stop=None, dry=None, db_path=None):
             os.close(lock_fd)
 
 
-def main():
-    loop(None, int(os.getenv("TT_DISPATCH_INTERVAL", "30")))
-
-
-if __name__ == "__main__":
-    main()

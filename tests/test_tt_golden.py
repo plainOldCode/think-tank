@@ -15,7 +15,7 @@ import os
 import pathlib
 
 import pytest
-from dispatchd import decide
+from probe.core import decide
 from review_subject import subject as _subject
 
 GOLDEN = pathlib.Path(__file__).parent / "golden"

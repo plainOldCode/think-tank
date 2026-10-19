@@ -84,7 +84,7 @@ def create_app(db_path: str) -> FastAPI:
     app.include_router(settings_router.router)
 
     # probe 내장화 (M3ZW8E8A-ZK3G): TT_PROBE_INTERVAL>0 → 데몬 스레드로 자율 스케줄러 구동.
-    # 미설정이면 off(테스트·로컬 안전). mini 운영은 launchd com.tt.dispatchd 대체 — 단일 프로세스.
+    # 미설정이면 off(테스트·로컬 안전). mini 운영은 서버 내장 스레드 — 단일 프로세스.
     interval = config.probe_interval()
     if interval > 0:
         stop = threading.Event()

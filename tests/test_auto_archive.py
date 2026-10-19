@@ -1,7 +1,7 @@
 """자동 아카이브 스윕(M3ZRGTSF-N95X) — decide 스케줄 + execute 조상 규칙."""
 import pytest
 
-import dispatchd
+from probe import core as dispatchd
 import probe.core
 
 

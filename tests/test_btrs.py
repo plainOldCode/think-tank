@@ -15,7 +15,7 @@ from probe import core as probe_core
 def test_url_없으면_매_사이클_env를_재평가한다(monkeypatch):
     seen = []
 
-    def fake_run_once(url, dry=False):
+    def fake_run_once(url):
         seen.append(url)
         if len(seen) >= 2:
             stop.set()
@@ -37,7 +37,7 @@ def test_url_없으면_매_사이클_env를_재평가한다(monkeypatch):
 def test_명시_url은_고정된다(monkeypatch):
     seen = []
 
-    def fake_run_once(url, dry=False):
+    def fake_run_once(url):
         seen.append(url)
         stop.set()
 
@@ -72,7 +72,7 @@ def test_잠금_보유_중_파킹하고_해제되면_인수계한다(tmp_path, m
     ran = []
     stop = threading.Event()
 
-    def fake_run_once(url, dry=False):
+    def fake_run_once(url):
         ran.append(url)
         stop.set()
 
@@ -93,7 +93,7 @@ def test_잠금_획득_프로세스는_정상_구동된다(tmp_path, monkeypatch
     ran = []
     stop = threading.Event()
 
-    def fake_run_once(url, dry=False):
+    def fake_run_once(url):
         ran.append(url)
         stop.set()
 
@@ -141,7 +141,7 @@ def test_루프_종료_후_잠금이_해제된다(tmp_path, monkeypatch):
     db = str(tmp_path / "t.db")
     ran, stop = [], threading.Event()
 
-    def fake_run_once(url, dry=False):
+    def fake_run_once(url):
         ran.append(url)
         stop.set()
 
@@ -163,7 +163,7 @@ def test_실제_앱_종료_재생성에서도_probe가_정상_구동된다(monke
     db = str(tmp_path / "live.db")
     ran, stop_all = [], threading.Event()
 
-    def fake_run_once(url, dry=False):
+    def fake_run_once(url):
         ran.append(url)
 
     monkeypatch.setattr(probe_core, "run_once", fake_run_once)

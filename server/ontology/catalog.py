@@ -44,6 +44,12 @@ def unknown_counts():
     return dict(_unknown_counts)
 
 
+def reset_unknown():
+    """테스트 전용 — unknown 카운터·링 리셋. private 전역 직접 접근을 대체한다(U6)."""
+    _unknown_counts.clear()
+    _unknown_log.clear()
+
+
 def unknown_log():
     return list(_unknown_log)
 

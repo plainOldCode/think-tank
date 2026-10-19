@@ -1,8 +1,11 @@
-"""decide() 판정표 — dispatchd 정책의 순수 함수 (30KP 설계 docs/dispatchd.md)."""
+"""decide() 판정표 — probe 정책의 순수 함수 (30KP 설계 docs/dispatchd.md).
+
+U6(M5A4HZQB-AT3N): dispatchd shim 퇴역 — probe.core로 직접.
+"""
 import pytest
 
-from dispatchd import decide
-import dispatchd
+from probe import core as dispatchd
+from probe.core import decide
 
 NOW = "2026-09-29T21:00:00+0900"
 
