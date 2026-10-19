@@ -13,6 +13,7 @@ import config
 import db as dbmod
 import service
 from models import AgentIn, AgentPatch, DispatchIn, DispatchProgress
+from ontology import catalog  # XKRY: dispatch 대상 해석 단일 경로
 from service import Ctx
 
 router = APIRouter()
@@ -389,16 +390,20 @@ def dispatch(issue_id: str, p: DispatchIn, request: Request, ctx: Ctx = Depends(
 
 
 def _resolve_dispatch_agent(c, p):
-    """등록 에이전트 해석 — 정확명 → 별칭 정본(W0DF) → 본명@호스트 폴백(WGT4).
+    """등록 에이전트 해석 — 정확명 → 카탈로그 정본(XKRY: 정확명→별칭) → 본명@호스트 폴백(WGT4).
 
     본명@호스트 형식 assignee(tt CLI 기본 신원)를 등록 에이전트 단축명으로
     폴백 — probe review-fix가 assignee에 재dispatch할 때 404로 무한 실패했던
-    버그(M4CJG2A5-WGT4). 정확명이 있으면 항상 우선한다."""
+    버그(M4CJG2A5-WGT4). 정확명이 있으면 항상 우선한다. 중간 해석은
+    ontology/catalog.resolve('agent') 단일 경로(3QMV identity 위임, 사본 금지)로
+    통일 — 응답 계약(404/409)은 이 함수 시그니처에서 유지한다."""
     ag = c.execute("SELECT * FROM agents WHERE name=?", (p.agent,)).fetchone()
     if not ag:
-        _res = service.resolve_agent_identity(c, p.agent)
-        if _res:
-            ag = c.execute("SELECT * FROM agents WHERE name=?", (_res,)).fetchone()
+        rows = [{"name": r["name"], "aliases": json.loads(r["aliases"] or "[]")}
+                for r in c.execute("SELECT name, aliases FROM agents").fetchall()]
+        name = catalog.resolve("agent", p.agent, agents=rows, family_fallback=False)
+        if name:
+            ag = c.execute("SELECT * FROM agents WHERE name=?", (name,)).fetchone()
     if not ag and "@" in p.agent:
         ag = c.execute("SELECT * FROM agents WHERE name=?",
                        (p.agent.split("@", 1)[0],)).fetchone()
