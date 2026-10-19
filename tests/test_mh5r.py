@@ -23,11 +23,9 @@ AGENTS = [{"name": "agy", "aliases": []}, {"name": "cursor-review", "aliases": [
 @pytest.fixture(autouse=True)
 def _reset_unknown():
     from ontology import catalog
-    catalog._unknown_counts.clear()
-    catalog._unknown_log.clear()
+    catalog.reset_unknown()
     yield
-    catalog._unknown_counts.clear()
-    catalog._unknown_log.clear()
+    catalog.reset_unknown()
 
 
 def issue(iid="M4ABCDEF-GH12", attempt=1):

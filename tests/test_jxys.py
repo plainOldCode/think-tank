@@ -303,7 +303,7 @@ def test_게이트_끈_run_once도_독려를_하이드레이트해_승격한다(
                             dict(_mk(comments=[{"author": "probe", "id": 1, "ts": TS_OLD,
                                                 "body": f"[submit-remind a1 #3/{SHA8}] 독려"}]))
                             if method == "GET" else {"ok": True}))
-    probe_core.run_once("u", dry=False)
+    probe_core.run_once("u")
     assert [a for a in exec_acts if a["action"] == "submission-adopt"]
 
 

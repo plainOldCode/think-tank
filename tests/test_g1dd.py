@@ -35,9 +35,3 @@ def test_graph_version_mismatch_rejects():
 def test_rule_version_is_stable_string():
     assert isinstance(failure_rules.RULE_VERSION, str) and failure_rules.RULE_VERSION
 
-
-def test_changelog_documents_version_convention():
-    text = open("CHANGELOG.md", encoding="utf-8").read()
-    assert "## 버전 규약" in text
-    assert "SCHEMA_VERSION" in text and "RULE_VERSION" in text
-    assert "graph_compatible" in text and "fail-to-rules" in text

@@ -142,7 +142,7 @@ def test_probe는_미선언_에이전트에게_배정하지_않는다(monkeypatc
     monkeypatch.setenv("TT_AUTO_DISPATCH", "1")
     exec_acts = []
     monkeypatch.setattr(probe_core, "execute", lambda url, a: exec_acts.append(a))
-    probe_core.run_once("http://x", dry=False)
+    probe_core.run_once("http://x")
     assert len(exec_acts) == 1
     assert exec_acts[0]["agent"] == "declared-agent"  # 미선언 후보 제외 — 선언 에이전트만 배정
     # execute는 스텁 — 실제 전이는 claim/pull API 테스트가 담당
@@ -223,7 +223,7 @@ def test_실제_사이클_409_후_후속_집행_생존(monkeypatch, tmp_path):
         return acts
 
     monkeypatch.setattr(probe_core, "decide", decide_then_cancel)
-    probe_core.run_once("http://x", dry=False)
+    probe_core.run_once("http://x")
 
     g1 = app.get(f"/issues/{c1['id']}").json()
     g2 = app.get(f"/issues/{c2['id']}").json()
