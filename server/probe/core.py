@@ -1134,7 +1134,8 @@ def _decide_tt_lifecycle(ctx):
                                            delivery_context=(ctx.snap.get("delivery_context") or {}).get(i["id"]),
                                            linked=any(pr_card_id(p) == i["id"] for p in ctx.snap.get("prs") or []),
                                            discovered=(ctx.snap.get("discovered_delivery") or {}).get(i["id"]),
-                                           patch_ids=ctx.snap.get("patch_ids"))
+                                           patch_ids=ctx.snap.get("patch_ids"),
+                                           rmap=ctx.rmap, fallback=ctx.fb)
             actions.extend(tt_actions)
             claimed.update(a["agent"] for a in tt_actions if a["agent"] != "probe")
     ctx.gated = set(ctx.tt_cards)  # TT-submitted cards do not require PR discovery or merge
@@ -1332,7 +1333,7 @@ def _decide_verdict(ctx, i, p, iid, pr_repo, low_risk, high_risk, no_checks):
                                 "pr": p["number"], "repo": pr_repo,
                                 "branch": p.get("branch", ""),
                                 "head_sha": p.get("head_sha", ""),
-                                "marker": _tb,
+                                "marker": _tb, "rf": list(ctx.fb or REVIEW_FALLBACK),
                                 "dual": True, "reviewer": mediator,
                                 "reason": f"PR#{p['number']} 이중 판정 불일치"
                                           f"(승인 {_sorted_names(_app)} vs RC {_sorted_names(_rcs)}) — "
@@ -1379,7 +1380,8 @@ def _decide_verdict(ctx, i, p, iid, pr_repo, low_risk, high_risk, no_checks):
                                     "pr": p["number"], "repo": pr_repo,
                                     "branch": p.get("branch", ""),
                                     "head_sha": p.get("head_sha", ""),
-                                    "marker": marker, "dual": True,
+                                    "marker": marker, "rf": list(ctx.fb or REVIEW_FALLBACK),
+                                    "dual": True,
                                     "reviewer": _nm,
                                     "reason": f"PR#{p['number']} CI green — 이중 판정 요청"
                                               f"(계열 {_fam}) → {_nm}"})
@@ -1390,6 +1392,7 @@ def _decide_verdict(ctx, i, p, iid, pr_repo, low_risk, high_risk, no_checks):
                                 "pr": p["number"], "repo": pr_repo,
                                 "branch": p.get("branch", ""),
                                 "head_sha": p.get("head_sha", ""), "marker": marker,
+                                "rf": list(ctx.fb or REVIEW_FALLBACK),
                                 "reason": f"PR#{p['number']} CI green — 이중 판정 후보 부족, 단일 리뷰 요청"})
             return True
         if _probe_marker(i, marker):
@@ -1438,7 +1441,7 @@ def _decide_verdict(ctx, i, p, iid, pr_repo, low_risk, high_risk, no_checks):
                                 "pr": p["number"], "repo": pr_repo,
                                 "branch": p.get("branch", ""),
                                 "head_sha": p.get("head_sha", ""),
-                                "marker": marker,
+                                "marker": marker, "rf": list(ctx.fb or REVIEW_FALLBACK),
                                 "reason": f"PR#{p['number']} CI green — 리뷰 요청 → "
                                           f"{routed or ctx.reviewer or 'kanban-adapter'}",
                                 **({"reviewer": routed} if routed else {})})
@@ -2466,13 +2469,8 @@ def _exec_review_request(url, act):
     author = (cur.get("assignee") or "").strip()
     author_fam = _impl_family(author)
     if act.get("reviewer"):
-        # 런타임 설정 우선(XV84) — 조회 실패 시 코드 기본으로 회귀
-        try:
-            s = api(url, "/settings/review-routing")
-            rf = tuple(s.get("review_fallback") or REVIEW_FALLBACK) \
-                if isinstance(s, dict) and s.get("review_fallback") else REVIEW_FALLBACK
-        except Exception:
-            rf = REVIEW_FALLBACK
+        # XV84 폴백은 decide 시점 값(act.rf, U2 단일 소스) — 실행 시점 재조회 제거
+        rf = tuple(act.get("rf") or REVIEW_FALLBACK)
         cands = [act["reviewer"]] + [c for c in rf if c != act["reviewer"]]
     else:
         legacy = os.environ.get("TT_REVIEW_AGENT", "").strip() or "kanban-adapter"
