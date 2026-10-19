@@ -1,6 +1,7 @@
 """TT owns submission/review/verification; providers supply optional context."""
 from datetime import datetime
 import hashlib
+import re
 
 from review_subject import subject, verdict
 from verification import CompletionReport
@@ -30,6 +31,40 @@ def marker(issue, kind):
 def marked(issue, key):
     return any(c.get("author") == "probe" and (c.get("body") or "").startswith(key)
                for c in issue.get("comments") or [])
+
+
+_STALL_KILL_RE = re.compile(r"session=tt-(.+?)-(\d+)\b")
+
+
+def _stall_grace_sec(core):
+    """M59BE4HD-ME5W — STALL-kill 확인 후 재발령 유예(분, 기본 10)."""
+    try:
+        return max(0, int(core.os.getenv("TT_STALL_REDISPATCH_GRACE_MIN", "10"))) * 60
+    except ValueError:
+        return 600
+
+
+def _stalled_reviewer(issue):
+    """STALL-kill로 확인된 현재 리뷰어 — (agent, kill_ts) 또는 None.
+
+    기계적 조건: 마지막 [tt-review] 발령 마커 이후의 runner:* STALL-killed
+    코멘트이고, 코멘트 session의 에이전트가 현재 reviewer와 일치할 것."""
+    key = marker(issue, "tt-review")
+    marks = [c.get("ts") or "" for c in issue.get("comments") or []
+             if c.get("author") == "probe" and (c.get("body") or "").startswith(key)]
+    if not marks:
+        return None
+    last = max(marks)
+    for c in reversed(issue.get("comments") or []):
+        if (c.get("ts") or "") <= last:
+            continue
+        body = c.get("body") or ""
+        if not str(c.get("author") or "").startswith("runner@") or "STALL-killed" not in body:
+            continue
+        m = _STALL_KILL_RE.search(body)
+        if m and m.group(1) == issue.get("reviewer"):
+            return (m.group(1), c.get("ts") or "")
+    return None
 
 
 def plan(core, issue, agents, busy, now, delivery_context=None, linked=False,
@@ -90,6 +125,30 @@ def plan(core, issue, agents, busy, now, delivery_context=None, linked=False,
     previous = [c for c in issue.get("comments") or []
                 if c.get("author") == "probe" and (c.get("body") or "").startswith(key)]
     if previous:
+        # M59BE4HD-ME5W — STALL-kill fast-path: 러너가 죽음을 기록한 리뷰 라운드는
+        # 1시간 경과·리스 만료를 기다리지 않는다. 유예 경과 후 직전 리뷰어를
+        # 회피해 재발령하고, execute가 점유를 해제한 뒤 claim한다.
+        dead = _stalled_reviewer(issue)
+        if dead:
+            dead_name, killed_at = dead
+            try:
+                waited = (datetime.fromisoformat(now)
+                          - datetime.fromisoformat(killed_at)).total_seconds()
+            except (ValueError, TypeError, KeyError):
+                waited = 0.0
+            if waited >= _stall_grace_sec(core):
+                target = core.pick_reviewer(issue.get("assignee"), agents,
+                                            busy | {dead_name}, core.effective_review_map())
+                if target:
+                    # 자격 검사는 죽은 리뷰어 점유를 해제한 것으로 본다 — 그 외
+                    # 검사(교차리뷰·계약·상태)는 그대로 적용된다.
+                    probe_issue = dict(issue)
+                    probe_issue["lease_by"] = ""
+                    probe_issue["lease_expires"] = ""
+                    if core.policy.review_eligible(probe_issue, now=now, agent=target)[0]:
+                        return [{**common, "action": "tt-review", "agent": target,
+                                 "marker": key, "retry": len(previous),
+                                 "release_lease": dead_name}]
         # Bounded retry after a dead reviewer; no new head/PR is needed for local work.
         try:
             elapsed = (datetime.fromisoformat(now) - datetime.fromisoformat(previous[-1]["ts"])).total_seconds()
@@ -198,7 +257,18 @@ def execute(core, url, act):
         return
     target = act["agent"]
     if kind == "tt-review":
-        claim = core.api(url, f"/issues/{iid}/claim-review", "POST", {"agent": target})
+        dead = act.get("release_lease")
+        if dead and cur.get("reviewer") == dead:
+            # M59BE4HD-ME5W — 확인 사망한 리뷰어 점유 해제(R5: reviewer 반납이
+            # 조건부 lease 해제) 후 새 리뷰어 claim. 해제 실패 시 예외 상승으로
+            # 발령 없음 — 다음 사이클이 재시도한다.
+            core.api(url, f"/issues/{iid}", "PATCH",
+                     {"reviewer": "", "expected_version": cur["version"]})
+            cur = core.api(url, f"/issues/{iid}")
+            if not eligible(cur) or subject(cur) != act["subject"] or verdict(cur) is not None:
+                return
+        claim = core.api(url, f"/issues/{iid}/claim-review",
+                         "POST", {"agent": target, "hours": 1})  # 리뷰 리스 단축(기본 2h→1h)
         # claim-review replaces work_contract in its response with the review
         # contract; the server-derived subject still names the implementation.
         if claim.get("review_subject") != act["subject"]:
