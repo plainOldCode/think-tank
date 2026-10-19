@@ -9,12 +9,17 @@ import re
 
 def collect_github(repos, query):
     out = []
+    observed = {}
     for repo in dict.fromkeys(repos):
             try:
                 prs = query("pr", "list", "--repo", repo, "--state", "open",
                             "--json", "number,headRefName,headRefOid,baseRefName,title,isDraft,labels") or []
             except Exception:
+                # T3YT(M58SPT6D-T3YT): 조회 실패를 조용히 누락하면 'PR 없음'과
+                # 구분이 사라진다 — 관측 결과를 repo 단위로 기록해 판정이 구분하게 한다.
+                observed[repo] = "failed"
                 continue
+            observed[repo] = "ok"
             for p in prs:
                 try:
                     checks = query("pr", "checks", p["number"], "--repo", repo, "--json", "name,state")
@@ -27,19 +32,22 @@ def collect_github(repos, query):
                             "isDraft": bool(p.get("isDraft")),
                             "labels": [l.get("name", "") for l in p.get("labels") or []],
                             "checks": checks})
-    return out
+    return out, observed
 
 
 ADAPTERS = {"github": collect_github}
 
 
 def collect(repos, query):
+    """(prs, observed) 반환 — observed: {repo: 'ok'|'failed'} (T3YT).
+
+    provider none/local은 관측 자체가 없으므로 실패로 세지 않는다(빈 observed)."""
     provider = os.getenv("TT_PR_PROVIDER", "github").strip().lower()
     adapter = ADAPTERS.get(provider)
     if adapter is None:
         if provider not in ("none", "local", ""):
             print(f"[probe] PR provider {provider!r} unavailable; TT review remains active", flush=True)
-        return []
+        return [], {}
     return adapter(repos, query)
 
 

@@ -38,6 +38,17 @@ FAILURE_RULES = (
      "handling": HANDLING_R, "wired": "server/probe/core.py decide ⓪ (pr_no_checks 분기)",
      "agg": "14", "note": "ci_passed는 checks 1+ 전부 SUCCESS — 0건은 기존 무응답 구간"},
 
+    {"code": "observe_failed",
+     "judgment": "PR 수집(pr list)이 repo 단위로 실패해 관측이 불완전한 사이클 "
+                 "(snap.pr_observed에 failed 존재, snap.degraded에 pr_list) — "
+                 "해당 repo 후보 카드에 'PR 없음' 판정 금지",
+     "default": "관측 재시도(다음 사이클) — [observe-failed a<n>] 마커 회차당 1회 dedup, "
+                "반복 시 §6 사람 통보. 관측 성공 repo의 카드는 기존 판정 유지",
+     "handling": HANDLING_R, "wired": "server/probe/providers.py collect_github + "
+                                      "server/probe/core.py _pr_list_failed/_decide_observe_failed "
+                                      "(TT M58SPT6D-T3YT)",
+     "agg": "0(신규, 2026-10-19)", "note": "§12 신규 행 — NVP §3-3. '조회 실패'와 'PR 없음' 분리"},
+
     {"code": "ci_failed",
      "judgment": "PR checks에 FAILURE 포함(비green)",
      "default": "ci-fix dispatch 유지 — 실패 로그 분류는 advisory(R+S 요약 §5 S1)",
