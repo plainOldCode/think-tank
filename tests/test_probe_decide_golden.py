@@ -111,7 +111,6 @@ def cases():
 def env(monkeypatch):
     monkeypatch.setenv("TT_REVIEW_GRACE_MIN", "0")
     monkeypatch.setenv("TT_REVIEW_AGENT", "fallback@t")
-    monkeypatch.delenv("TT_DRAFT_STALL_H", raising=False)
 
 
 def test_golden_decide_출력은_분할_전후_동일하다():

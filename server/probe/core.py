@@ -167,8 +167,6 @@ def review_verdict(comments, reviewer, pr_no, sha8):
     return verdict
 
 
-
-
 # --- 카운터파트 리뷰어 라우팅 (M4JTJ970-WS3C, docs/review-gate.md 룰셋) ---
 
 # 자기 리뷰 방지용 고정 가족 어휘 — TT_REVIEW_MAP 확장과 무관하게 이 어휘로만 제외한다
@@ -689,9 +687,6 @@ def _age_min(now, updated):
         return None
 
 
-_C1_SEEN = {}  # C1 카드별 최신 판정 입력 해시(프로세스 내 dedup)
-
-
 class _DecideCtx:
     """decide() 단계 공유 문맥(AK87-1) — 750줄 단일 함수를 위임형으로 분할한다.
 
@@ -1043,49 +1038,12 @@ def _decide_evidence_rejected(ctx):
         _escalate(actions, i, "evidence_rejected", i["id"], 0)
 
 
-def _decide_c1_shadow(ctx):
-    """⑥ C1 unknown 그림자(gate-failure-rules.md §5.1/§7) — 규칙표 어느 행에도
-    매칭되지 않는 tt-server 실패 기록: 판단기 rank 제안(shadow — 동작 불변, 로그만,
-    카드당 최신 1건). 사람이 로그를 검토해 표에 행을 추가하는 것이 유일한 반영 경로.
-    판단기 미구성이면 아무 일도 일어나지 않는다(규칙만 — 로그 접근도 없음, 리뷰 R1)."""
-    if judge.get_judge() is None:
-        return
-    for i in ctx.issues:
-        if i.get("archived"):
-            continue
-        latest = None  # (ts, id, body) — 카드당 최신 미매칭 사건(리뷰 R7)
-        for c in (i.get("comments") or []):
-            if c.get("author") != "tt-server":
-                continue
-            body = c.get("body") or ""
-            if body.startswith(("done 증거 없음", "보고 접수")):
-                continue  # 규칙표 행 존재(evidence_rejected) — C1 아님
-            if "verify 422" in body:
-                continue  # verify_422 정식 행의 기계적 표식만 제외(리뷰 R8)
-            if not re.search(r"실패|오류|거부|거절|4\d\d", body):
-                continue
-            k = (c.get("ts") or c.get("created_at") or "", c.get("id") or 0)
-            if latest is None or k > latest[:2]:
-                latest = (k[0], k[1], body)
-        if latest is None:
-            continue
-        view = {"card": i["id"], "input": {"comment": latest[2][:800],
-                                           "state": i["state"]}}
-        ih = judge.input_hash("C1", view)
-        if _C1_SEEN.get(i["id"]) == ih:
-            continue  # 같은 입력 재판정 방지(프로세스 내 dedup)
-        _C1_SEEN[i["id"]] = ih
-        if judge.JudgeLog().seen(i["id"], "C1", ih):
-            continue  # 로그에 이미 판정된 입력(재시작 후에도 dedup)
-        judge.run_advisory("C1", view, "unknown", cycle_id=ctx.snap.get("cycle_id"))
-
-
 def decide(snap):
     """probe 판정 엔진 — 스냅샷을 읽어 액션 목록을 반환한다(AK87-1 위임형).
 
     각 단계는 _decide_* 핸들러로 분리돼 있다: ①재개+②배정 → ⓪TT 라이프사이클
     → ⓪PR 파이프라인(in_progress·T3YT) → ③예산 → ④아카이브 → ⑤evidence
-    → ⑥C1 shadow. 레거시 PR 경로(병합·needs-merge·재작업 relay)는
+    레거시 PR 경로(병합·needs-merge·재작업 relay)는
     U4(M5A4HYY7-3BCA)로 퇴역했다. probe_skips는 snap에 기록(로그 계약),
     actions/claimed는 단계 간 누적 상태다."""
     if not snap.get("auto"):
@@ -1106,7 +1064,6 @@ def decide(snap):
     _decide_budget(ctx)
     _decide_archive_sweep(ctx)
     _decide_evidence_rejected(ctx)
-    _decide_c1_shadow(ctx)
     return ctx.actions
 
 
@@ -1318,26 +1275,12 @@ def _exec_ci_fix(url, act):
         return  # 경합 방어 — decide 판정 후 재확인
     agent = os.environ.get("TT_CI_FIX_AGENT", "kanban-adapter")
     target = os.environ.get("TT_CI_FIX_TARGET", "agy")
-    # S1(§5.3) — 실패 요약 annotate(advisory): 판단기 있으면 dispatch 본문에 첨부,
-    # 없으면 본문 불변. 판정·위임 여부는 규칙이 이미 정했다.
-    _s1 = judge.run_advisory("S1", {"card": act["issue"],
-                                    "pr": f"{act.get('repo','')}#{act['pr']}"
-                                          f"@{(act.get('head_sha') or '')[:8]}",
-                                    "input": {"checks_failed": act.get("checks_failed") or [],
-                                              "branch": act.get("branch", "")}},
-                             "ci-fix dispatch", cycle_id=act.get("cycle_id"))
-    _s1_txt = ""
-    if _s1 and isinstance(_s1.value, str) and _s1.value.strip():
-        # [judge-note <id>] — 기존 파서가 제어 정보로 읽지 않는 새 주석 kind(§5.2).
-        # 값은 소독(advisory가 마커 시퀀스를 운반하지 않음) + 한 줄 블록.
-        _s1_txt = (f"\n\n[judge-note {_s1.decision_id}] 실패 요약(참고용 — 판정 아님): "
-                   f"{judge.sanitize(_s1.value.strip()[:500].replace(chr(10), ' '))}")
     msg = (f"[auto probe] PR #{act['pr']} ({act.get('repo','')}) CI 실패"
            f"(failing: {','.join(act.get('checks_failed') or [])}). 임무: PR을 읽고 **수정**할 것"
            f" — 단순 review 금지, 목적은 CI red 해소. 브랜치 {act.get('branch','')} 위에서 커밋 계속, "
            f"범위는 CI 실패 수정만(리팩·스킵·assertion 약화 금지). push 후 즉시 종료 — "
            f"CI 재판정·병합은 probe가 자동 진행하니 CI·리뷰를 기다리거나 폴링하지 말 것"
-            f"(다음 단계 필요 시 보드가 재호출). 인수: {target} 담당.{_s1_txt}")
+            f"(다음 단계 필요 시 보드가 재호출). 인수: {target} 담당.")
     if act.get("subject"):
         msg += (" 수정 push 후 delivery.head_sha를 새 전체 SHA로 갱신하고 "
                 "tt submit --report로 같은 회차 보고를 재제출해야 재리뷰·병합된다. "
@@ -1455,17 +1398,6 @@ def _exec_review_note(url, act):
             return
         api(url, f"/issues/{act['issue']}/comments", "POST",
             {"author": "probe", "body": f"{marker} {act['reason']}"})
-        # S2(§5.3) — 거부 사유 요약 annotate(advisory): 마커 노트와 분리한 별도
-        # [judge-note] 코멘트로(리뷰 R2 — 요약이 기존 마커로 재해석되는 것 방지).
-        # 대응(재제출 요청)은 규칙이 이미 정했다.
-        _s2 = judge.run_advisory("S2", {"card": act["issue"],
-                                        "input": {"reason": act.get("reason", "")}},
-                                 "evidence-rejected note", cycle_id=act.get("cycle_id"))
-        if _s2 and isinstance(_s2.value, str) and _s2.value.strip():
-            api(url, f"/issues/{act['issue']}/comments", "POST",
-                {"author": "probe", "body": f"[judge-note {_s2.decision_id}] "
-                                            f"사유 요약(참고용 — 판정 아님): "
-                                            f"{judge.sanitize(_s2.value.strip()[:300].replace(chr(10), ' '))}"})
         return
     att = cur.get("execution_attempt") or 0
     # U4 퇴역 — needs-merge 기본 마커는 제거. 마커 없는 review-note는
