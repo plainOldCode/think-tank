@@ -17,8 +17,6 @@ TRANSITIONS = {
     "done": {"todo"},
     "cancelled": {"todo"},
 }
-TERMINAL_FIELDS = {"done", "cancelled"}
-
 # blocked 사족 (TT M3BZS1FS-5722 ①): waiting_for 종류와 책임 액터.
 # 미입력 시 기존 동작 그대로(빈 값) — backwards-compatible migration.
 WAITING_FOR = {"dependency", "human", "gate", "external"}

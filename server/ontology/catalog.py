@@ -19,8 +19,6 @@ from collections import Counter
 
 from identity import resolve as _identity_resolve  # 3QMV 단일 소스 — 사본 금지
 
-ENTITY_KINDS = ("card", "pr", "agent", "reviewer")
-
 # 카드 id — TT 이슈 id(접두-접미 하이픈 구분). 접두 6~12, 접미 3~6.
 CARD_ID_RE = re.compile(r"^[A-Z0-9]{6,12}-[A-Z0-9]{3,6}$")
 # PR 참조 — owner/repo#N 또는 github PR URL. owner/repo는 [\w.-] (GitHub 규약).
@@ -64,7 +62,7 @@ def resolve(kind, raw, agents=None, family_fallback=False):
         return resolve_agent(raw, agents or [], family_fallback=family_fallback)
     if kind == "reviewer":
         return resolve_reviewer(raw, agents or [])
-    raise ValueError(f"unknown entity kind: {kind!r} (ENTITY_KINDS 참조)")
+    raise ValueError(f"unknown entity kind: {kind!r} (card|pr|agent|reviewer)")
 
 
 def resolve_card(raw):
