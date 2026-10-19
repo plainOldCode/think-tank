@@ -10,9 +10,9 @@ SEED_RTZ1 = {"trigger_seq": 1640, "card": "M40MP7EX-RTZ1", "reason_code": "unkno
              "detector": "probe", "decider": "supervisor-agent",
              "decision": "review-fix가 실행 불가 어댑터로 재발령돼 정체 — 수령·수정.",
              "followup_card": None}
-SEED_XF9W = {"trigger_seq": 1624, "card": "M4CNE298-XF9W", "reason_code": "no_pr",
+SEED_XF9W = {"trigger_seq": 1624, "card": "M4CNE298-XF9W", "reason_code": "observe_failed",
              "detector": "probe", "decider": "supervisor-agent",
-             "decision": "PR 없는 보고 접수 → needs-merge a1, 병합 실측 후 verify."}
+             "decision": "PR 관측 실패 사이클 → observe-failed a1 노트, 다음 사이클 재판정."}
 
 
 def run(tmp_path, records, raw=None):

@@ -177,20 +177,3 @@ _MODEL_FAMILY_RULES = (
     ("mistral", "mistral"),
 )
 
-
-def model_family(model):
-    """agents.model 문자열 → 모델 계열(gpt/qwen/gemini/claude/...). 미지 모델은 None."""
-    m = (model or "").lower()
-    for kw, fam in _MODEL_FAMILY_RULES:
-        if kw in m:
-            return fam
-    return None
-
-
-def dual_review_eligible(i):
-    """이중 판정 트리거 — 카드 라벨 dual_review(발령자가 생성 시 지정).
-
-    probe 휴리스틱(server/·마이그레이션·인증 경로)은 diff 관측이 필요해 2단계 분리
-    (카드 설계 노트 2026-10-18)."""
-    return "dual_review" in {str(x).strip().lower() for x in (i.get("labels") or [])
-                             if isinstance(x, str)}

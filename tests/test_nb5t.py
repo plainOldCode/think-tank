@@ -29,8 +29,9 @@ def test_graph_queries_equal_string_parsing():
     issue = _rich_issue()
     g = build_graph({"issues": [issue]})
     assert g.comment_pr_repos(issue["id"]) == core._comment_pr_repos(issue)
+    from ontology.build import parse_requested
     assert g.requested_reviewers(issue["id"], 9, "abc12345") == \
-        core._requested_reviewers(issue, 9, "abc12345") == {"agy", "cursor-review"}
+        parse_requested(issue["comments"]).get((9, "abc12345"), set()) == {"agy", "cursor-review"}
     assert g.requested_reviewers(issue["id"], 9, "abc12346") == set()  # 다른 head
     assert g.requested_reviewers(issue["id"], 8, "abc12345") == set()  # 다른 PR
 

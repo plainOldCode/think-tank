@@ -1,9 +1,1 @@
-[
- {
-  "action": "review-note",
-  "agent": "probe",
-  "issue": "M4ABCDEF-GH12",
-  "marker": "[draft-flagged #9]",
-  "reason": "draft PR#9 — ready for review 요청(준비되면 draft 해제)"
- }
-]
+[]

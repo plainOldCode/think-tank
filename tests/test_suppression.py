@@ -49,7 +49,6 @@ def env(monkeypatch):
     monkeypatch.delenv("TT_SUPPRESS_N", raising=False)
 
 
-
 # --- ci_failed: (코드, #pr/sha8) 카운터 ---
 
 def _ci_card(n, att=1, **kw):
@@ -58,33 +57,11 @@ def _ci_card(n, att=1, **kw):
               comments=[_pc(f"[ci-fix a{k} #9/{SHA8}]", cid=k) for k in range(1, n + 1)] + extra)
 
 
-def test_ci_실패_N회_도달시_사람_통보_1회와_위임_스킵():
-    acts = dispatchd.decide(_snap([_ci_card(3)], [_pr(checks=[{"state": "FAILURE"}])], []))
-    nh = [a for a in acts if a["action"] == "needs-human"]
-    assert len(nh) == 1 and f"[escalated {KEY_CI}]" in nh[0]["note"]
-    assert not [a for a in acts if a["action"] == "ci-fix"]
-
-
-def test_ci_실패_N미만은_기존_위임을_유지한다():
-    # a1·a2는 이미 위임됐고 현재 회차 3 — 같은 head 반복 2회 미만이라 위임 유지
-    acts = dispatchd.decide(_snap([_ci_card(2, att=3)], [_pr(checks=[{"state": "FAILURE"}])], []))
-    assert [a for a in acts if a["action"] == "ci-fix"]
-    assert not [a for a in acts if a["action"] == "needs-human"]
-
-
 def test_억제_중인_키는_재통보하지_않는다():
     i = _ci_card(3, comments=[_pc(f"[escalated {KEY_CI}] 반복 사건 — 사람 확인 대기",
                                   author="dispatchd", cid=9)])
     acts = dispatchd.decide(_snap([i], [_pr(checks=[{"state": "FAILURE"}])], []))
     assert not [a for a in acts if a["action"] in ("ci-fix", "needs-human")]
-
-
-def test_사람_해제_후_새_head는_다시_위임한다():
-    rel = _pc(f"[unblocked {KEY_CI}] 확인 — 새 커밋으로 재시도", author="opencode-tp13", cid=9)
-    i = _ci_card(3, comments=[_pc(f"[escalated {KEY_CI}] 통보", author="dispatchd", cid=8), rel])
-    acts = dispatchd.decide(_snap([i], [_pr(sha="ffffff00deadbeef",
-                                            checks=[{"state": "FAILURE"}])], []))
-    assert [a for a in acts if a["action"] == "ci-fix"]
 
 
 def test_probe가_해제_마커를_남겨도_초기화되지_않는다():
@@ -95,22 +72,6 @@ def test_probe가_해제_마커를_남겨도_초기화되지_않는다():
 
 
 # --- draft_merge_loop / no_pr: 카드·PR 범위 카운터 ---
-
-def test_draft_반복_N회도_억제_경로를_탄다():
-    i = _i(comments=[_pc(f"[draft-flagged #9]", cid=k) for k in range(1, 4)])
-    acts = dispatchd.decide(_snap([i], [_pr(draft=True)], []))
-    nh = [a for a in acts if a["action"] == "needs-human"]
-    assert len(nh) == 1 and "[escalated (draft_merge_loop, #9)]" in nh[0]["note"]
-    assert not [a for a in acts if a["action"] == "review-note"]
-
-
-def test_no_pr_반복_N회도_억제_경로를_탄다():
-    i = _i(comments=[_pc(f"[needs-merge a{k}]", cid=k) for k in range(1, 4)])
-    acts = dispatchd.decide(_snap([i], [], []))
-    nh = [a for a in acts if a["action"] == "needs-human"]
-    assert len(nh) == 1 and f"[escalated (no_pr, M4ABCDEF-GH12)]" in nh[0]["note"]
-    assert not [a for a in acts if a["action"] == "review-note"]
-
 
 def test_억제는_budget_에스컬레이션을_막지_않는다(monkeypatch):
     # §6 제약 — needs-human 완화 금지: 다른 키가 억제돼도 ③ 예산 소진 통보는 유지
@@ -127,8 +88,3 @@ def test_억제는_budget_에스컬레이션을_막지_않는다(monkeypatch):
     assert any("budget" in (a.get("reason") or "") for a in nh)
 
 
-def test_임계는_TT_SUPPRESS_N으로_조정된다(monkeypatch):
-    monkeypatch.setenv("TT_SUPPRESS_N", "2")
-    acts = dispatchd.decide(_snap([_ci_card(2)], [_pr(checks=[{"state": "FAILURE"}])], []))
-    assert [a for a in acts if a["action"] == "needs-human"]
-    assert not [a for a in acts if a["action"] == "ci-fix"]

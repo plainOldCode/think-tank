@@ -99,7 +99,7 @@ def test_snapshot_enriches_and_decides_cards_on_later_pages(client, snapshot_api
     # A release-ready dependency takes precedence; without it work/review proceed.
     snap["issues"] = [i for i in snap["issues"] if i["id"] != blocked]
     acts = core.decide(snap)
-    assert any(a["issue"] == review and a["action"] == "review-note" for a in acts)
+    assert not any(a["issue"] == review and a["action"] == "review-note" for a in acts)
     assert any(a["issue"] == todo and a["action"] == "work" for a in acts)
 
 

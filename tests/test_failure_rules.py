@@ -1,8 +1,8 @@
 """R1 규칙표 데이터화 (TT M4K86Z3A-XS06) — §4 데이터 모듈 + 배선 행 테스트.
 
-pr_no_checks: checks 0건 PR — 유효 판정 있으면 그 판정을 따르고, 무판정이면 리뷰 요청,
-게이트 off 레거시 모드는 기존 무응답 유지.
-draft_merge_loop: ready 요청 후 경과 시 사람 1회 통보(dedup).
+U4(M5A4HYY7-3BCA)로 레거시 PR 경로가 퇴역하며 no_pr·pr_no_checks·merged_no_report·
+draft_merge_loop·fix_dispatch_404 행은 제거됐다. 관측 실패는 observe_failed(T3YT),
+CI 실패 위임은 ci_failed(in_progress·TT 경로)가 담당한다.
 """
 import pytest
 
@@ -57,11 +57,13 @@ def env(monkeypatch):
 def test_규칙표는_필수_키를_가진다():
     rows = failure_rules.rules()
     codes = {r["code"] for r in rows}
-    # §4 15행 + reviewer_session_failed(§12 신규)
-    assert {"no_pr", "pr_no_checks", "ci_failed", "merged_no_report", "fix_dispatch_404",
-            "reviewer_session_failed", "evidence_rejected", "verify_422", "runner_stall",
-            "budget_exhausted", "needs_decision", "lease_conflict_401", "draft_merge_loop",
-            "dependency", "marker_mismatch", "stale_base", "unknown"} <= codes
+    # §4 잔여 행 + reviewer_session_failed(§12 신규) — 레거시 5행은 U4 퇴역으로 제거
+    assert {"ci_failed", "observe_failed", "reviewer_session_failed", "evidence_rejected",
+            "verify_422", "runner_stall", "budget_exhausted", "needs_decision",
+            "lease_conflict_401", "dependency", "marker_mismatch", "stale_base",
+            "unknown"} <= codes
+    assert not (codes & {"no_pr", "pr_no_checks", "merged_no_report",
+                         "draft_merge_loop", "fix_dispatch_404"})
     for r in rows:
         assert r["handling"] in {"R", "R+S", "R+C", "H", "BUG", "C", "미확인"}
         assert r["judgment"] and isinstance(r["wired"], str)
@@ -73,14 +75,6 @@ def test_미등록_코드는_unknown_처리를_따른다():
 
 
 # --- pr_no_checks 배선 ---
-
-def test_checks_0건_무판정이면_리뷰_요청한다():
-    acts = dispatchd.decide(_snap([_i()], _pr(checks=[]), [_agent("a2@t")]))
-    reqs = [a for a in acts if a["action"] == "review-request"]
-    assert len(reqs) == 1 and reqs[0]["pr"] == 9
-    assert "리뷰 요청" in reqs[0]["reason"]
-    assert not [a for a in acts if a["action"] == "merge"]
-
 
 def test_checks_관측_불가_None은_판정_대상이_아니다(monkeypatch):
     # 리뷰 R1 — CI 조회 실패(checks=None)는 0건과 다르다: 병합 우회 금지
@@ -97,23 +91,14 @@ def test_checks_관측_불가_None은_판정_대상이_아니다(monkeypatch):
 
 def test_행별_처리_구분_골든():
     # 각 행의 code→handling 매핑이 데이터와 일치(행 추가 시 여기도 갱신)
-    golden = {"no_pr": "R+C", "pr_no_checks": "R", "ci_failed": "R+S",
-              "merged_no_report": "R", "fix_dispatch_404": "BUG",
+    golden = {"ci_failed": "R+S",
               "reviewer_session_failed": "R", "evidence_rejected": "R+S",
               "verify_422": "R", "runner_stall": "R", "budget_exhausted": "R",
               "needs_decision": "H", "lease_conflict_401": "R",
-              "draft_merge_loop": "R", "dependency": "H",
+              "dependency": "H",
               "marker_mismatch": "미확인", "stale_base": "미확인", "unknown": "C"}
     for code, h in golden.items():
         assert failure_rules.handling_of(code) == h, code
-
-
-def test_checks_0건_승인_판정이면_병합_후보다():
-    i = _i(reviewer="fallback@t",
-           comments=[_pc("review: approve\nPR#9@bbbbbbbb — ok", author="fallback@t")])
-    acts = dispatchd.decide(_snap([i], _pr(checks=[]), [_agent("a2@t")]))
-    m = [a for a in acts if a["action"] == "merge"]
-    assert len(m) == 1 and "checks 0건" in m[0]["reason"]
 
 
 def test_checks_0건_게이트_꺼짐은_기존_무응답_유지(monkeypatch):
@@ -123,26 +108,6 @@ def test_checks_0건_게이트_꺼짐은_기존_무응답_유지(monkeypatch):
 
 
 # --- draft_merge_loop 배선 ---
-
-def test_draft_신규는_ready_요청만_한다():
-    acts = dispatchd.decide(_snap([_i()], _pr(draft=True), []))
-    notes = [a for a in acts if a["action"] == "review-note"]
-    assert len(notes) == 1 and "draft-flagged" in notes[0]["marker"]
-    assert not [a for a in acts if a["action"] == "needs-human"]
-
-
-def test_draft_경과시_사람_1회_통보한다(monkeypatch):
-    monkeypatch.setenv("TT_DRAFT_STALL_H", "1")  # OLD=1h 전 — 임계 도달
-    i = _i(comments=[_pc("[draft-flagged #9] draft PR#9 — ready for review 요청")])
-    acts = dispatchd.decide(_snap([i], _pr(draft=True), []))
-    nh = [a for a in acts if a["action"] == "needs-human"]
-    assert len(nh) == 1 and "needs-human-draft #9" in nh[0]["note"]
-    # dedup — 이미 통보됐으면 반복 없음
-    i2 = _i(comments=[_pc("[draft-flagged #9] x"),
-                      _pc("[needs-human-draft #9] 사람 판단 대기", author="dispatchd")])
-    acts = dispatchd.decide(_snap([i2], _pr(draft=True), []))
-    assert not [a for a in acts if a["action"] == "needs-human"]
-
 
 # --- evidence_rejected 배선 (리뷰 R3: 서버가 DONE_GATE_MSG 시스템 코멘트로 기록함) ---
 
@@ -166,17 +131,6 @@ def test_done_거부_기록이_없거나_완료된_카드는_무음이다():
 
 
 # --- draft × needs-merge 상호작용 (리뷰 R2) ---
-
-def test_draft_통보는_구_needs_merge_마커에_가려지지_않는다():
-    # [needs-merge a1]이 있어도 draft-flagged 경과 시 사람 통보가 나와야 한다
-    i = _i(comments=[_pc("[needs-merge a1] PR 없음 — 사람 판단 대기"),
-                     _pc("[draft-flagged #9] draft PR#9 — ready for review 요청",
-                         ts="2026-10-06T09:00:00+0900")])  # 3일 전 — 48h 임계 경과
-    acts = dispatchd.decide(_snap([i], _pr(draft=True), []))
-    nh = [a for a in acts if a["action"] == "needs-human"]
-    assert len(nh) == 1 and "needs-human-draft #9" in nh[0]["note"]
-    assert not [a for a in acts if a["action"] == "review-note"]
-
 
 # --- 리뷰 2차 R3/R4: 실제 거부 상태 + 전용 마커 집행 + 행별 입력→대응 ---
 
@@ -248,29 +202,10 @@ def test_미연결_행은_입력이_있어도_무음이다():
     assert dispatchd.decide(_snap([i], [], [])) == []
 
 
-def test_미연결_행은_review_기준선에_추가_액션을_만들지_않는다():
-    """review 상태에서 미연결 행 입력 — no_pr 기준선(needs-merge 노트 1건) 외 추가 없음."""
-    inputs = [
-        [_pc("runner:m2max dispatch#294 STALL-killed exit=9", author="runner@m2max")],
-        [_pc("[unknown-garbage-marker xyz] 형식 불일치")],
-        [_pc("rebase 필요 — base가 main 뒤처짐", author="reviewer@t")],
-    ]
-    for comments in inputs:
-        acts = dispatchd.decide(_snap([_i(comments=comments)], [], []))
-        kinds = [a["action"] for a in acts]
-        assert kinds == ["review-note"], kinds  # no_pr 노트 외 추가 액션 없음
-        assert "PR 미확인" in acts[0]["reason"]
-
-
 def test_행별_입력_to_대응_매핑_문서():
     """배선 행의 입력→대응 검증 위치(행→테스트 연결, 리뷰 R4 3차 — 전체 17행).
 
-    no_pr: tests/test_completion_via_merge.py::test_review카드_PR없으면_needs_merge_판정
-    pr_no_checks: 본 파일 test_checks_0건_무판정/승인/게이트_꺼짐/관측_불가
-    ci_failed: tests/test_completion_via_merge.py::test_CI실패면_ci_fix_위임판정_needsmerge아님
                + test_ci_fix_head당_1회_marker면_재위임안함
-    merged_no_report: tests/test_completion_via_merge.py::test_review카드_리포트없으면_merge후_review유지
-    fix_dispatch_404: tests/test_review_gate.py (R4(6XKC) 섹션 3건 — 가족 해석/우선/사람통보)
     reviewer_session_failed: tests/test_reviewer_session_failed.py (15건)
     evidence_rejected: 본 파일 test_실제_done_거부* / test_execute는_evidence_*
     verify_422: 미연결 — 본 파일 test_미연결_행은_입력이_있어도_무음이다 (기록 부재 조건)
@@ -279,7 +214,6 @@ def test_행별_입력_to_대응_매핑_문서():
                       + test_attempt_two_becomes_needs_human (사람 통보 기본 대응)
     needs_decision: tests/test_api.py::test_dispatch_progress_blocked_comment_escalates
     lease_conflict_401: tests/test_cross_review.py::test_review_eligible_matrix (review_occupied)
-    draft_merge_loop: 본 파일 test_draft_* 3건
     dependency: tests/test_dispatchd.py::test_release_ready_resume_wins_over_pool
                 + test_not_release_ready_is_not_resumed (blocked 재개 조건)
     marker_mismatch: 미확인 — 본 파일 (규격 밖 마커 입력 무음)
@@ -287,10 +221,9 @@ def test_행별_입력_to_대응_매핑_문서():
     unknown: 본 파일 test_행별_처리_구분_골든 (C 폴백)
     """
     wired = {r["code"]: r["wired"] for r in failure_rules.rules()}
-    for code in ("no_pr", "pr_no_checks", "ci_failed", "merged_no_report",
-                 "fix_dispatch_404", "reviewer_session_failed", "evidence_rejected",
-                 "budget_exhausted", "needs_decision", "lease_conflict_401",
-                 "draft_merge_loop", "dependency"):
+    for code in ("ci_failed", "observe_failed", "reviewer_session_failed",
+                 "evidence_rejected", "budget_exhausted", "needs_decision",
+                 "lease_conflict_401", "dependency"):
         assert wired[code], code
     for code in ("verify_422", "runner_stall", "marker_mismatch", "stale_base", "unknown"):
         assert not wired[code], code
