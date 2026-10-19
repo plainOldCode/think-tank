@@ -186,18 +186,11 @@ def _requested_reviewers(i, pr_no, sha8):
 
     [review-req #pr/sha8] 마커 코멘트의 '→ <agent>'를 파싱 — 교차 수령자의
     판정이 다음 사이클에서 인정되게 한다(TT 개선#3c R1).
+    NB5T: 정본 파서는 ontology.build — decide는 그래프 질의를 쓴다(단계 치환).
     """
-    out = set()
-    for c in i.get("comments") or []:
-        if c.get("author") != "probe":
-            continue
-        body = c.get("body") or ""
-        if f"#{pr_no}/" not in body or (sha8 or "") not in body:
-            continue
-        m = re.search(r"→\s*(\S+)", body)
-        if m:
-            out.add(m.group(1).rstrip("."))
-    return out
+    from ontology.build import parse_requested
+    return parse_requested(i.get("comments") or []).get(
+        (pr_no, (sha8 or "").lower()), set())
 
 
 # --- 카운터파트 리뷰어 라우팅 (M4JTJ970-WS3C, docs/review-gate.md 룰셋) ---
@@ -1033,6 +1026,15 @@ class _DecideCtx:
                             if i.get("lease_by") and i.get("lease_expires")
                             and (not self.now or i["lease_expires"] > self.now)}
         self.busy_agents.discard(None)
+        # NB5T(M58SPX0G-NB5T) — 관계 그래프 투영(사이클당 1회): decide의 문자열
+        # 재파싱 지점을 질의로 대체한다. 동작 불변 — golden 9종이 하드 조건.
+        from ontology.build import build_graph
+        self.graph = build_graph(snap)
+        for p in snap.get("prs") or []:
+            _iid = pr_card_id(p)
+            if _iid:
+                self.graph.link_pr(_iid, p.get("repo") or "", p.get("number") or 0,
+                                   sha=(p.get("head_sha") or "") or None)
         self.reviewer = os.environ.get("TT_REVIEW_AGENT", "").strip()
         rmap = effective_review_map()  # 카운터파트 라우팅(M4JTJ970-WS3C) — env override 포함
         # 런타임 설정(XV84) — 저장 설정이 코드 기본을 덮는다. decide는 순수 함수라
@@ -1309,7 +1311,7 @@ def _decide_verdict(ctx, i, p, iid, pr_repo, low_risk, high_risk, no_checks):
     # 리뷰어 + 마커 코멘트로 수령시킨 에이전트
     verdict = review_verdict(i.get("comments"),
                              ({ctx.reviewer, i.get("reviewer")}
-                              | _requested_reviewers(i, p["number"], sha8)) - {None},
+                              | ctx.graph.requested_reviewers(iid, p["number"], sha8)) - {None},
                              p["number"], sha8)
     # J2NJ(M54V6KY6-J2NJ, agy RC 반영) — 이중 판정 집계:
     # · 무판정 → 계열 상이 2인 동시 요청(None 경로)
@@ -1319,7 +1321,7 @@ def _decide_verdict(ctx, i, p, iid, pr_repo, low_risk, high_risk, no_checks):
     # · 중재자 판정 도착 → latest-wins verdict(중재자 코멘트가 최신)로 기존 경로
     # · 양측 승인 → merge, 단독 RC → 기존 review-fix
     if policy.dual_review_eligible(i):
-        _req = _requested_reviewers(i, p["number"], sha8)
+        _req = ctx.graph.requested_reviewers(iid, p["number"], sha8)
         _vdict = verdicts_all(i.get("comments"),
                               ({ctx.reviewer, i.get("reviewer")} | _req) - {None},
                               p["number"], sha8)
@@ -1531,7 +1533,7 @@ def _pr_list_failed(ctx, i):
     observed = ctx.snap.get("pr_observed") or {}
     if not observed:
         return set()
-    cands = {card_repo(i)} | {repo for repo, _ in _comment_pr_repos(i)} | {
+    cands = {card_repo(i)} | {repo for repo, _ in ctx.graph.comment_pr_repos(i["id"])} | {
         p.get("repo") for p in (ctx.snap.get("pr_context") or {}).get(i["id"], [])}
     cands.discard(None)
     failed = {r for r in cands if observed.get(r) == "failed"}
@@ -1629,7 +1631,7 @@ def _decide_needs_merge(ctx):
         # 코멘트 PR URL 역기입(HG5S) — needs-merge 마커와 독립 판정(codex P1: 마커가
         # 채택·재시도를 차단해서는 안 된다). 본문 변경 없이 collect_repos가 풀에 편입.
         if not prs_for and not card_repo(i):
-            for repo, prn in _comment_pr_repos(i):
+            for repo, prn in ctx.graph.comment_pr_repos(i["id"]):
                 amarker = f"[pr-adopted {prn}/{repo}]"
                 if _probe_marker(i, amarker):
                     continue  # 이미 채택 기록 — 다음 후보 검사(codex P2)
@@ -1754,7 +1756,7 @@ def _consume_fix_stall(ctx, i, p, iid, pr_no, sha8, pr_repo, att, comments, rmar
             break  # stall 뒤 워커 응답·진행 — 이미 해소된 정체(리뷰 R2)
         # stall 이후 최신 판정이 approve면 재작업은 이미 통과 — 재발령 금지(리뷰 R2)
         _revs = ({ctx.reviewer, i.get("reviewer")}
-                 | _requested_reviewers(i, pr_no, sha8)) - {None, ""}
+                 | ctx.graph.requested_reviewers(iid, pr_no, sha8)) - {None, ""}
         if review_verdict(comments, _revs, pr_no, sha8) == "approve":
             break
         actions.append({"agent": "probe", "issue": iid, "action": "review-fix-relay",
@@ -1796,7 +1798,7 @@ def _consume_rework_stuck(ctx, i, p, iid, pr_no, sha8, pr_repo, att, comments, r
                 and _comment_after(x, _sdtv, _sid) for x in comments):
             break  # 마커 뒤 워커 응답·진행 — 이미 해소된 정체(리뷰 R2)
         _revs = ({ctx.reviewer, i.get("reviewer")}
-                 | _requested_reviewers(i, pr_no, sha8)) - {None, ""}
+                 | ctx.graph.requested_reviewers(iid, pr_no, sha8)) - {None, ""}
         if review_verdict(comments, _revs, pr_no, sha8) == "approve":
             break  # 실패 뒤 승인 — 재작업 대상 아님
         actions.append({"agent": "probe", "issue": iid, "action": "review-fix-relay",
@@ -2065,14 +2067,11 @@ PR_URL = re.compile(r"https://github\.com/([\w.-]+/[\w.-]+)/pull/(\d+)")
 
 
 def _comment_pr_repos(issue):
-    """카드 코멘트의 github PR URL → [(owner/repo, pr_no)] — 등장 순 중복 제거."""
-    seen = []
-    for c in issue.get("comments") or []:
-        for m in PR_URL.finditer(c.get("body") or ""):
-            t = (m.group(1), int(m.group(2)))
-            if t not in seen:
-                seen.append(t)
-    return seen
+    """카드 코멘트의 github PR URL → [(owner/repo, pr_no)] — 등장 순 중복 제거.
+
+    NB5T: 정본 파서는 ontology.build — decide는 그래프 질의를 쓴다(단계 치환)."""
+    from ontology.build import parse_comment_pr_repos
+    return parse_comment_pr_repos(issue.get("comments") or [])
 
 
 def card_repo(issue):
