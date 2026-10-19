@@ -3144,6 +3144,7 @@ def run_once(url, dry=False):
 
     snap["cycle_id"] = uuid.uuid4().hex  # §8.1 판단 로그 사이클 식별자(리뷰 R4)
     acts = decide(snap)
+    judge.log_decide_actions(snap, acts)  # 7AMG — action마다 1행(shadow, 동작 불변)
     for a in acts:
         print(time.strftime("%F %T"), a, flush=True)
         if not dry:
