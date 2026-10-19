@@ -150,6 +150,21 @@ probe-restructure-design.md §5.2의 단조성 — LLM 출력은 `hold`/`escalat
 5. **예산 보호**: 억제 규칙은 budget_exhausted(R+H)를 우회하지 않는다. needs-human은 완화 금지 원칙 그대로다.
 6. **N값**: 초안 3은 count 실측으로 조정한다(§11). 통보 1회 후 무음이므로 N을 낮게 잡아도 소음 위험은 없다.
 
+### 6.3 리뷰 반복은 억제하지 않는다 — 경고 가설+위임 (90Y9, 2026-10-19 개정)
+
+- **리뷰 반복**(같은 카드의 request-changes 누적 — review-fix 재발령 회차)은
+  **경계 확장의 정상 진행**이다(사용자 결정 2026-10-19). 스킵·코멘트 dedup 없이
+  매 review-fix 발령마다 동작한다.
+- 대신 2회차부터 **경고 가설 1건**(판단 로그, point=review-repeat, output=warn,
+  evidence는 id만 — 7AMG 형식)을 남기고 **hermes-m2max hook으로 위임**한다
+  (fire-and-forget — 전달 실패가 발령을 취소하지 않는다). 가설의 suggested_next는
+  `refactor-right`: work 단계에서 반려를 통과한 산출물은 승인·병합 후
+  **right 단계(리팩토링) 후속 카드**로 이어지는 것이 권장 경로다. fast(병목 확인)는
+  별개 지점이다.
+- **진전 없는 같은 동작 반복**(draft_merge_loop 등 — §4의 기계 루프 행)만 기존대로
+  §6.2 dedup으로 소음 억제한다. 구분 기준: 판정자의 판단이 개입하는 반복(리뷰)은
+  진행, 같은 동작의 기계적 재시도는 억제.
+
 ## 7. 소형 모델 그림자 모드 — unknown 행 전용
 
 - **적용 범위 한정**: C1(unknown 분류)만. C2·S1/S2는 규칙이 1차이고 모델은 보조라, 그림자 시작은 unknown 한 행부터다.
