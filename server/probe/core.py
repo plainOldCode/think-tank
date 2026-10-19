@@ -1533,7 +1533,7 @@ def _pr_list_failed(ctx, i):
     observed = ctx.snap.get("pr_observed") or {}
     if not observed:
         return set()
-    cands = {card_repo(i)} | set(ctx.graph.comment_pr_repos(i["id"])) | {
+    cands = {card_repo(i)} | {repo for repo, _ in ctx.graph.comment_pr_repos(i["id"])} | {
         p.get("repo") for p in (ctx.snap.get("pr_context") or {}).get(i["id"], [])}
     cands.discard(None)
     failed = {r for r in cands if observed.get(r) == "failed"}
