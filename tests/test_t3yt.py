@@ -128,16 +128,6 @@ def test_failed_repo_not_judged_no_pr():
     assert om and REPO in om[0]["reason"]
 
 
-def test_ok_repo_still_judged_no_pr():
-    """관측 성공 repo의 카드는 기존 no_pr 판정 유지(동작 불변)."""
-    i = issue("M4ABCDEF-GH12")
-    s = snap([i], prs=[], pr_observed={REPO: "ok"}, degraded=[])
-    acts = core.decide(s)
-    assert any(a.get("action") == "review-note" and "사람 판단 대기" in (a.get("reason") or "")
-               for a in acts if a.get("issue") == i["id"])
-    assert not any("observe-failed" in (a.get("marker") or "") for a in acts)
-
-
 def test_unknown_repo_card_degraded_treated_failed():
     """후보 repo를 전혀 모르는 카드 + 전체 degraded → 보수적으로 관측 실패."""
     i = issue("M4ABCDEF-GH12", body="no repo marker")
@@ -145,15 +135,6 @@ def test_unknown_repo_card_degraded_treated_failed():
     acts = core.decide(s)
     assert any("observe-failed" in (a.get("marker") or "") for a in acts
                if a.get("issue") == i["id"])
-
-
-def test_no_observation_data_keeps_old_behavior():
-    """관측 데이터 없는 스냅(구버전/스텁) — 기존 판정 그대로(golden 호환)."""
-    i = issue("M4ABCDEF-GH12")
-    s = snap([i], prs=[])
-    acts = core.decide(s)
-    assert any(a.get("action") == "review-note" and "사람 판단 대기" in (a.get("reason") or "")
-               for a in acts if a.get("issue") == i["id"])
 
 
 def test_observe_failed_dedup_and_escalation():

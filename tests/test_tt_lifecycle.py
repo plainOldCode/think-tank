@@ -268,13 +268,8 @@ def test_linked_pr_observation_distinguishes_closed_and_unavailable(client, monk
     acts = core.decide({**snap(issue), "pr_context": context})
     reasons = " ".join(a.get("reason", "") for a in acts)
     assert "PR 없음" not in reasons
-    if status == "MERGED":
-        assert "병합 확인" in reasons
-    elif status == "CLOSED":
-        assert "PR 닫힘" in reasons
-    else:
-        assert "PR 미확인" in reasons
-    assert not any(a["action"] in ("merge", "tt-verify") for a in acts)
+    # U4 퇴역 — 레거시 카드의 병합확인·닫힘·미확인 노트와 병합은 모두 제거
+    assert not any(a["action"] in ("merge", "tt-verify", "review-note") for a in acts)
 
 
 def test_real_dispatch_envelope_uses_review_contract(client, monkeypatch):

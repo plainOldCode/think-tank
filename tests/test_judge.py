@@ -194,7 +194,8 @@ def test_C2는_판단기를_호출하지_않는다(monkeypatch):
     judge.set_judge(j)
     acts = dispatchd.decide(_snap([_i()], [], []))
     assert not any(pt == "C2" for pt, _ in j.calls)
-    assert [a["action"] for a in acts] == ["review-note"]
+    # U4 퇴역 — 레거시 review 카드는 'PR 없음' 판정 대신 무음(TT 경로가 담당)
+    assert acts == []
     # 저위험 라벨 있음 → 규칙만으로 분류 — 판단기 호출 없음(이전과 동일)
     j2 = FakeJudge()
     judge.set_judge(j2)
@@ -246,7 +247,7 @@ def test_미구성_판단기와_기존_로그가_있어도_규칙_집행은_계�
         card="M1", input_hash_="h")
     judge.set_judge(None)  # 미구성
     acts = dispatchd.decide(_snap([_i()], [], []))
-    assert [a["action"] for a in acts] == ["review-note"]  # 기존 규칙 동작 보존
+    assert acts == []  # 규칙 집행(무음)이 예외 없이 계속된다 — U4 퇴역 후 기준선
 
 
 def test_로그_쓰기_실패가_규칙_집행을_취소하지_않는다(monkeypatch):
@@ -348,7 +349,8 @@ def test_advisory_요약이_제어마커로_재해석되지_않는다(monkeypatc
     # 같은 댓글로 다음 사이클 decide — 억제 마커로 오독되지 않는다
     card = _i(comments=judge_comments)
     acts = dispatchd.decide(_snap([card], [], []))
-    assert any(a["action"] == "review-note" for a in acts)  # needs-merge 소음 제거 안 됨
+    # 소독된 마커가 억제 마커로 오독되지 않는다( needs-merge 자체는 U4 퇴역)
+    assert not any("needs-merge" in (a.get("marker") or "") for a in acts)
 
 
 def test_로그_기록_실패시_제안은_폐기된다(monkeypatch):
