@@ -68,7 +68,7 @@ def _stalled_reviewer(issue):
 
 
 def plan(core, issue, agents, busy, now, delivery_context=None, linked=False,
-         discovered=None, patch_ids=None):
+         discovered=None, patch_ids=None, rmap=None, fallback=None):
     """No gh dependency. Only the stored submission and its TT verdict authorize done."""
     token = subject(issue)
     common = {"issue": issue["id"], "subject": token, "agent": "probe"}
@@ -148,7 +148,8 @@ def plan(core, issue, agents, busy, now, delivery_context=None, linked=False,
                 waited = 0.0
             if waited >= _stall_grace_sec(core):
                 target = core.pick_reviewer(issue.get("assignee"), agents,
-                                            busy | {dead_name}, core.effective_review_map())
+                                            busy | {dead_name}, rmap or {},
+                                            fallback)
                 if target:
                     # 자격 검사는 죽은 리뷰어 점유를 해제한 것으로 본다 — 그 외
                     # 검사(교차리뷰·계약·상태)는 그대로 적용된다.
@@ -171,7 +172,8 @@ def plan(core, issue, agents, busy, now, delivery_context=None, linked=False,
             if marked(issue, notice):
                 return []
             return [{**common, "action": "tt-review-stalled", "marker": notice}]
-    target = core.pick_reviewer(issue.get("assignee"), agents, busy, core.effective_review_map())
+    target = core.pick_reviewer(issue.get("assignee"), agents, busy,
+                                rmap or {}, fallback)
     if not target:
         return []
     if not core.policy.review_eligible(issue, now=now, agent=target)[0]:

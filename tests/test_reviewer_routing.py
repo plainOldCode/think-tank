@@ -507,3 +507,33 @@ def test_설정_폴백에도_자기리뷰_가드_유지():
     agents = _agents("cursor", "cursor-review", "agy")
     fb = ("cursor-review", "agy")
     assert pick_reviewer("cursor", agents, set(), RMAP, fallback=fb) == "agy"
+
+
+# --- U2(M5A4HY52-874M): 저장 설정이 TT 경로에도 적용된다 ---
+
+def _tt_snap(issue, *names):
+    return {"auto": True, "now": NOW, "issues": [issue], "prs": [],
+            "agents": [{"name": n, "enabled": True, "base_url": "http://x/hook",
+                        "receive_mode": "hook"} for n in names]}
+
+
+def test_저장_설정_review_map이_tt경로_대상에_반영된다(client):
+    """U2 수용기준 1 — 저장 review_map이 TT 경로 tt-review 대상 선택에 반영된다.
+    기존 plan은 effective_review_map()을 직접 불러 저장 설정을 무시했다(RED)."""
+    from test_tt_lifecycle import submitted
+    issue = submitted(client)
+    s = _tt_snap(issue, "codex", "claude")
+    s["review_routing"] = {"review_map": {"worker": "claude"}}
+    tt = [a for a in dispatchd.decide(s) if a["action"] == "tt-review"]
+    assert tt and tt[0]["agent"] == "claude"
+
+
+def test_저장_설정_review_fallback이_tt경로에_적용된다(client):
+    """저장 review_fallback도 TT 경로에 적용된다 — 코드 기본 폴백 대신."""
+    from test_tt_lifecycle import submitted
+    issue = submitted(client)
+    s = _tt_snap(issue, "codex", "claude")
+    s["review_routing"] = {"review_map": {"worker": "ghost"},
+                           "review_fallback": ["claude"]}
+    tt = [a for a in dispatchd.decide(s) if a["action"] == "tt-review"]
+    assert tt and tt[0]["agent"] == "claude"

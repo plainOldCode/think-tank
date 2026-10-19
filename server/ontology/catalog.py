@@ -84,20 +84,21 @@ def resolve_pr(raw):
     return None
 
 
-def resolve_agent(cand, agents, family_fallback=False):
+def resolve_agent(cand, agents, family_fallback=False, record=True):
     """에이전트 정본 — identity.resolve 위임. 미등록은 None(unknown 기록)."""
     hit = _identity_resolve((cand or "").strip(), agents or [],
                             family_fallback=family_fallback)
     if hit:
         return hit
-    unknown_entity("agent", cand)
+    if record:
+        unknown_entity("agent", cand)
     return None
 
 
 def resolve_reviewer(cand, agents):
-    """리뷰어 정본 — 등록 에이전트의 정확명·별칭만(가족 폴백 금지, 자기 리뷰 방지 규약)."""
-    hit = _identity_resolve((cand or "").strip(), agents or [], family_fallback=False)
-    if hit:
-        return hit
-    unknown_entity("reviewer", cand)
-    return None
+    """리뷰어 정본 — 등록 에이전트의 정확명·별칭만(가족 폴백 금지, 자기 리뷰 방지 규약).
+    U2 — 해석 본체는 resolve_agent 위임(단일 소스), unknown kind는 reviewer 유지."""
+    hit = resolve_agent(cand, agents, family_fallback=False, record=False)
+    if not hit:
+        unknown_entity("reviewer", cand)
+    return hit
