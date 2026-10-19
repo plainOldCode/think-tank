@@ -8,10 +8,8 @@ import pathlib
 import re
 
 import db as dbmod
-
 CLI_PATH = pathlib.Path(__file__).resolve().parent.parent / "cli" / "tt"
 
-STATE_ENUM = sorted(dbmod.STATES)
 
 # done≠verified 게이트 모드 (M3BZV172-9F0S A): gate(기본, 증거 없으면 review 강등) |
 # warn(경고 댓글만, done 허용) | off. TT_NOTIFY_BASE: notify agent base_url 접두어 —

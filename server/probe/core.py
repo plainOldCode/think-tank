@@ -28,9 +28,6 @@ from service import REVIEW_CONTRACT
 from config import PROBE_ACTIVE_RUN_STATES  # W0DF — 활성 run 상태 단일 정의
 import policy
 
-PULL_HINT = "tt claim ID {agent} 후 dispatch — pull(풀) 사용 금지(30KP/W1DP)"
-
-
 def _prio(i):
     p = i.get("priority")
     return (p is None, p if p is not None else 999, i["id"])
@@ -85,9 +82,6 @@ def ci_passed(pr):
     gh pr checks는 HEAD check-runs 기준이라 이 병목이 없다 — run list는 병목이며 중복.)"""
     checks = pr.get("checks") or []
     return bool(checks) and all(c.get("state") == "SUCCESS" for c in checks)
-
-
-CARD_IN_BRANCH = re.compile(r"tt/(M[A-Z0-9]{6,9}-[A-Z0-9]{4})")
 
 
 CARD_IN_ANY = re.compile(r"\bM[A-Z0-9]{6,9}-[A-Z0-9]{4}\b")
@@ -2253,26 +2247,6 @@ def _archive_sweep(url, days):
               f"{res.get('preserved', 0)}보존 (done+{days}일, 조상 done)", flush=True)
 
 
-def _now_dt():
-    try:
-        from datetime import datetime, timezone
-        return datetime.now(timezone.utc)
-    except Exception:
-        return None
-
-
-def _parse_iso(s):
-    try:
-        from datetime import datetime
-        dt = datetime.fromisoformat(s)
-        if dt.tzinfo is None:
-            from datetime import timezone
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt
-    except (ValueError, TypeError):
-        return None
-
-
 def _exec_release_reviewer(url, act):
     cur = api(url, f"/issues/{act['issue']}")
     if cur.get("reviewer") == act.get("reviewer"):
@@ -2672,7 +2646,6 @@ def _exec_review_fix_relay(url, act):
         return  # decide 이후 워커 응답·진행 — 폐기(R2/R3)
     if _gh_pr_head(act.get("repo"), act["pr"]) != (act.get("head_sha") or "")[:8]:
         return  # 실제 PR head 변경·조회 불가 — 구 head 대상 스폰 금지(R3)
-    _dfix_all = api(url, f"/issues/{act['issue']}/dispatches") or [] if True else []
     assignee = cur.get("assignee") or ""
     agents = [a for a in api(url, "/agents") or [] if _receivable(a)]
     # 전달 사다리(리뷰 R4) — 정확명 우선, hook 전달 실패 시 실행 가능한
