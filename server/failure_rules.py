@@ -21,6 +21,9 @@ HANDLING_BUG = "BUG"      # probe 수정으로 제거
 HANDLING_C = "C"          # 분류(advisory) + 사람 확인
 HANDLING_PENDING = "미확인"  # 행 자체가 미확정(§8) — 운영 처리 구분 아님, 확인 전 표기
 
+# G1DD — 규칙표 버전. 행 추가/수정·연결 변경 시 이 값을 올리고 CHANGELOG에 기록한다.
+RULE_VERSION = "gf-r1"
+
 AGG_SOURCE = ("혼합 출처(gate-failure-rules.md §8): 기존 행=413장 코멘트 패턴 추정, dependency=제한된 이벤트 창(seq<=1363, 2026-10-09T13:38~10-11T17:35+0900)의 blocked 전이 관측 0건, marker_mismatch/stale_base=기록 경로 부재로 미확인. WVBY 코멘트 2026-10-11")
 
 FAILURE_RULES = (

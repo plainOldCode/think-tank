@@ -6,6 +6,19 @@
 (grep 가능성 우선). openapi 해시는 `tt version` 또는
 `curl -s $URL/openapi.json | shasum -a 256 | cut -c1-8`으로 측정한다.
 
+## 버전 규약(G1DD)
+
+엔티티 스키마·규칙표는 "Treat the ontology as code" — 변경은 PR + 골든 비교
+(`tests/test_probe_decide_golden.py`, decide 액션 출력 동일) + 이 장부 행.
+
+- `server/ontology/schema.py` `SCHEMA_VERSION` — 카탈로그 투영 필드·엔티티
+  kind·정규화 규칙 변경 시 상승. 그래프 소비자는 `graph_compatible()`로 확인,
+  불일치면 그래프를 쓰지 않고 규칙 기본 경로(fail-to-rules).
+- `server/failure_rules.py` `RULE_VERSION` — 규칙표 행 추가/수정·wired 연결
+  변경 시 상승. 현재 `gf-r1`(2026-10-19 초기 버전).
+- 판단 로그(judge.py)의 `schema_version`·`rule_version`은 위 두 상수에서
+  상속 — 로그만으로 결정 시점의 스키마/규칙을 재구성한다.
+
 ## 배포 이력
 
 - 2026-10-19: cli 2.7.2, openapi **3161dede** — PHFY 에픽 종결 — 후속 6카드(3D5T·90BH·71NK·3QMV·GY52·0TRW)+J2NJ 이중 판정 (PR#166~#170). 태그 `deploy-cli2.7.2-openapi3161dede`.
