@@ -136,7 +136,7 @@ Budget = f(count(Dispatch for Card), Attempt.n)   ← 노드 아님, 계산 속�
 | Dispatch | dispatch id | `/issues/{id}/dispatches` | attempt, status |
 | Lease | (card, kind) | `lease_by/expires` + `reviewer` | **kind 명시화가 정규화의 핵심.** 현행은 kind를 추론한다(§10.3) |
 | Attempt | (card, n) | execution_attempt, work_contract | 마커 `a<n>` 범위 |
-| Verdict | comment id | 리뷰어 코멘트 | Head에 묶이고, Head가 바뀌면 stale |
+| Verdict | (card, attempt, subject_hash) — PR@sha8은 보조 속성 | 리뷰어 코멘트 | subject hash가 바뀌면 이전 승인 무효(supersedes). 레거시 `PR#n@sha8`은 (card, attempt)로 투영(온톨로지/verdict_key.py, M6V3) |
 | Marker | comment id | probe 코멘트 | 7종 kind(§3.1). 판단 기록 = Decision의 영속 흔적 |
 | ReasonCode | 문자열 | `policy.py` | 안정 enum. 변경 금지 |
 | Budget | (계산) | Dispatch 개수, Attempt | 노드화하지 않는다 |
