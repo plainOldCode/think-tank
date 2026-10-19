@@ -1484,6 +1484,50 @@ def _decide_pr_pipeline(ctx):
                                 "reason": merge_reason})
 
 
+def _pr_list_failed(ctx, i):
+    """T3YT(M58SPT6D-T3YT) — 이 카드의 'PR 없음' 판정이 관측 실패로 오염될 수 있는지.
+
+    반환: 실패한 후보 repo 집합(빈 set=판정 가능). 후보는 repo 마커·코멘트 PR URL·
+    pr_context의 repo. 후보를 전혀 모르면 전체 degraded일 때 보수적으로 실패로 본다
+    — 카드의 PR이 실패한 repo에 숨어 있을 수 있기 때문."""
+    observed = ctx.snap.get("pr_observed") or {}
+    if not observed:
+        return set()
+    cands = {card_repo(i)} | {repo for repo, _ in _comment_pr_repos(i)} | {
+        p.get("repo") for p in (ctx.snap.get("pr_context") or {}).get(i["id"], [])}
+    cands.discard(None)
+    failed = {r for r in cands if observed.get(r) == "failed"}
+    if failed:
+        return failed
+    if not cands and ctx.snap.get("degraded"):
+        return {"unknown"}
+    return set()
+
+
+def _decide_observe_failed(ctx, i, att, failed):
+    """observe_failed(§4): 관측 실패 사이클 — 다음 사이클 재시도, 반복 시 경고(§6).
+
+    상태 변경·needs-merge 노트 없음. 마커 [observe-failed a<n>]로 회차당 1회 dedup."""
+    actions = ctx.actions
+    scope = "+".join(sorted(failed))
+    osup, osince = _suppressed(i, "observe_failed", scope)
+    on = failure_rules.suppress_n()
+    if osup:
+        print(time.strftime("%F %T"),
+              f"억제 중 (observe_failed, {scope}) — 관측 재시도 스킵(§6)", flush=True)
+        return
+    if on and _repeat_count(i, r"\[observe-failed a\d+\]", osince) >= on:
+        _escalate(actions, i, "observe_failed", scope, on)
+        return
+    marker = f"[observe-failed a{att}]"
+    if not any(marker in (c.get("body") or "") for c in (i.get("comments") or [])
+               if c.get("author") == "probe"):
+        actions.append({"agent": "probe", "issue": i["id"], "action": "review-note",
+                        "marker": marker,
+                        "reason": f"PR 관측 실패({scope}) — 조회 실패와 PR 없음을 구분. "
+                                  "다음 사이클 재시도"})
+
+
 def _decide_draft_pr(ctx, i, att, prs_for):
     """⓪b draft PR 경로 — 병합·ci-fix 판정 불가. ready 요청 1회(마커 dedup) 후 무음.
 
@@ -1559,6 +1603,13 @@ def _decide_needs_merge(ctx):
         drafts = [p for p in prs_for if p.get("isDraft")]
         if drafts and len(drafts) == len(prs_for):
             if _decide_draft_pr(ctx, i, att, prs_for):
+                continue
+        # T3YT(M58SPT6D-T3YT): 카드의 후보 repo 중 관측 실패가 있으면 'PR 없음' 판정
+        # 금지 — observe_failed(§4)로 관측 재시돕. 후처리는 needs-merge와 동일 패턴.
+        if not prs_for:
+            failed = _pr_list_failed(ctx, i)
+            if failed:
+                _decide_observe_failed(ctx, i, att, failed)
                 continue
         marker = f"[needs-merge a{att}]"
         # 반복 사건 억제(§6): (no_pr, 카드) — 'PR 없음' 노트가 N회차면 사람 통보 후 스킵.
@@ -2080,9 +2131,30 @@ def review_status_post(repo, sha, description):
 
 
 def collect_prs(repos=None):
-    """Optional provider observations; TT_PR_PROVIDER=none disables GitHub I/O."""
+    """Optional provider observations; TT_PR_PROVIDER=none disables GitHub I/O.
+
+    T3YT(M58SPT6D-T3YT): repo 단위 관측 결과(ok|failed)를 함수 속성에 실어
+    되돌린다 — 반환은 기존 PR 리스트 계약 유지(monkeypatch 호환). run_once가
+    snap["pr_observed"]로 승격한다."""
     from .providers import collect
-    return collect(list(repos) if repos else _repos_default(), gh_json)
+    prs, observed = collect(list(repos) if repos else _repos_default(), gh_json)
+    collect_prs.observed = observed
+    return prs
+
+
+collect_prs.observed = {}
+
+
+def _promote_pr_observation(snap):
+    """T3YT(M58SPT6D-T3YT) — collect_prs가 실어 보낸 repo별 관측을 snap에 승격.
+
+    '조회 실패'와 'PR 없음'을 판정이 구분하게 한다. degraded는 실패가 있던
+    관측 단계 목록. 소비 후 속성을 초기화해 다음 사이클 오염을 막는다."""
+    observed = dict(getattr(collect_prs, "observed", None) or {})
+    snap["pr_observed"] = observed
+    snap["degraded"] = ["pr_list"] if "failed" in set(observed.values()) else []
+    collect_prs.observed = {}
+    return snap
 
 
 def _probe_flag(url, act, msg):
@@ -3057,6 +3129,7 @@ def run_once(url, dry=False):
     for r in collect_repos(snap.get("issues") or []):
         repos.append(r)
     snap["prs"] = collect_prs(repos)
+    _promote_pr_observation(snap)
     # 게이트 unset 여부와 무관 — in_progress 자동화(JXYS)도 코멘트 dedup이 필요.
     hydrate_reviews(url, snap)
     from .providers import observe_linked

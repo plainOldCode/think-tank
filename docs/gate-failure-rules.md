@@ -84,6 +84,7 @@ probe-restructure-design.md §5.2의 단조성 — LLM 출력은 `hold`/`escalat
 | --- | --- | --- | --- | --- | --- |
 | no_pr | 카드 review/완료 후보, 연결 PR 없음 | needs-merge 노트(회차당 1회 dedup, core.py:385) — 저위험 라벨(LOW_RISK_LABELS: docs/documentation/i18n/문서/번역)이면 verify 후보 표시, 코드 카드면 PR 요청 dispatch | R (+C: 문서/코드 구분 애매 시 §5 C2) | 20 | 1카드=1PR 계약(repo 마커)과 연동. verify→done 10건 |
 | pr_no_checks | PR 있음, checks 0건 | 리뷰 approve로 대체 가능한지 규칙 판정(독립 리뷰 판정 존재 여부), 불가면 리뷰 요청(review-req) | R | 14 | verify 2건, 나머지 리뷰 대응·수정 |
+| observe_failed | PR 수집(pr list)이 repo 단위로 실패 — snap.pr_observed에 failed, snap.degraded에 pr_list. 해당 repo 후보 카드의 'PR 없음' 판정 금지 | 관측 재시도(다음 사이클) — [observe-failed a<n>] 마커 회차당 1회 dedup, 반복 시 §6 사람 통보. 관측 성공 repo의 카드는 기존 판정 유지 | R | 0(신규, 2026-10-19) | §12 신규 행 — NVP §3-3. '조회 실패'와 'PR 없음' 분리 |
 | ci_failed | PR checks FAILURE/비green | 현행 ci-fix dispatch 유지, 실패 로그 분류는 advisory | R+S (요약: §5 S1) | 3 | 모두 9/30, 다수 자가 해소 |
 | merged_no_report | PR merged, 완료 보고/verify 없음 | 자동 verify 요청 또는 담당 agent 보고 요청 | R | 22 | verify 17건 — 가장 단순한 go |
 | fix_dispatch_404 | review-fix dispatch가 HTTP 404 | 수신자 레지스터리 재확인 → 재시도 → 사람 통보 | **BUG** | 42(19카드) | 판단 아님. probe 수정 대상(§10 R4) |
@@ -191,6 +192,8 @@ probe-restructure-design.md §5.2의 단조성 — LLM 출력은 `hold`/`escalat
 ## 12. 구현 상태 (2026-10-11)
 
 - **reviewer_session_failed — 구현됨** (TT M4M9BTC1-12MZ): 발령 이력 head에 판정 없음+리뷰어 점유 흔적(release되지 않은 reviewer) 또는 runner 실패 코멘트(`dispatch#N failed exit!=0` 즉시 트리거) → 회차 마커 `[review-retry a<n> #pr/sha8]`로 재발령 1회(지시문에 '새 세션에서 시작, 이전 세션 재사용 금지' 명시). N=3 도달 시 `[needs-human-review]` 코멘트+라벨 에스컬레이션 1회. head 변경 시 마커의 sha8이 달라져 카운터 자동 리셋. 관망 창 `TT_REVIEW_STALL_MIN`(기본 60분 — 최신 발령이 창 내면 새 세션 존재 가능성으로 관망). core.py `_reviewer_session_stalled`/`_maybe_review_retry`.
+
+- **observe_failed — 구현됨** (TT M58SPT6D-T3YT, 2026-10-19): `providers.collect_github`이 repo 단위 관측 결과(ok|failed)를 반환하고 `core.run_once`가 `snap.pr_observed`·`snap.degraded`로 승격. decide ⓪b에서 PR 없는 review 카드의 후보 repo(repo 마커·코멘트 PR URL·pr_context) 중 실패가 있으면 — 또는 후보를 전혀 모르고 degraded면 — needs-merge 대신 `[observe-failed a<n>]` 노트 1회(§6 반복 시 사람 통보). checks 실패는 기존대로 None(관측 실패≠0건). core.py `_pr_list_failed`/`_decide_observe_failed`.
 
 ## 참고자료
 
