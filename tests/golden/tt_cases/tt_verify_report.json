@@ -1,0 +1,77 @@
+{
+ "auto": true,
+ "now": "2026-10-20T02:00:00+0900",
+ "issues": [
+  {
+   "id": "M4TTTT-GH01",
+   "state": "review",
+   "parent_id": null,
+   "assignee": "worker",
+   "lease_expires": null,
+   "labels": [],
+   "priority": null,
+   "execution_attempt": 1,
+   "dispatches": 1,
+   "release_ready": false,
+   "waiting_for": null,
+   "title": "tt card",
+   "brief_verify": "pytest -q",
+   "reviewer": "codex",
+   "archived": 0,
+   "version": 3,
+   "comments": [
+    {
+     "id": 1,
+     "author": "codex",
+     "body": "review: approve\nTT#M4TTTT-GH01@a1/3c0e5a16467826521e17e2f1e714bd60a5ba36b160cdc7e783bf95daaf6284b4\n근거: 독립 검증 통과",
+     "ts": "2026-10-20T02:00:00+0900"
+    }
+   ],
+   "updated_at": "2026-10-20T00:00:00+0900",
+   "busy_agents": [],
+   "work_contract": {
+    "version": "tt-tdd-v2.2:018f6c6fc87d07e6c7a9ddf07e3986aff5b828dcb4009719bc1695b8f175f96d"
+   },
+   "completion_report": {
+    "contract_version": "tt-tdd-v2.2:018f6c6fc87d07e6c7a9ddf07e3986aff5b828dcb4009719bc1695b8f175f96d",
+    "attempt": 1,
+    "method": "planned",
+    "result": "passed",
+    "design": {
+     "criteria": "c",
+     "verification": "v"
+    },
+    "implementation": {
+     "summary": "s",
+     "commands": "cmd"
+    },
+    "verification": {
+     "commands": "pytest -q",
+     "evidence": "1 passed",
+     "verification_level": "unit-test-verified"
+    }
+   }
+  }
+ ],
+ "prs": [],
+ "agents": [
+  {
+   "name": "worker",
+   "enabled": true,
+   "base_url": "http://x/hook",
+   "receive_mode": "hook"
+  },
+  {
+   "name": "codex",
+   "enabled": true,
+   "base_url": "http://x/hook",
+   "receive_mode": "hook"
+  },
+  {
+   "name": "claude",
+   "enabled": true,
+   "base_url": "http://x/hook",
+   "receive_mode": "hook"
+  }
+ ]
+}
