@@ -724,6 +724,44 @@ def _repeat_count(i, regex, since_id=0):
                and re.search(regex, c.get("body") or ""))
 
 
+def _post_json(url, payload, timeout=5):
+    """90Y9 — 외부 hook으로 JSON POST(fire-and-forget). 실패는 호출부에서 생략."""
+    req = urllib.request.Request(url, method="POST",
+                                 data=json.dumps(payload).encode(),
+                                 headers={"content-type": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return r.status
+
+
+def review_repeat_warn(url, iid, repeats):
+    """90Y9(M58SPVD8-90Y9) — 리뷰 반복 경고 가설 1건(판단 로그) + hermes hook 위임.
+
+    리뷰 반복(request-changes 누적)은 경계 확장의 정상 진행이라 스킵하지 않는다
+    (사용자 결정 2026-10-19). work 단계 산출물이라 품질이 낮으므로 승인 완료 후
+    right 단계(리팩토링) 후속이 권장된다 — fast(병목 확인)는 별개.
+    기록 실패가 review-fix dispatch를 취소하지 않는다(기록 우선)."""
+    try:
+        import judge as _judge  # 서버 루트 모듈 — probe 패키지 멤버가 아니다
+        _judge.JudgeLog().record(
+            point="review-repeat", judge="probe", mode="shadow", output="warn",
+            rule_output="review-repeat", gate="allow", card=iid,
+            confidence="high", rule_version=_judge.RULE_VERSION,
+            schema_version=_judge.SCHEMA_VERSION,
+            evidence=[{"card": iid, "reason_code": f"request-changes x{repeats}"},
+                      {"reason_code": "suggested_next=refactor-right"}])
+    except Exception as e:
+        print(time.strftime("%F %T"), f"review-repeat 경고 기록 실패({e}) — 생략", flush=True)
+    try:
+        for ag in api(url, "/agents") or []:
+            ag = ag if isinstance(ag, dict) else {}
+            if ag.get("name") == "hermes-m2max" and str(ag.get("base_url") or "").startswith("http"):
+                _post_json(ag["base_url"], {"type": "review-repeat-warn",
+                                            "card": iid, "repeats": repeats})
+                break
+    except Exception as e:
+        print(time.strftime("%F %T"), f"review-repeat hook 실패({e}) — 생략", flush=True)
+
+
 def _gh_pr_head(repo, pr_no):
     """실행 직전 실제 PR head(sha8) — 카드 CAS는 GitHub push를 못 본다(리뷰 R3).
 

@@ -120,7 +120,17 @@ def plan(core, issue, agents, busy, now, delivery_context=None, linked=False,
         executor = core._resolve_executor(issue.get("assignee"), agents)
         if not executor or executor in core.NON_EXECUTORS or executor in busy:
             return []
-        return [{**common, "action": "tt-review-fix", "agent": executor, "marker": key}]
+        # 90Y9(M58SPVD8-90Y9) — 리뷰 반복(request-changes 누적)은 경계 확장의 정상
+        # 진행: 스킵하지 않고 경고 가설+hermes 위임을 execute에서 1건 남긴다(2회차부터).
+        # 카드 전체의 review-fix 발령 수 — subject가 바뀌어도 반복은 이어진다.
+        # 진전 없는 같은 동작 반복(draft_merge_loop 등)만 §6 dedup으로 소음 억제.
+        rounds = sum(1 for c in issue.get("comments") or []
+                     if c.get("author") == "probe"
+                     and (c.get("body") or "").startswith("[tt-review-fix "))
+        act = {**common, "action": "tt-review-fix", "agent": executor, "marker": key}
+        if rounds:
+            act["warn"], act["warn_count"] = True, rounds + 1
+        return [act]
     key = marker(issue, "tt-review")
     previous = [c for c in issue.get("comments") or []
                 if c.get("author") == "probe" and (c.get("body") or "").startswith(key)]
@@ -331,6 +341,9 @@ def execute(core, url, act):
     core.api(url, f"/issues/{iid}/comments", "POST", {
         "author": "probe", "body": f"{act['marker']} reviewer={target}",
     })
+    if kind == "tt-review-fix" and act.get("warn"):
+        # 90Y9 — 리뷰 반복 경고 가설 1건 + hermes 위임(스킵 없음, fire-and-forget).
+        core.review_repeat_warn(url, iid, act.get("warn_count") or 0)
     # 369Y — 루프 신호를 카드에 기록(dedup: 같은 키는 회차당 1회). 발령 실패 시 미기록.
     for _key, _sec in act.get("loop_notes") or []:
         if not marked(cur, _key):
