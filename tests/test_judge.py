@@ -187,14 +187,15 @@ def test_S2_판단기_요약이_재제출_노트에_첨부된다(monkeypatch):
     assert "스키마 필요" not in posts[0]["body"]
 
 
-def test_C2_라벨과_repo_마커가_없을때만_판단기가_개입한다(monkeypatch):
+def test_C2는_판단기를_호출하지_않는다(monkeypatch):
+    # K0C8(M58SPVT0-K0C8) — C2 판단기 지점 제거: 문서/코드 구분은 카드 생성 규약으로
+    # 기계적 결정(NVP §3-6). 규칙 경로(review-note)는 동일 — 액션 출력 불변.
     j = FakeJudge("rank", "docs — 제목이 문서형")
     judge.set_judge(j)
-    # 둘 다 없음 → rank 제안(동작 불변 — review-note는 그대로)
     acts = dispatchd.decide(_snap([_i()], [], []))
-    assert j.calls and j.calls[0][0] == "C2"
+    assert not any(pt == "C2" for pt, _ in j.calls)
     assert [a["action"] for a in acts] == ["review-note"]
-    # 저위험 라벨 있음 → 규칙만으로 분류 — 판단기 호출 없음
+    # 저위험 라벨 있음 → 규칙만으로 분류 — 판단기 호출 없음(이전과 동일)
     j2 = FakeJudge()
     judge.set_judge(j2)
     dispatchd.decide(_snap([_i(labels=["docs"])], [], []))
@@ -267,8 +268,8 @@ def test_C2_네_조합_결정표(monkeypatch):
         j.calls.clear()
         body = "repo: plainOldCode/think-tank" if repo else ""
         dispatchd.decide(_snap([_i(labels=labels, body=body)], [], []))
-        called = any(pt == "C2" for pt, _ in j.calls)
-        assert called == (name in ("both", "none")), name
+        # K0C8 — C2 지점 제거로 어떤 조합에서도 판단기를 호출하지 않는다
+        assert not any(pt == "C2" for pt, _ in j.calls), name
 
 
 def test_C1은_카드의_최신_사건을_판정한다(monkeypatch):

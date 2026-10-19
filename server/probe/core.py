@@ -1683,18 +1683,9 @@ def _decide_needs_merge(ctx):
             if sa:
                 actions.append(sa)
             reason = "PR 미확인(미생성·provider 미지원·조회 실패 가능) — 유효 TT 보고 제출 필요"
-        # C2(gate-failure-rules.md §5.2) — 라벨·repo 마커로 분류 불가(둘 다 없음/
-        # 충돌)일 때만 판단기 rank 제안(shadow — 동작 불변, 로그만). 규칙 우선.
-        _c2_labeled = bool({x.strip().lower() for x in (i.get("labels") or [])
-                            if isinstance(x, str)} & set(policy.LOW_RISK_LABELS))
-        _c2_repo = bool(card_repo(i))
-        # 규칙으로 분류 가능한 것은 '정확히 하나'일 때 — 둘 다 없음/충돌(둘 다 존재)만
-        # 판단기 rank 대상(§5.2, 리뷰 R6)
-        if _c2_labeled == _c2_repo:
-            judge.run_advisory("C2", {"card": i["id"], "input": {
-                "labels": i.get("labels"), "repo_marker": bool(card_repo(i)),
-                "title": i.get("title", "")}},
-                f"review-note:{reason}", cycle_id=ctx.snap.get("cycle_id"))
+        # K0C8(M58SPVT0-K0C8) — C2 판단기 지점 제거: 문서/코드 구분은 카드 생성
+        # 규약(1카드=1PR, repo: 마커, 라벨)으로 기계적 결정이므로 모델이 필요 없다
+        # (NVP §3-6). 규칙 경로(review-note)는 그대로. C1은 별도 연구(GF §11 Q2 보류).
         actions.append({"agent": "probe", "issue": i["id"], "action": "review-note",
                         "reason": f"{reason} — 사람 판단 대기"})
 
