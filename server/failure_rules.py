@@ -15,7 +15,6 @@ import os
 # 처리 구분 (§3.1) — LLM 개입 정의
 HANDLING_R = "R"          # 규칙만
 HANDLING_R_S = "R+S"      # 규칙 + LLM 요약(advisory)
-HANDLING_R_C = "R+C"      # 규칙 우선, 표에 없을 때 소형 모델 분류(advisory)
 HANDLING_H = "H"          # 사람 (통보만 자동)
 HANDLING_BUG = "BUG"      # probe 수정으로 제거
 HANDLING_C = "C"          # 분류(advisory) + 사람 확인
@@ -27,19 +26,7 @@ RULE_VERSION = "gf-r1"
 AGG_SOURCE = ("혼합 출처(gate-failure-rules.md §8): 기존 행=413장 코멘트 패턴 추정, dependency=제한된 이벤트 창(seq<=1363, 2026-10-09T13:38~10-11T17:35+0900)의 blocked 전이 관측 0건, marker_mismatch/stale_base=기록 경로 부재로 미확인. WVBY 코멘트 2026-10-11")
 
 FAILURE_RULES = (
-    {"code": "no_pr",
-     "judgment": "state=review/완료 후보 + 연결 PR 없음(연령 유예 TT_REVIEW_GRACE_MIN)",
-     "default": "needs-merge 노트(회차당 1회 dedup) — 저위험 라벨이면 verify 후보 표시, "
-                "코드 카드면 PR 요청",
-     "handling": HANDLING_R_C, "wired": "server/probe/core.py decide ⓪b (_stale_act/pr-adopt)",
-     "agg": "20", "note": "1카드=1PR 계약(repo 마커)과 연동. verify→done 10건"},
 
-    {"code": "pr_no_checks",
-     "judgment": "카드에 연결된 open PR의 check-runs가 0건(isDraft 제외)",
-     "default": "유효 리뷰 판정이 있으면 그 판정을 따른다(approve→병합 후보, "
-                "request-changes→review-fix). 무판정이면 리뷰 요청(review-req)",
-     "handling": HANDLING_R, "wired": "server/probe/core.py decide ⓪ (pr_no_checks 분기)",
-     "agg": "14", "note": "ci_passed는 checks 1+ 전부 SUCCESS — 0건은 기존 무응답 구간"},
 
     {"code": "observe_failed",
      "judgment": "PR 수집(pr list)이 repo 단위로 실패해 관측이 불완전한 사이클 "
@@ -55,21 +42,9 @@ FAILURE_RULES = (
     {"code": "ci_failed",
      "judgment": "PR checks에 FAILURE 포함(비green)",
      "default": "ci-fix dispatch 유지 — 실패 로그 분류는 advisory(R+S 요약 §5 S1)",
-     "handling": HANDLING_R_S, "wired": "server/probe/core.py decide ⓪b + execute ci-fix",
+     "handling": HANDLING_R_S, "wired": "server/probe/core.py _decide_in_progress(ci-fix-ip) + tt_lifecycle ci-fix",
      "agg": "3", "note": "모두 9/30, 다수 자가 해소"},
 
-    {"code": "merged_no_report",
-     "judgment": "PR merged + 카드 완료 보고/completion_report 없음",
-     "default": "verify 요청 또는 담당 agent 보고 요청 코멘트 — 상태는 변경하지 않음",
-     "handling": HANDLING_R, "wired": "server/probe/core.py execute merge (merged_no_report 분기)",
-     "agg": "22", "note": "verify 17건 — 가장 단순한 go"},
-
-    {"code": "fix_dispatch_404",
-     "judgment": "review-fix dispatch가 HTTP 404",
-     "default": "제거됨 — 수신자를 등록 에이전트로 해석 후 dispatch(PR#80 _resolve_agent), "
-                "해석 실패는 사람 통보 노트",
-     "handling": HANDLING_BUG, "wired": "server/probe/core.py execute review-fix (TT M4K86YXM-6XKC)",
-     "agg": "42(19카드)", "note": "판정 아님. probe 수정으로 제거(§10 R4)"},
 
     {"code": "reviewer_session_failed",
      "judgment": "발령 이력 마커 존재+무판정+리뷰어 점유 흔적+관망 창 경과 "
@@ -129,11 +104,6 @@ FAILURE_RULES = (
      "handling": HANDLING_R, "wired": "server/policy.py review_eligible review_occupied + execute 폴백 체인",
      "agg": "4", "note": "409/401 코드 자체는 변경 금지(§9)"},
 
-    {"code": "draft_merge_loop",
-     "judgment": "전부 draft인 PR로 병합 판정 반복 — draft-flagged 마커 존재+경과(TT_DRAFT_STALL_H)",
-     "default": "ready 요청 1회 후, 경과 시 사람 1회 통보(dedup) 후 중지",
-     "handling": HANDLING_R, "wired": "server/probe/core.py decide ⓪b draft 분기 (_draft_stalled)",
-     "agg": "260(1카드)", "note": "이상치. 현행은 draft-flagged 1회 후 무음 — 통보 추가"},
 
     {"code": "dependency",
      "judgment": "waiting_for=dependency 필드 — 필드와 notify_blocked_dependents 경로 존재",
@@ -178,14 +148,6 @@ def handling_of(code):
     """사유 코드의 처리 구분 — 미등록 코드는 unknown의 처리 구분(C)을 따른다."""
     r = get(code)
     return (r or get("unknown"))["handling"]
-
-
-def draft_stall_hours():
-    """draft 병합 반복 사람 통보 임계(시간). 0이면 통보 없음. §4 draft_merge_loop."""
-    try:
-        return max(0.0, float(os.getenv("TT_DRAFT_STALL_H", "48")))
-    except ValueError:
-        return 48.0
 
 
 def suppress_n():

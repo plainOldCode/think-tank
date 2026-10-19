@@ -36,7 +36,12 @@ PR#<number>@<head sha, 8 chars>
 - Line 3 and below: free text (checklist results)
 - On the GitHub side, only `gh pr comment` (comments only). Since self-approval is impossible on GitHub, the approval API (`gh pr review --approve`) is unused in the POC — the sole basis for an approval verdict is the **TT comment**
 
-## probe gate (decide ⓪ change)
+## probe gate (decide ⓪ change) — **퇴역 (2026-10-20, U4 M5A4HYY7-3BCA)**
+
+> **퇴역 안내**: 이 절의 PR 게이트(review-request/review-fix/자동 병합·J2NJ)는
+> U4로 제거됐다. 리뷰·병합의 유일한 경로는 TT 제출물
+> (server/probe/tt_lifecycle.py — tt-review/tt-review-fix/tt-verify/tt-deliver)이다.
+> 아래는 역사 기록으로 보존한다.
 
 For merge candidates (card link + work_contract + attempt≥1 + non-draft + repo match + CI green):
 

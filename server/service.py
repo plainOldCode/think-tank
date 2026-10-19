@@ -280,14 +280,14 @@ def _notify_event(c, kind, entity_id, payload):
                          text=(payload.get("body") or "")[:300])
     elif kind == "comment.added":
         body = payload.get("preview") or ""
-        if "[release-ready]" not in body and "[review-req" not in body:
+        if "[release-ready]" not in body:
             return
         row = c.execute("SELECT a.* FROM issues i JOIN agents a ON a.name=i.assignee "
                         "WHERE i.id=? AND a.enabled=1 AND a.notify_hook=1",
                         (entity_id,)).fetchone()
         if row:
             send_command(row, "notify", entity_id,
-                         "release-ready" if "[release-ready]" in body else "review-request",
+                         "release-ready",
                          text=body[:300])
 
 
