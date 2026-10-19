@@ -18,6 +18,9 @@ import threading
 import time
 import uuid
 
+from failure_rules import RULE_VERSION as _RULE_VERSION
+from ontology.schema import SCHEMA_VERSION as _ENTITY_SCHEMA_VERSION
+
 # §5.2 — 판단기 출력 타입 전체. advisory 지점(C1/C2/S1/S2)에서 쓰는 것은
 # annotate/rank뿐이지만 타입 집합은 §5.2 정의를 그대로 둔다.
 OUTPUT_TYPES = ("hold", "escalate", "annotate", "rank")
@@ -28,9 +31,10 @@ LOG_SCHEMA = ("decision_id", "cycle_id", "ts", "point", "card", "pr", "input_has
               # 7AMG(M58SPSBY-7AMG) — 결정 근거·신뢰도·버전. evidence는 id만.
               "evidence", "confidence", "rule_version", "schema_version")
 
-# 7AMG — 로그 스키마/규칙 버전. 스키마 변경 시 SCHEMA_VERSION을 올린다.
-SCHEMA_VERSION = 2
-RULE_VERSION = "decide-r1"
+# 7AMG — 판단 로그 버전 상속(G1DD): schema_version은 온톨로지 정본 스키마,
+# rule_version은 게이트 실패 규칙표의 정본 상수에서 온다(단일 출처).
+SCHEMA_VERSION = _ENTITY_SCHEMA_VERSION
+RULE_VERSION = _RULE_VERSION
 CONFIDENCE_LEVELS = ("high", "med", "low")
 # evidence 항목 허용 키 — id/code만(본문·원문 금지, TV Q4)
 EVIDENCE_KEYS = ("card", "agent", "pr", "comment_id", "dispatch_id", "sha8", "reason_code")
