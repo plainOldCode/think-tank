@@ -1,7 +1,10 @@
-"""NB5T(M58SPX0G-NB5T): build_graph 투영 — 그래프 질의==문자열 파싱 동등성,
-결정적 투영, decide golden 9종 일치(하드 조건)."""
+"""NB5T(M58SPX0G-NB5T): build_graph 투영 — 그래프 질의==문자열 파싱 동등성, 결정적 투영.
+
+P5(M5BH91TA-S28F) — 레거시 [review-req] 질의(requested_reviewers)와 edge 저장소
+(has_edge·edges·link_pr)는 prod 리더가 없어 제거됐다. 유일 질의는 comment_pr_repos.
+"""
 import probe.core as core
-from ontology.build import build_graph, parse_comment_pr_repos, parse_requested
+from ontology.build import build_graph, parse_comment_pr_repos
 from test_tt_lifecycle import snap
 
 
@@ -29,53 +32,15 @@ def test_graph_queries_equal_string_parsing():
     issue = _rich_issue()
     g = build_graph({"issues": [issue]})
     assert g.comment_pr_repos(issue["id"]) == core._comment_pr_repos(issue)
-    from ontology.build import parse_requested
-    assert g.requested_reviewers(issue["id"], 9, "abc12345") == \
-        parse_requested(issue["comments"]).get((9, "abc12345"), set()) == {"agy", "cursor-review"}
-    assert g.requested_reviewers(issue["id"], 9, "abc12346") == set()  # 다른 head
-    assert g.requested_reviewers(issue["id"], 8, "abc12345") == set()  # 다른 PR
+    # 레거시 [review-req] 마커는 투영 대상 아님(P5) — prod 질의에 영향 없음
+    assert g.comment_pr_repos(issue["id"]) == [("plainOldCode/think-tank", 9)]
 
 
 def test_graph_deterministic():
     """동일 스냅샷 → 동일 그래프(결정적 투영, RD §4.1)."""
     s1 = build_graph({"issues": [_rich_issue()]})
     s2 = build_graph({"issues": [_rich_issue()]})
-    assert s1._edges == s2._edges
     assert s1._card_pr_urls == s2._card_pr_urls
-
-
-def test_machine_comments_not_projected_as_requests():
-    issue = _issue(comments=[
-        {"id": 1, "author": "tt-server", "body": "[review-req #5/deadbeef] → agy"},
-        {"id": 2, "author": "runner@m2max", "body": "[review-req #5/deadbeef] → claude"},
-    ])
-    g = build_graph({"issues": [issue]})
-    assert g.requested_reviewers(issue["id"], 5, "deadbeef") == set()
-
-
-def test_decide_linked_pr_edges():
-    """Card —linkedTo→ PR — pr_card_id 조인, provenance에 full sha."""
-    pr = {"number": 9, "repo": "plainOldCode/think-tank", "state": "OPEN",
-          "branch": "tt/M58SPX0G-NB5T-1", "head_sha": "0123456789abcdef",
-          "title": "M58SPX0G-NB5T: 투영"}
-    s = snap({"id": "M58SPX0G-NB5T", "state": "review", "comments": [],
-              "title": "x", "execution_attempt": 1})
-    s["prs"] = [pr]
-    ctx = core._DecideCtx(s)
-    assert ctx.graph.has_edge("M58SPX0G-NB5T", "linkedTo",
-                              "plainOldCode/think-tank#9")
-    edges = [e for e in ctx.graph.edges() if e[1] == "linkedTo"]
-    assert edges[0][3]["sha"] == "0123456789abcdef"  # full sha provenance
-
-
-def test_parse_helpers_keep_contracts():
-    """비-decide 호출자용 위임 함수도 정본 파서와 동일 결과."""
-    issue = _rich_issue()
-    assert parse_comment_pr_repos(issue["comments"]) == \
-        [(  # 등장 순 중복 제거 — id 2의 URL만 코멘트 PR URL에 해당
-            "plainOldCode/think-tank", 9)]
-    assert parse_requested(issue["comments"]) == {
-        (9, "abc12345"): {"agy", "cursor-review"}}
 
 
 def test_comment_url_candidate_observed_failed_triggers_observe_failed():
@@ -93,3 +58,11 @@ def test_comment_url_candidate_observed_failed_triggers_observe_failed():
         "관측 실패 repo는 'PR 없음' 판정 금지"
     om = [a for a in notes if "observe-failed" in (a.get("marker") or "")]
     assert om and REPO in om[0]["reason"]
+
+
+def test_parse_helpers_keep_contracts():
+    """비-decide 호출자용 위임 함수도 정본 파서와 동일 결과."""
+    issue = _rich_issue()
+    assert parse_comment_pr_repos(issue["comments"]) == \
+        [(  # 등장 순 중복 제거 — id 2의 URL만 코멘트 PR URL에 해당
+            "plainOldCode/think-tank", 9)]
