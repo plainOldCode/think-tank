@@ -6,5 +6,5 @@ standalone dispatchd는 U6(M5A4HZQB-AT3N)으로 퇴역 — shim·plist·TT_DISPA
 from .core import (  # noqa: F401
     REPO, REPO_CARDS, api, card_from_branch, card_repo, ci_passed,
     collect_prs, collect_repos, decide, execute, gh_exec, gh_json, get_version,
-    hydrate_reviews, loop, review_verdict, run_once, snapshot,
+    hydrate_reviews, loop, run_once, snapshot,
 )

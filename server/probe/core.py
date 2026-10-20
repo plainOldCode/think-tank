@@ -123,48 +123,10 @@ def collect_repos(issues):
     return out
 
 
-def _stale_act(i, att, now):
-    """'PR 없음' review 카드 스탈 공지 액션 — 연령 기반(attempt당 마커 1회). 기본 24h.
-    (U4 퇴역 전 needs-merge 노트가 attempt당 1회 dedup이라 사이클 카운트는 불가 → 연령 판정)"""
-    try:
-        stale_h = max(0, float(os.getenv("TT_PROBE_STALE_HOURS", "24")))
-    except ValueError:
-        stale_h = 24.0
-    if not stale_h:
-        return None
-    smarker = f"[stale-notify a{att}]"
-    if _probe_marker(i, smarker):
-        return None
-    age = _age_min(now, i.get("updated_at") or "")
-    if age is None or age < stale_h * 60:
-        return None
-    return {"agent": "probe", "issue": i["id"], "action": "stale-notify",
-            "marker": smarker,
-            "reason": f"PR 없음 {int(age // 60)}시간 지속 — 사람 판단 대기 공지"}
 
 
-PR_SHA = re.compile(r"PR#(\d+)@([0-9a-fA-F]{8})")
 
 
-def review_verdict(comments, reviewer, pr_no, sha8):
-    """현재 PR head(pr_no@sha8)에 유효한 리뷰어 판정. 없거나 stale이면 None.
-
-    리뷰어 코멘트만 인정(author 일치), 'PR#<n>@<sha8>' 불일치는 stale. 최신 판정 우선.
-    """
-    if isinstance(reviewer, str):
-        reviewer = [reviewer]
-    verdict = None
-    for c in comments or []:
-        if c.get("author") not in reviewer:
-            continue
-        body = c.get("body") or ""
-        m = PR_SHA.search(body)
-        if not m or int(m.group(1)) != pr_no or m.group(2).lower() != (sha8 or "").lower():
-            continue
-        v = first_line_verdict(body)
-        if v:
-            verdict = v
-    return verdict
 
 
 # --- 카운터파트 리뷰어 라우팅 (M4JTJ970-WS3C, docs/review-gate.md 룰셋) ---
@@ -444,13 +406,6 @@ _RUNNER_FAIL_RE = re.compile(r"runner:\S+ dispatch#(\d+) failed exit=[1-9]")
 _DISPATCH_ID_RE = re.compile(r"\(dispatch#(\d+)\)")
 
 
-def _stall_window_min():
-    """정체 판정 관망 창(분) — 최신 발령 마커가 이 창 내면 새 세션이 살아있을 수
-    있어 관망한다. 0이면 창 없음(즉시 판정). runner 실패 코멘트는 창과 무관하게 즉시."""
-    try:
-        return int(os.environ.get("TT_REVIEW_STALL_MIN", "60") or "0")
-    except ValueError:
-        return 60
 
 
 def _comment_ts(c):
@@ -1191,21 +1146,6 @@ def _promote_pr_observation(snap):
     return snap
 
 
-def _probe_flag(url, act, msg):
-    """probe 판단 불가(경합·실패) 관측 기록. 같은 사유 2회 지속 시 review로 반납(사람 신호)."""
-    iid = act["issue"]
-    print(time.strftime("%F %T"), msg, flush=True)
-    try:
-        cur = api(url, f"/issues/{iid}")
-        prior = [c for c in (cur.get("comments") or []) if "probe merge skip" in (c.get("body") or "")]
-        api(url, f"/issues/{iid}/comments", "POST", {"author": "probe", "body": msg})
-        if len(prior) >= 1:
-            cur2 = api(url, f"/issues/{iid}")
-            api(url, f"/issues/{iid}", "PATCH", {"version": cur2["version"], "state": "review"})
-            api(url, f"/issues/{iid}/comments", "POST",
-                {"author": "probe", "body": f"PR#{act['pr']}: 장애 2회 지속 — review로 반납(사람 판단)"})
-    except Exception:
-        pass
 
 
 def _archive_sweep(url, days):
@@ -1228,25 +1168,6 @@ def _archive_sweep(url, days):
               f"{res.get('preserved', 0)}보존 (done+{days}일, 조상 done)", flush=True)
 
 
-def _exec_release_reviewer(url, act):
-    cur = api(url, f"/issues/{act['issue']}")
-    if cur.get("reviewer") == act.get("reviewer"):
-        # 이 판정이 현재 head에 여전히 유효한지 — decide와 동일 필터(review_verdict)로 재확인.
-        # R7: author·PR 무관한 임의 판정 비교는 유효 반납까지 막는다 — 리뷰어 판정만 인정.
-        if review_verdict(cur.get("comments") or [], act.get("reviewer"),
-                          act.get("pr"), (act.get("head_sha") or "")[:8]) is None:
-            return
-        # decide 이후 카드가 변했다면(재claim·코멘트 등) 이번 라운드 폐기 — 다음 라운드 재판정.
-        # R5: 같은 판정 구간에서 리뷰어가 재claim한 새 lease를 오래된 액션이 지우지 않게.
-        if act.get("expected_version") is not None and cur.get("version") != act["expected_version"]:
-            return
-        # reviewer만 지우고, lease는 리뷰어 본인 것이 확실할 때만 —
-        # 재작업자가 새 lease를 잡은 뒤 오래된 반납 액션이 도착해도 보존(R5).
-        fields = {"reviewer": "", "expected_version": cur["version"]}
-        if cur.get("lease_by") == act.get("reviewer"):
-            fields.update({"lease_by": "", "lease_expires": None})
-        api(url, f"/issues/{act['issue']}", "PATCH", fields)
-    return
 
 def _exec_archive_sweep(url, act):
     _archive_sweep(url, int(act.get("days") or 0))
@@ -1489,7 +1410,6 @@ def execute(url, act):
 
 # action kind → 실행 함수 (원 if/elif 체인의 1:1 이관 — 각 본문 불변)
 _EXEC_HANDLERS = {
-    "release-reviewer": _exec_release_reviewer,
     "archive-sweep": _exec_archive_sweep,
     "ci-fix": _exec_ci_fix,
     "submit-remind": _exec_submit_remind,
