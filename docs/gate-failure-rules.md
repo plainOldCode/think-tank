@@ -219,7 +219,7 @@ probe-restructure-design.md §5.2의 단조성 — LLM 출력은 `hold`/`escalat
 
 ## 12. 구현 상태 (2026-10-11)
 
-- **reviewer_session_failed — 구현됨** (TT M4M9BTC1-12MZ): 발령 이력 head에 판정 없음+리뷰어 점유 흔적(release되지 않은 reviewer) 또는 runner 실패 코멘트(`dispatch#N failed exit!=0` 즉시 트리거) → 회차 마커 `[review-retry a<n> #pr/sha8]`로 재발령 1회(지시문에 '새 세션에서 시작, 이전 세션 재사용 금지' 명시). N=3 도달 시 `[needs-human-review]` 코멘트+라벨 에스컬레이션 1회. head 변경 시 마커의 sha8이 달라져 카운터 자동 리셋. 관망 창 `TT_REVIEW_STALL_MIN`(기본 60분 — 최신 발령이 창 내면 새 세션 존재 가능성으로 관망). core.py `_reviewer_session_stalled`/`_maybe_review_retry`.
+- **reviewer_session_failed — 구현됨** (TT M4M9BTC1-12MZ·ME5W, 2026-10-20 P2 현행화): 리뷰 발령 후 1h 무판정+lease 유휴, 또는 runner 실패 코멘트(`session=tt-<agent>-<id>` STALL-kill — 즉시 트리거) → `tt-review` 재발령(retry<2, 직전 리뷰어 회피 fresh-eyes). STALL-kill은 `TT_STALL_REDISPATCH_GRACE_MIN`(기본 10분) 유예 후 재발령. 2회 재시도 도달 시 `tt-review-stalled` 표기 후 `_exec_review_stalled`가 '리뷰어 인수계 필요' 코멘트 1회. 구현: `server/probe/tt_lifecycle.py` `_STALL_KILL_RE`·`_stall_grace_sec`·plan의 tt-review 재시도·`_exec_review_stalled`.
 
 - **observe_failed — 구현됨** (TT M58SPT6D-T3YT, 2026-10-19): `providers.collect_github`이 repo 단위 관측 결과(ok|failed)를 반환하고 `core.run_once`가 `snap.pr_observed`·`snap.degraded`로 승격. decide ⓪b에서 PR 없는 review 카드의 후보 repo(repo 마커·코멘트 PR URL·pr_context) 중 실패가 있으면 — 또는 후보를 전혀 모르고 degraded면 — needs-merge 대신 `[observe-failed a<n>]` 노트 1회(§6 반복 시 사람 통보). checks 실패는 기존대로 None(관측 실패≠0건). core.py `_pr_list_failed`/`_decide_observe_failed`.
 

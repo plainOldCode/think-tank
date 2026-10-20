@@ -47,13 +47,14 @@ FAILURE_RULES = (
 
 
     {"code": "reviewer_session_failed",
-     "judgment": "발령 이력 마커 존재+무판정+리뷰어 점유 흔적+관망 창 경과 "
-                 "(TT_REVIEW_STALL_MIN) 또는 최신 발령과 같은 dispatch id의 runner 실패 코멘트",
-     "default": "회차 마커 [review-retry a<n>]로 재발령 1회(새 세션 강제, fresh) — "
-                "N=3 도달 시 needs-human 1회",
-     "handling": HANDLING_R, "wired": "server/probe/core.py _reviewer_session_stalled/_maybe_review_retry "
-                             "(TT M4M9BTC1-12MZ)",
-     "agg": "1(WS3C 실측)", "note": "§12 신규 행 — 2026-10-11 구현"},
+     "judgment": "리뷰 발령 후 1h 무판정+lease 유휴, 또는 runner 실패 코멘트 "
+                 "(STALL-kill session=tt-<agent>-<id> — 즉시 트리거)",
+     "default": "tt-review 재발령(retry<2, 직전 리뷰어 회피) — STALL-kill은 "
+                "TT_STALL_REDISPATCH_GRACE_MIN(기본 10분) 유예 후(ME5W); "
+                "2회 재시도 후 tt-review-stalled 표기+인수계 코멘트 1회",
+     "handling": HANDLING_R, "wired": "server/probe/tt_lifecycle.py _STALL_KILL_RE/_stall_grace_sec/"
+                             "plan tt-review 재시도/_exec_review_stalled (TT M4M9BTC1-12MZ·ME5W)",
+     "agg": "1(WS3C 실측)", "note": "§12 신규 행 — 2026-10-11 구현, 2026-10-20 P2 현행화"},
 
     {"code": "evidence_rejected",
      "judgment": "tt-server 시스템 코멘트 'done 증거 없음 또는 실패/미확정 보고' "
