@@ -7,7 +7,7 @@ import re
 
 import pytest
 
-from probe import core as dispatchd
+from probe import core
 import failure_rules
 
 NOW = "2026-10-09T10:00:00+0900"
@@ -44,8 +44,6 @@ def _pc(body, ts=OLD, author="probe", cid=1):
 
 @pytest.fixture(autouse=True)
 def env(monkeypatch):
-    monkeypatch.setenv("TT_REVIEW_GRACE_MIN", "0")
-    monkeypatch.setenv("TT_REVIEW_AGENT", "fallback@t")
     monkeypatch.delenv("TT_SUPPRESS_N", raising=False)
 
 
@@ -60,14 +58,14 @@ def _ci_card(n, att=1, **kw):
 def test_억제_중인_키는_재통보하지_않는다():
     i = _ci_card(3, comments=[_pc(f"[escalated {KEY_CI}] 반복 사건 — 사람 확인 대기",
                                   author="dispatchd", cid=9)])
-    acts = dispatchd.decide(_snap([i], [_pr(checks=[{"state": "FAILURE"}])], []))
+    acts = core.decide(_snap([i], [_pr(checks=[{"state": "FAILURE"}])], []))
     assert not [a for a in acts if a["action"] in ("ci-fix", "needs-human")]
 
 
 def test_probe가_해제_마커를_남겨도_초기화되지_않는다():
     rel = _pc(f"[unblocked {KEY_CI}] 자가 해제 시도", author="probe", cid=9)
     i = _ci_card(3, att=4, comments=[_pc(f"[escalated {KEY_CI}] 통보", author="dispatchd", cid=8), rel])
-    acts = dispatchd.decide(_snap([i], [_pr(checks=[{"state": "FAILURE"}])], []))
+    acts = core.decide(_snap([i], [_pr(checks=[{"state": "FAILURE"}])], []))
     assert not [a for a in acts if a["action"] == "ci-fix"]
 
 
@@ -83,7 +81,7 @@ def test_억제는_budget_에스컬레이션을_막지_않는다(monkeypatch):
          "archived": 0, "reviewer": "", "lease_by": "", "lease_by_exp": None,
          "updated_at": "2026-10-09T09:00:00+0900"}
     i = _ci_card(3, comments=[_pc(f"[escalated {KEY_CI}]", author="dispatchd", cid=9)])
-    acts = dispatchd.decide(_snap([t, i], [], []))
+    acts = core.decide(_snap([t, i], [], []))
     nh = [a for a in acts if a["action"] == "needs-human"]
     assert any("budget" in (a.get("reason") or "") for a in nh)
 

@@ -1,7 +1,7 @@
 """자동 아카이브 스윕(M3ZRGTSF-N95X) — decide 스케줄 + execute 조상 규칙."""
 import pytest
 
-from probe import core as dispatchd
+from probe import core
 import probe.core
 
 
@@ -13,14 +13,14 @@ def _snap(issues=(), prs=(), agents=()):
 
 def test_decide는_환경변수_설정시_스윕을_건다(monkeypatch):
     monkeypatch.setenv("TT_ARCHIVE_AFTER_DAYS", "14")
-    acts = dispatchd.decide(_snap())
+    acts = core.decide(_snap())
     sweeps = [a for a in acts if a["action"] == "archive-sweep"]
     assert len(sweeps) == 1 and sweeps[0]["days"] == 14
 
 
 def test_decide는_환경변수_없으면_스윕을_안_건다(monkeypatch):
     monkeypatch.delenv("TT_ARCHIVE_AFTER_DAYS", raising=False)
-    assert not [a for a in dispatchd.decide(_snap()) if a["action"] == "archive-sweep"]
+    assert not [a for a in core.decide(_snap()) if a["action"] == "archive-sweep"]
 
 
 # --- 서버 검증형 아카이브 엔드포인트 (M3ZRGTSF-N95X 리뷰 R1-R3 반영) ---
@@ -114,9 +114,6 @@ def test_completed_before_필터는_나이로_직접_고른다(client, tmp_path)
     r = client.get("/issues", params={"state": "done",
                                       "completed_before": "2026-09-21T09:00:00+0900"})
     assert [c["id"] for c in r.json()] == [old_i["id"]]
-
-
-
 
 
 def test_재개된_카드는_archived가_해제된다(client):

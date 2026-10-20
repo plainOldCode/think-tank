@@ -11,7 +11,7 @@
 """
 import pytest
 
-from probe import core as dispatchd
+from probe import core
 import probe.core
 from probe.core import agent_family, pick_reviewer, route_reviewer
 
@@ -161,11 +161,6 @@ def test_라우팅은_작성자_자신의_가족을_지목하지_않는다():
 
 # --- decide 배선: 양 경로 모두 카운터파트/가족 정책 (리뷰 R1) ---
 
-
-def gate_on(monkeypatch):
-    monkeypatch.setenv("TT_REVIEW_AGENT", "kanban-adapter")  # 게이트 on — env는 레거시 폴백
-
-
 # --- execute 배선: 동기 수령 인계, 409 폴백, 레거시 가드 ---
 
 
@@ -221,7 +216,7 @@ def test_저장_설정_review_map이_tt경로_대상에_반영된다(client):
     issue = submitted(client)
     s = _tt_snap(issue, "codex", "claude")
     s["review_routing"] = {"review_map": {"worker": "claude"}}
-    tt = [a for a in dispatchd.decide(s) if a["action"] == "tt-review"]
+    tt = [a for a in core.decide(s) if a["action"] == "tt-review"]
     assert tt and tt[0]["agent"] == "claude"
 
 
@@ -232,5 +227,5 @@ def test_저장_설정_review_fallback이_tt경로에_적용된다(client):
     s = _tt_snap(issue, "codex", "claude")
     s["review_routing"] = {"review_map": {"worker": "ghost"},
                            "review_fallback": ["claude"]}
-    tt = [a for a in dispatchd.decide(s) if a["action"] == "tt-review"]
+    tt = [a for a in core.decide(s) if a["action"] == "tt-review"]
     assert tt and tt[0]["agent"] == "claude"

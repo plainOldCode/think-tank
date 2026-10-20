@@ -3,7 +3,6 @@
 - TT_PROBE_INTERVAL unset/0 → 스레드 없음(기본 off — 테스트·로컬 안전)
 - TT_PROBE_INTERVAL>0 → 데몬 스레드 "tt-probe" 가동, shutdown에서 stop
 - probe.loop(url, interval, stop) — run_once()를 주기 실행, 에러 백오프, stop 즉시 종료
-- dispatchd.py는 shim: launchd 전환 기간 standalone 실행 + 기존 import 경로 유지
 """
 import threading
 

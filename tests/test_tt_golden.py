@@ -127,7 +127,6 @@ def cases():
 
 @pytest.fixture(autouse=True)
 def env(monkeypatch):
-    monkeypatch.setenv("TT_REVIEW_GRACE_MIN", "0")
     monkeypatch.delenv("TT_STALL_REDISPATCH_GRACE_MIN", raising=False)
     monkeypatch.delenv("TT_REVIEW_MAP", raising=False)
 

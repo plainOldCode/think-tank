@@ -6,7 +6,7 @@ CI 실패 위임은 ci_failed(in_progress·TT 경로)가 담당한다.
 """
 import pytest
 
-from probe import core as dispatchd
+from probe import core
 import failure_rules
 
 SHA8 = "b" * 8
@@ -45,12 +45,6 @@ def _pc(body, ts=OLD, author="probe"):
     return {"id": 1, "author": author, "body": body, "ts": ts}
 
 
-@pytest.fixture(autouse=True)
-def env(monkeypatch):
-    monkeypatch.setenv("TT_REVIEW_GRACE_MIN", "0")
-    monkeypatch.setenv("TT_REVIEW_AGENT", "fallback@t")
-
-
 # --- 데이터 모듈 ---
 
 def test_규칙표는_필수_키를_가진다():
@@ -77,10 +71,9 @@ def test_미등록_코드는_unknown_처리를_따른다():
 
 def test_checks_관측_불가_None은_판정_대상이_아니다(monkeypatch):
     # 리뷰 R1 — CI 조회 실패(checks=None)는 0건과 다르다: 병합 우회 금지
-    monkeypatch.setenv("TT_REVIEW_AGENT", "fallback@t")
     i = _i(reviewer="fallback@t",
            comments=[_pc("review: approve\nPR#9@bbbbbbbb — ok", author="fallback@t")])
-    acts = dispatchd.decide(_snap([i], [{"number": 9, "repo": "plainOldCode/think-tank",
+    acts = core.decide(_snap([i], [{"number": 9, "repo": "plainOldCode/think-tank",
                                          "checks": None, "isDraft": False,
                                          "branch": "tt/M4ABCDEF-GH12-x", "title": "",
                                          "head_sha": "b" * 40}], [_agent("a2@t")]))
@@ -100,9 +93,8 @@ def test_행별_처리_구분_골든():
         assert failure_rules.handling_of(code) == h, code
 
 
-def test_checks_0건_게이트_꺼짐은_기존_무응답_유지(monkeypatch):
-    monkeypatch.delenv("TT_REVIEW_AGENT", raising=False)
-    acts = dispatchd.decide(_snap([_i()], _pr(checks=[]), []))
+def test_checks_0건은_기존_무응답_유지(monkeypatch):
+    acts = core.decide(_snap([_i()], _pr(checks=[]), []))
     assert not [a for a in acts if a["action"] in ("merge", "review-request")]
 
 
@@ -114,7 +106,7 @@ def test_done_거부_기록_카드는_재제출_요청_노트를_낸다():
     i = _i(state="in_progress",
            comments=[_pc("done 증거 없음 또는 실패/미확정 보고 — 현재 회차의 성공 결과가 필요합니다.",
                          author="tt-server")])
-    acts = dispatchd.decide(_snap([i], [], []))
+    acts = core.decide(_snap([i], [], []))
     notes = [a for a in acts if a["action"] == "review-note"
              and (a.get("marker") or "").startswith("[evidence-rejected")]
     assert len(notes) == 1 and notes[0]["marker"] == "[evidence-rejected a1]"
@@ -122,10 +114,10 @@ def test_done_거부_기록_카드는_재제출_요청_노트를_낸다():
 
 
 def test_done_거부_기록이_없거나_완료된_카드는_무음이다():
-    acts = dispatchd.decide(_snap([_i(state="in_progress")], [], []))
+    acts = core.decide(_snap([_i(state="in_progress")], [], []))
     assert not [a for a in acts if a["action"] == "review-note"]
     i = _i(state="done", comments=[_pc("done 증거 없음", author="tt-server")])
-    acts = dispatchd.decide(_snap([i], [], []))
+    acts = core.decide(_snap([i], [], []))
     assert not [a for a in acts if a["action"] == "review-note"]
 
 
@@ -138,7 +130,7 @@ def test_실제_done_거부_state_review에서도_재제출_요청이_나온다(
     i = _i(state="review",
            comments=[_pc("done 증거 없음 또는 실패/미확정 보고 — 현재 회차의 성공 결과가 필요합니다.",
                          author="tt-server")])
-    acts = dispatchd.decide(_snap([i], [], []))
+    acts = core.decide(_snap([i], [], []))
     notes = [a for a in acts if a["action"] == "review-note"
              and (a.get("marker") or "").startswith("[evidence-rejected")]
     assert len(notes) == 1 and notes[0]["marker"] == "[evidence-rejected a1]"
@@ -188,17 +180,17 @@ def test_미연결_행은_입력이_있어도_무음이다():
     i = _i(state="in_progress",
            comments=[_pc("runner:m2max dispatch#294 STALL-killed exit=9",
                          author="runner@m2max")])
-    assert dispatchd.decide(_snap([i], [], [])) == []
+    assert core.decide(_snap([i], [], [])) == []
     # verify_422 — 카드 기록이 아예 없는 조건(호출자 응답만 존재) = 입력 부재.
     # 기록된 흔적 없이 verify가 실패한 카드 — decide 입력에 나타날 것도 없다.
-    assert dispatchd.decide(_snap([_i(state="in_progress")], [], [])) == []
+    assert core.decide(_snap([_i(state="in_progress")], [], [])) == []
     # marker_mismatch — 규격 밖 마커 코멘트(정식 7종 아님) — 반응 없음
     i = _i(state="in_progress", comments=[_pc("[unknown-garbage-marker xyz] 형식 불일치")])
-    assert dispatchd.decide(_snap([i], [], [])) == []
+    assert core.decide(_snap([i], [], [])) == []
     # stale_base — 리뷰 문맥의 base 지적 코멘트(정식 기록 없음) — 반응 없음
     i = _i(state="in_progress",
            comments=[_pc("rebase 필요 — base가 main 뒤처짐", author="reviewer@t")])
-    assert dispatchd.decide(_snap([i], [], [])) == []
+    assert core.decide(_snap([i], [], [])) == []
 
 
 def test_행별_입력_to_대응_매핑_문서():
@@ -209,11 +201,11 @@ def test_행별_입력_to_대응_매핑_문서():
     evidence_rejected: 본 파일 test_실제_done_거부* / test_execute는_evidence_*
     verify_422: 미연결 — 본 파일 test_미연결_행은_입력이_있어도_무음이다 (기록 부재 조건)
     runner_stall: 미연결 — 본 파일 (STALL 입력, 전체 액션 집단 검증)
-    budget_exhausted: tests/test_dispatchd.py::test_two_dispatch_tries_becomes_needs_human_not_work
+    budget_exhausted: tests/test_core.py::test_two_dispatch_tries_becomes_needs_human_not_work
                       + test_attempt_two_becomes_needs_human (사람 통보 기본 대응)
     needs_decision: tests/test_api.py::test_dispatch_progress_blocked_comment_escalates
     lease_conflict_401: tests/test_cross_review.py::test_review_eligible_matrix (review_occupied)
-    dependency: tests/test_dispatchd.py::test_release_ready_resume_wins_over_pool
+    dependency: tests/test_core.py::test_release_ready_resume_wins_over_pool
                 + test_not_release_ready_is_not_resumed (blocked 재개 조건)
     marker_mismatch: 미확인 — 본 파일 (규격 밖 마커 입력 무음)
     stale_base: 미확인 — 본 파일 (base 지적 입력 무음) + 참고 tests/test_stale_base.py(push 게이트)
@@ -235,7 +227,7 @@ def test_성공_보고_접수된_카드는_과거_거부가_있어도_재요청�
     i = _i(state="review", verification_status="reported",
            comments=[_pc("done 증거 없음 또는 실패/미확정 보고", author="tt-server"),
                     _pc("보고 접수 — review에 정지(병합 대기)", author="tt-server")])
-    acts = dispatchd.decide(_snap([i], [], []))
+    acts = core.decide(_snap([i], [], []))
     assert not [a for a in acts if a["action"] == "review-note"
                 and (a.get("marker") or "").startswith("[evidence-rejected")]
 
@@ -266,7 +258,7 @@ def test_증거_경계_이전_거부는_새_회차에서_재사용하지_않는�
     i = _i(state="review", execution_attempt=2, evidence_after_comment_id=1,
            comments=[{"id": 1, "author": "tt-server", "ts": OLD,
                       "body": "done 증거 없음 또는 실패/미확정 보고"}])
-    acts = dispatchd.decide(_snap([i], [], []))
+    acts = core.decide(_snap([i], [], []))
     assert not [a for a in acts if (a.get("marker") or "").startswith("[evidence-rejected")]
 
 
@@ -276,7 +268,7 @@ def test_경계_이후_현재_거부는_여전히_요청한다():
                       "body": "done 증거 없음 또는 실패/미확정 보고"},
                      {"id": 5, "author": "tt-server", "ts": OLD,
                       "body": "done 증거 없음 또는 실패/미확정 보고"}])
-    acts = dispatchd.decide(_snap([i], [], []))
+    acts = core.decide(_snap([i], [], []))
     assert [a for a in acts if a.get("marker") == "[evidence-rejected a2]"]
 
 

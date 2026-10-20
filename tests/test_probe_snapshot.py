@@ -80,8 +80,6 @@ def test_snapshot_enriches_and_decides_cards_on_later_pages(client, snapshot_api
                                         "receive_mode": "hook"}).status_code == 201
     calls = snapshot_api()
     monkeypatch.setenv("TT_AUTO_DISPATCH", "1")
-    monkeypatch.setenv("TT_REVIEW_GRACE_MIN", "0")
-    monkeypatch.delenv("TT_REVIEW_AGENT", raising=False)
 
     snap = core.snapshot("http://test")
     cards = {i["id"]: i for i in snap["issues"]}

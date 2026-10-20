@@ -22,6 +22,9 @@ def test_url_없으면_매_사이클_env를_재평가한다(monkeypatch):
 
     stop = threading.Event()
     monkeypatch.setattr(probe_core, "run_once", fake_run_once)
+    _orig_sleep = probe_core._sleep
+    monkeypatch.setattr(  # 파킹 인수계 폴링 모킹(P4) — 프로덕션 하한 5s 불변
+        probe_core, "_sleep", lambda s, stop=None: _orig_sleep(min(s, 0.1), stop))
     monkeypatch.setenv("TT_URL", "http://first:7800")
     t = threading.Thread(target=probe_core.loop, args=(None, 0.01, stop), daemon=True)
     t.start()
@@ -43,6 +46,9 @@ def test_명시_url은_고정된다(monkeypatch):
 
     stop = threading.Event()
     monkeypatch.setattr(probe_core, "run_once", fake_run_once)
+    _orig_sleep = probe_core._sleep
+    monkeypatch.setattr(  # 파킹 인수계 폴링 모킹(P4) — 프로덕션 하한 5s 불변
+        probe_core, "_sleep", lambda s, stop=None: _orig_sleep(min(s, 0.1), stop))
     monkeypatch.setenv("TT_URL", "http://ignored:7800")
     t = threading.Thread(target=probe_core.loop, args=("http://fixed:7800", 0.01, stop),
                          daemon=True)
@@ -77,6 +83,9 @@ def test_잠금_보유_중_파킹하고_해제되면_인수계한다(tmp_path, m
         stop.set()
 
     monkeypatch.setattr(probe_core, "run_once", fake_run_once)
+    _orig_sleep = probe_core._sleep
+    monkeypatch.setattr(  # 파킹 인수계 폴링 모킹(P4) — 프로덕션 하한 5s 불변
+        probe_core, "_sleep", lambda s, stop=None: _orig_sleep(min(s, 0.1), stop))
     t = threading.Thread(target=probe_core.loop,
                          args=(None, 0.05, stop), kwargs={"db_path": db},
                          daemon=True)
@@ -98,6 +107,9 @@ def test_잠금_획득_프로세스는_정상_구동된다(tmp_path, monkeypatch
         stop.set()
 
     monkeypatch.setattr(probe_core, "run_once", fake_run_once)
+    _orig_sleep = probe_core._sleep
+    monkeypatch.setattr(  # 파킹 인수계 폴링 모킹(P4) — 프로덕션 하한 5s 불변
+        probe_core, "_sleep", lambda s, stop=None: _orig_sleep(min(s, 0.1), stop))
     t = threading.Thread(target=probe_core.loop,
                          args=(None, 0.05, stop), kwargs={"db_path": db},
                          daemon=True)
@@ -146,6 +158,9 @@ def test_루프_종료_후_잠금이_해제된다(tmp_path, monkeypatch):
         stop.set()
 
     monkeypatch.setattr(probe_core, "run_once", fake_run_once)
+    _orig_sleep = probe_core._sleep
+    monkeypatch.setattr(  # 파킹 인수계 폴링 모킹(P4) — 프로덕션 하한 5s 불변
+        probe_core, "_sleep", lambda s, stop=None: _orig_sleep(min(s, 0.1), stop))
     t = threading.Thread(target=probe_core.loop, args=(None, 0.05, stop),
                          kwargs={"db_path": db}, daemon=True)
     t.start()
@@ -167,6 +182,9 @@ def test_실제_앱_종료_재생성에서도_probe가_정상_구동된다(monke
         ran.append(url)
 
     monkeypatch.setattr(probe_core, "run_once", fake_run_once)
+    _orig_sleep = probe_core._sleep
+    monkeypatch.setattr(  # 파킹 인수계 폴링 모킹(P4) — 프로덕션 하한 5s 불변
+        probe_core, "_sleep", lambda s, stop=None: _orig_sleep(min(s, 0.1), stop))
     monkeypatch.setenv("TT_PROBE_INTERVAL", "1")
     with TestClient(create_app(db)):
         deadline = time.time() + 5

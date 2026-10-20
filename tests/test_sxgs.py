@@ -170,7 +170,6 @@ def test_snapshot_review_ignores_old_round_and_terminal_dispatch(client, hook_se
     """Already-stuck production rows heal on the probe's dispatch read: an old-round
     running/stalled dispatch and a terminal one do not block reviewer assignment."""
     monkeypatch.setenv("TT_AUTO_DISPATCH", "1")
-    monkeypatch.setenv("TT_REVIEW_GRACE_MIN", "0")
     issue = submitted(client)
     assert client.post("/agents", json={
         "name": "codex", "base_url": hook_server, "receive_mode": "hook",
@@ -214,7 +213,6 @@ def test_execute_assigns_reviewer_despite_old_round_dispatch(client, hook_server
 
 def test_current_round_active_dispatch_still_blocks_review(client, hook_server, monkeypatch):
     monkeypatch.setenv("TT_AUTO_DISPATCH", "1")
-    monkeypatch.setenv("TT_REVIEW_GRACE_MIN", "0")
     issue = submitted(client)
     assert client.post("/agents", json={
         "name": "codex", "base_url": hook_server, "receive_mode": "hook",
