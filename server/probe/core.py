@@ -632,15 +632,6 @@ def hydrate_reviews(url, snap):
                 i["comments"] = []
 
 
-def _age_min(now, updated):
-    """iso(±TZ) 두 시각 차(분). 해석 불가 시 None(코멘트 보류)."""
-    from datetime import datetime
-    fmt = "%Y-%m-%dT%H:%M:%S%z"
-    try:
-        return (datetime.strptime(now, fmt) - datetime.strptime(updated, fmt)).total_seconds() / 60
-    except ValueError:
-        return None
-
 
 class _DecideCtx:
     """decide() 단계 공유 문맥(AK87-1) — 750줄 단일 함수를 위임형으로 분할한다.
@@ -1332,20 +1323,6 @@ def _exec_review_note(url, act):
                                     "tt verify로 done 확정 또는 재작업"})
     return act
 
-def _exec_stale_notify(url, act):
-    # 'PR 없음' 지속 review 카드 — 메시지 보드 공지(멘션은 assignee 등록 에이전트에만 기록됨) + 카드 마커.
-    cur = api(url, f"/issues/{act['issue']}")
-    marker = act.get("marker") or ""
-    if any(marker in (c.get("body") or "") for c in (cur.get("comments") or [])):
-        return
-    who = cur.get("assignee") or ""
-    api(url, "/messages", "POST",
-        {"author": "probe",
-         "body": (f"@{who} " if who else "") + f"[stale] 카드 {act['issue']} — {act['reason']}"})
-    api(url, f"/issues/{act['issue']}/comments", "POST",
-        {"author": "probe", "body": f"{marker} {act['reason']}"})
-    return act
-
 def _exec_resume(url, act):
     v = get_version(url, act["issue"])
     api(url, f"/issues/{act['issue']}", "PATCH", {"state": "todo", "version": v})
@@ -1415,7 +1392,6 @@ _EXEC_HANDLERS = {
     "submit-remind": _exec_submit_remind,
     "submission-adopt": _exec_submission_adopt,
     "review-note": _exec_review_note,
-    "stale-notify": _exec_stale_notify,
     "resume": _exec_resume,
     "needs-human": _exec_needs_human,
     "work": _exec_work,
