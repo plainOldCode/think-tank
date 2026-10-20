@@ -126,6 +126,13 @@ class TestPureLogic(unittest.TestCase):
 
 
 class TestWatchUpgrade(unittest.TestCase):
+    def setUp(self):
+        self._saved_sleep = R.time.sleep
+        R.time.sleep = lambda _s: None  # 킬 경로 C-c 유예 모킹(P4) — 프로덕션 불변
+
+    def tearDown(self):
+        R.time.sleep = self._saved_sleep
+
     """M3BZS1G3-VNQH 4범위: BLOCKED 판정 / stall / workspace 불변식 / credential 격리."""
 
     # ① 입력필요 vs 크래시
@@ -427,6 +434,8 @@ class TestProgressProjection(unittest.TestCase):
     """TT M3EREF97-FXWQ: 진행 투영은 tt_progress 한 지점만 통과하고 코멘트를 건드리지 않는다."""
 
     def setUp(self):
+        self._saved_sleep = R.time.sleep
+        R.time.sleep = lambda _s: None  # 킬 경로 C-c 유예 모킹(P4) — 프로덕션 불변
         self.calls = []
         self.comments = []
         self._orig_progress = R.tt_progress
@@ -446,6 +455,7 @@ class TestProgressProjection(unittest.TestCase):
                                  "started": time.time() - 100}})
 
     def tearDown(self):
+        R.time.sleep = self._saved_sleep  # 킬 유예 모킹 복원 — 누수 방지(RC)
         R.tt_progress = self._orig_progress
         R.tt_comment = self._orig_comment
 

@@ -1,10 +1,10 @@
-"""decide() 판정표 — probe 정책의 순수 함수 (30KP 설계 docs/dispatchd.md).
+"""decide() 판정표 — probe 정책의 순수 함수 (30KP 설계 docs/core.md).
 
-U6(M5A4HZQB-AT3N): dispatchd shim 퇴역 — probe.core로 직접.
+P4(M5BH91EV-QGGB): probe 명칭으로 정리 — dispatchd 별칭 퇴역.
 """
 import pytest
 
-from probe import core as dispatchd
+from probe import core
 from probe.core import decide
 
 NOW = "2026-09-29T21:00:00+0900"
@@ -179,10 +179,10 @@ def test_done_done_without_parent_falls_to_pool():
 
 def test_ci_passed_rules():
     ok = {"number": 3, "head_sha": "abc", "checks": [{"name": "ci", "state": "SUCCESS"}]}
-    assert dispatchd.ci_passed(ok) is True
-    assert dispatchd.ci_passed(dict(ok, checks=[])) is False
-    assert dispatchd.ci_passed(dict(ok, checks=[{"name": "ci", "state": "FAILURE"}])) is False
-    assert dispatchd.ci_passed(dict(ok, checks=[{"name": "ci", "state": "SUCCESS"},
+    assert core.ci_passed(ok) is True
+    assert core.ci_passed(dict(ok, checks=[])) is False
+    assert core.ci_passed(dict(ok, checks=[{"name": "ci", "state": "FAILURE"}])) is False
+    assert core.ci_passed(dict(ok, checks=[{"name": "ci", "state": "SUCCESS"},
                                                 {"name": "smoke", "state": "PENDING"}])) is False
 
 
@@ -211,9 +211,9 @@ def test_decide_no_merge_without_card_or_reportless_ok():
 
 
 def test_card_repo_parsing():
-    assert dispatchd.card_repo({"body": "참조 repo: plainOldCode/armour-service-ops 링크"}) == "plainOldCode/armour-service-ops"
-    assert dispatchd.card_repo({"body": "repo: a/b", "title": "x"}) == "a/b"
-    assert dispatchd.card_repo({"body": "no marker", "title": "t"}) is None
+    assert core.card_repo({"body": "참조 repo: plainOldCode/armour-service-ops 링크"}) == "plainOldCode/armour-service-ops"
+    assert core.card_repo({"body": "repo: a/b", "title": "x"}) == "a/b"
+    assert core.card_repo({"body": "no marker", "title": "t"}) is None
 
 
 # --- M4NCNNRW-PXCJ: 실행 불가 에이전트(어댑터·리드온리) 배정 제외 ---

@@ -1,7 +1,7 @@
 """JXYS(M4MGV3BY) — in_progress 자동화: ci-fix 확장 + green 무보고 독려→승격."""
 import pytest
 
-from probe import core as dispatchd
+from probe import core
 from probe import core as probe_core
 
 SHA8 = "b" * 8
@@ -44,7 +44,7 @@ def _mk(comments=(), **kw):
 # --- 1) CI 실패 → ci-fix-ip 위임 ---
 
 def test_in_progress_카드의_CI_실패는_ci_fix_ip로_위임한다():
-    acts = dispatchd.decide(snap([_mk()], [FAIL]))
+    acts = core.decide(snap([_mk()], [FAIL]))
     c = [a for a in acts if a["action"] == "ci-fix"]
     assert len(c) == 1
     assert c[0]["marker"] == f"[ci-fix-ip a1 #3/{SHA8}]"
@@ -55,7 +55,7 @@ def test_ci_fix_ip는_마커_dedup으로_1회다():
     from probe.core import _probe_marker
     card = _mk(comments=[{"author": "probe", "id": 1, "ts": TS_OLD,
                           "body": f"[ci-fix-ip a1 #3/{SHA8}] 위임"}])
-    assert not [a for a in dispatchd.decide(snap([card], [FAIL]))
+    assert not [a for a in core.decide(snap([card], [FAIL]))
                 if a.get("action") == "ci-fix"]
 
 
@@ -63,20 +63,20 @@ def test_ci_fix_ip는_마커_dedup으로_1회다():
 
 def test_green_무보고는_독려_1회다():
     card = _mk()
-    acts = dispatchd.decide(snap([card], [GREEN]))
+    acts = core.decide(snap([card], [GREEN]))
     r = [a for a in acts if a["action"] == "submit-remind"]
     assert len(r) == 1 and r[0]["marker"] == f"[submit-remind a1 #3/{SHA8}]"
     # 독려 마커 존재 → 재독려 없음
     card2 = _mk(comments=[{"author": "probe", "id": 1, "ts": TS_OLD,
                            "body": f"[submit-remind a1 #3/{SHA8}] 완료 보고 제출"}])
-    assert not [a for a in dispatchd.decide(snap([card2], [GREEN]))
+    assert not [a for a in core.decide(snap([card2], [GREEN]))
                 if a.get("action") == "submit-remind"]
 
 
 def test_독려_후_타이머_경과시_기계적_승격한다():
     card = _mk(comments=[{"author": "probe", "id": 1, "ts": TS_OLD,
                           "body": f"[submit-remind a1 #3/{SHA8}] 완료 보고 제출"}])
-    acts = dispatchd.decide(snap([card], [GREEN]))
+    acts = core.decide(snap([card], [GREEN]))
     a = [x for x in acts if x["action"] == "submission-adopt"]
     assert len(a) == 1 and a[0]["att"] == 1 and a[0]["expected_version"] == 7
 
@@ -85,7 +85,7 @@ def test_head_변경되면_타이머가_리셋된다():
     """점진 push 납치 방지 — 새 head는 새 독려 마커를 요구(기존 독려는 승격 근거 아님)."""
     card = _mk(comments=[{"author": "probe", "id": 1, "ts": TS_OLD,
                           "body": f"[submit-remind a1 #3/{SHA8}] 완료 보고 제출"}])
-    acts = dispatchd.decide(snap([card], [pr(sha="c" * 40)]))
+    acts = core.decide(snap([card], [pr(sha="c" * 40)]))
     assert not [a for a in acts if a["action"] == "submission-adopt"]
     r = [a for a in acts if a["action"] == "submit-remind"]
     assert len(r) == 1 and f"#3/{'c' * 8}" in r[0]["marker"]
@@ -96,12 +96,12 @@ def test_유효_임대나_활동_중이면_승격하지_않는다():
                "body": f"[submit-remind a1 #3/{SHA8}] 완료 보고 제출"}]
     held = _mk(comments=remind, lease_by="claude@workstation",
                lease_expires="2026-10-12T05:29:18+0900")
-    assert not [a for a in dispatchd.decide(snap([held], [GREEN]))
+    assert not [a for a in core.decide(snap([held], [GREEN]))
                 if a["action"] == "submission-adopt"]
     active = _mk(comments=remind + [{"author": "codex", "id": 5,
                                      "ts": "2026-10-11T12:00:00+0900",
                                      "body": "보고 작성 중입니다."}])
-    assert not [a for a in dispatchd.decide(snap([active], [GREEN]))
+    assert not [a for a in core.decide(snap([active], [GREEN]))
                 if a["action"] == "submission-adopt"]
 
 
@@ -205,13 +205,13 @@ MERGE_NB = {"author": "probe", "id": 10, "ts": TS_OLD,
 
 
 def test_무보고_병합은_독려_1회다():
-    acts = dispatchd.decide(snap([_merged_card([MERGE_NB])]))
+    acts = core.decide(snap([_merged_card([MERGE_NB])]))
     r = [a for a in acts if a["action"] == "review-note" and "재제출" in a.get("reason", "")]
     assert len(r) == 1
     # 독려 마커 존재 → 중복 독려 없음(타이머 평가로 넘어감)
     card2 = _merged_card([MERGE_NB, {"author": "probe", "id": 11, "ts": TS_OLD,
                                      "body": "[evidence-rejected a1] 무보고 병합 — 재제출 요청"}])
-    acts2 = dispatchd.decide(snap([card2]))
+    acts2 = core.decide(snap([card2]))
     assert not [a for a in acts2 if a["action"] == "review-note"
                 and "재제출" in a.get("reason", "")]
 
@@ -219,7 +219,7 @@ def test_무보고_병합은_독려_1회다():
 def test_무보고_병합_독려_후_타이머_경과시_needs_human이다():
     card = _merged_card([MERGE_NB, {"author": "probe", "id": 11, "ts": TS_OLD,
                                     "body": "[evidence-rejected a1] 무보고 병합 — 재제출 요청"}])
-    nh = [a for a in dispatchd.decide(snap([card]))
+    nh = [a for a in core.decide(snap([card]))
           if a["action"] == "needs-human"]
     assert nh and "evidence_rejected" in nh[0]["note"]
 
@@ -229,7 +229,7 @@ def test_독려_후_활동_중이면_승격하지_않는다():
                                     "body": "[evidence-rejected a1] 무보고 병합 — 재제출 요청"},
                          {"author": "codex", "id": 12, "ts": "2026-10-11T12:00:00+0900",
                           "body": "보고 작성 중입니다."}])
-    assert not [a for a in dispatchd.decide(snap([card]))
+    assert not [a for a in core.decide(snap([card]))
                 if a["action"] == "needs-human"]
 
 
@@ -237,7 +237,7 @@ def test_병합_후_보고_접수되면_독려하지_않는다():
     card = _merged_card([MERGE_NB, {"author": "tt-server", "id": 12,
                                     "ts": "2026-10-11T12:00:00+0900",
                                     "body": "보고 접수 — 완료"}])
-    acts = dispatchd.decide(snap([card]))
+    acts = core.decide(snap([card]))
     assert not [a for a in acts if a["action"] in ("review-note", "needs-human")
                 and "재제출" in (a.get("reason") or "") + (a.get("note") or "")]
 
@@ -245,7 +245,7 @@ def test_병합_후_보고_접수되면_독려하지_않는다():
 def test_done_거부도_독려_1회_타이머_승격이다():
     card = _merged_card([{"author": "tt-server", "id": 1, "ts": TS_OLD,
                           "body": "done 증거 없음 또는 실패/미확정 보고"}])
-    acts = dispatchd.decide(snap([card]))
+    acts = core.decide(snap([card]))
     assert [a for a in acts if a["action"] == "review-note"
             and "재제출" in a.get("reason", "")]
 
@@ -268,11 +268,11 @@ def test_ci_fix_execute는_결정된_ip_마커를_저장한다(monkeypatch):
 def test_ci_fix_ip_왕복은_다음_판정을_막는다():
     """decide(ci-fix-ip) → execute(저장) → decide — 실제 왕복(R2 재현)."""
     card1 = _mk()
-    acts = dispatchd.decide(snap([card1], [FAIL]))
+    acts = core.decide(snap([card1], [FAIL]))
     assert [a for a in acts if a.get("action") == "ci-fix"]
     stored = _mk(comments=[{"author": "probe", "id": 1, "ts": TS_NOW,
                             "body": f"[ci-fix-ip a1 #3/{SHA8}] PR#3 CI 실패 — 위임"}])
-    assert not [a for a in dispatchd.decide(snap([stored], [FAIL]))
+    assert not [a for a in core.decide(snap([stored], [FAIL]))
                 if a.get("action") == "ci-fix"]
 
 
@@ -290,7 +290,6 @@ def test_게이트_끈_run_once도_독려를_하이드레이트해_승격한다(
     card = _mk()
     del card["comments"]  # snapshot은 비-review 카드 코멘트를 아예 안 담는다
     prs = [GREEN]
-    monkeypatch.delenv("TT_REVIEW_AGENT", raising=False)
     monkeypatch.setattr(probe_core, "snapshot",
                         lambda url: {"auto": True, "now": TS_NOW, "agents": [],
                                      "issues": [card], "probe_skips": {}})

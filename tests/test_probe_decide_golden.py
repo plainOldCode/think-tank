@@ -3,7 +3,7 @@
 probe.core.decide는 750줄 거대 함수다(부모 M54XHS0R-AK87). 함수 분할 시
 판정 결과가 변하면 안 되므로, 대표 스냅샷 세트의 '전체 액션 출력'을 현재
 동작으로 저장해 분할 전후 동일성을 보증한다. 판정표 의미 자체는
-test_dispatchd.py·test_failure_rules.py가 이미 잠그므로, 여기는 분할
+test_probe_decide.py·test_failure_rules.py가 이미 잠그므로, 여기는 분할
 리팩터용 전체 출력 스냅샷이다.
 
 - 스냅샷: tests/golden/decide_cases/*.json (입력, 기록용)
@@ -105,12 +105,6 @@ def cases():
         "alias_agent": snap([issue("A", labels=["auto"])],
                             agents=[agent(aliases=["skshim@tp-13"])]),
     }
-
-
-@pytest.fixture(autouse=True)
-def env(monkeypatch):
-    monkeypatch.setenv("TT_REVIEW_GRACE_MIN", "0")
-    monkeypatch.setenv("TT_REVIEW_AGENT", "fallback@t")
 
 
 def test_golden_decide_출력은_분할_전후_동일하다():

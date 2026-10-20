@@ -1,7 +1,8 @@
-"""dispatchd 실행기 왕복 — 실 서버(TestClient sqlite)에 snapshot/decide/execute 관통.
+"""probe 실행기 왕복 — 실 서버(TestClient sqlite)에 snapshot/decide/execute 관통.
 
 dispatch webhook는 실제 HTTP가 아니라 agent 미등록 등 서버 검증 경로만 통과하면 된다(30KP:
-dispatchd는 public API만 소비). runner 실배송은 BKXA(실 agent) 범위.
+probe는 public API만 소비). runner 실배송은 BKXA(실 agent) 범위.
+P4(M5BH91EV-QGGB): probe 명칭으로 정리 — dispatchd 별칭 퇴역.
 """
 import os
 
