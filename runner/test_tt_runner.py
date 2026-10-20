@@ -126,14 +126,14 @@ class TestPureLogic(unittest.TestCase):
 
 
 class TestWatchUpgrade(unittest.TestCase):
+    """M3BZS1G3-VNQH 4범위: BLOCKED 판정 / stall / workspace 불변식 / credential 격리."""
+
     def setUp(self):
         self._saved_sleep = R.time.sleep
         R.time.sleep = lambda _s: None  # 킬 경로 C-c 유예 모킹(P4) — 프로덕션 불변
 
     def tearDown(self):
         R.time.sleep = self._saved_sleep
-
-    """M3BZS1G3-VNQH 4범위: BLOCKED 판정 / stall / workspace 불변식 / credential 격리."""
 
     # ① 입력필요 vs 크래시
     def test_input_needed_hits(self):

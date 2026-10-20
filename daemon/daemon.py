@@ -18,7 +18,7 @@ tests가 이를 보장한다(검증기준 3).
   fix 위임의 레거시 마커 분기는 제거했다 — 라이브 마지막 출현 10-13, 현행
   생산자는 tt-review 계열과 ci-fix뿐이다.
 
-마커 dedup: (마커, 카드, 키) 재게시 금지. 임베딩 실패 시 루프 생존, 1·6만 보류.
+마커 dedup: (마커, 카드, 키) 재게시 금지. 임베딩 실패 시 루프 생존, 1·4만 보류.
 """
 import datetime
 import json
@@ -306,7 +306,7 @@ def cycle(index, seen, fetcher=None, poster=None, boundary_predicates=None):
                                 f"name={pred.get('name', '')} — "
                                 f"{pred.get('effect', '자동화 대상 제외')} "
                                 f"(docs/automation-boundary.md §3)")
-    # --- 1·6: 분류기 + 중복 감지(임베딩 필요 — 실패 시 이 구간만 보류) ---
+    # --- 1·4: 분류기 + 중복 감지(임베딩 필요 — 실패 시 이 구간만 보류) ---
     # 사람 승인(경계 밖) 카드는 제안 대상에서 제외 — 오염 방지(K91X 금지 조항).
     unclassified = [i for i in issues if i["state"] in ("todo", "backlog")
                     and not [l for l in (i.get("labels") or []) if l != "auto"]
@@ -346,7 +346,7 @@ def cycle(index, seen, fetcher=None, poster=None, boundary_predicates=None):
         iid, st = i["id"], i["state"]
         comments = _comments(iid, fetcher)
 
-        # --- 7: fix 위임 미실행 감시(BG97 감지부) — [ci-fix] 위임 후 무진행 또는 즉시 실패 ---
+        # --- 2: fix 위임 미실행 감시(BG97 감지부) — [ci-fix] 위임 후 무진행 또는 즉시 실패 ---
         if st not in ("done", "cancelled"):
             fix_c = _fix_marker(comments)
             if fix_c:
@@ -367,9 +367,9 @@ def cycle(index, seen, fetcher=None, poster=None, boundary_predicates=None):
                                     f"src_pr={spr} src_head={shead} attempt={att_card} "
                                     f"minutes={minutes:.0f} "
                                     f"kind={'dispatch-failed' if immediate else 'no-progress'} "
-                                    f"— tt-review-fix 재발령 검토(BG97)")
+                                    f"— [ci-fix] 위임 재발령 검토(BG97)")
 
-        # --- 5: 판정 워처 ---
+        # --- 3: 판정 워처 ---
         for c in comments:
             b = c.get("body") or ""
             head = b.split("\n", 1)[0].strip()

@@ -4,9 +4,15 @@
 
 ## 0. 결론 요약
 
+> **현행화 노트(2026-10-20, D1/D2)** — 가지치기 2차에서 생산자가 사라진 감지 3종이
+> 제거됐다: 데몬 [submit-remind](lease 임박, D2 #199 — probe가 유일 생산자),
+> [review-stall](D1 #196), [rework-stuck](D1 #196). 아래 스키마·키·소비 계약의
+> 해당 행은 이력 보존용으로 남기되 '제거됨' 표기다. 현재 데몬 감지는 4종:
+> [auto-classified]·[fix-stall]([ci-fix] 전용)·[verdict-seen]·[possible-duplicate].
+
 1. **역할 분리는 v1에서 확정된 그대로다.** 데몬은 관측·마커 생성만, 액션은 probe 단일 실행자. state PATCH 경로는 코드에 존재하지 않으며 정적 검사 테스트가 보장한다. 서버 코드 변경 0.
 2. **v2의 유일한 변경은 마커 스키마 구조화다.** v1 마커는 사람 가독형 문장이라 probe·JXYS·BG97의 행동부가 기계적으로 파싱할 수 없었다. v2는 6종 마커에 정규화된 필드를 넣어 행동부 계약으로 만든다.
-3. **probe 소비는 이번 사이클에 구현하지 않는다.** [rework-stuck]→BG97, [submit-remind]→JXYS — 행동부는 각 카드 구현 범위다. 본 문서는 계약만 고정한다.
+3. **probe 소비는 이번 사이클에 구현하지 않는다.** [rework-stuck]→BG97, [submit-remind]→JXYS — 행동부는 각 카드 구현 범위다. 본 문서는 계약만 고정한다. *(두 감지는 D1/D2에서 제거됐다 — 위 현행화 노트)*
 4. **기존 계약 보존**: probe 코멘트 마커 7종(`[review-req #` 등), author=probe dedup, 409 코드는 건드리지 않는다. 데몬 마커는 author=tt-embedding-daemon으로 무충돌.
 
 ## 1. 실측 → 파라미터 매핑
@@ -37,9 +43,9 @@ v1 운영·실험 실측(2026-10-11, mini)이 그대로 근거다.
 ```
 [auto-classified] label=<label> gap=<Δ> refs=<id1,id2>
 [possible-duplicate] ref=<card_id> sim=<x.xx>
-[submit-remind] agent=<lease_by> lease_expires=<iso8601> head=<sha8|->
-[review-stall] reviewer=<agent> since_hours=<n> req_ts=<iso8601>
-[rework-stuck] src_kind=<probe마커kind> src_att=<a{n}|-> src_pr=<n> src_head=<sha8> attempt=<n> target=<agent> kind=<404|non-executor|failed>
+[submit-remind] agent=<lease_by> lease_expires=<iso8601> head=<sha8|->  # 제거됨(D2 #199)
+[review-stall] reviewer=<agent> since_hours=<n> req_ts=<iso8601>  # 제거됨(D1 #196)
+[rework-stuck] src_kind=<probe마커kind> src_att=<a{n}|-> src_pr=<n> src_head=<sha8> attempt=<n> target=<agent> kind=<404|non-executor|failed>  # 제거됨(D1 #196)
 [verdict-seen] key=<card_id>:<comment_id>
 [fix-stall] src_kind=<probe마커kind> src_att=<a{n}|-> src_pr=<n> src_head=<sha8> attempt=<n> minutes=<n> kind=<no-progress|dispatch-failed>
 ```
@@ -48,9 +54,9 @@ v1 운영·실험 실측(2026-10-11, mini)이 그대로 근거다.
 
 | 마커 | 이벤트 키 |
 | --- | --- |
-| [rework-stuck] | src_kind + src_att + src_pr + src_head + attempt + target + kind |
-| [submit-remind] | agent + lease_expires + head |
-| [review-stall] | reviewer + req_ts |
+| [rework-stuck] | src_kind + src_att + src_pr + src_head + attempt + target + kind — **제거됨(D1 #196)** |
+| [submit-remind] | agent + lease_expires + head — **제거됨(D2 #199, probe가 유일 생산자)** |
+| [review-stall] | reviewer + req_ts — **제거됨(D1 #196)** |
 | [auto-classified] | label |
 | [possible-duplicate] | ref |
 | [verdict-seen] | key (card:comment_id) |
@@ -69,13 +75,13 @@ probe 원본 마커는 공백을 포함하므로(`[review-fix #93/c661baaa]`, `[
 
 | 마커 | 소비자 | 계약 |
 | --- | --- | --- |
-| [rework-stuck] | BG97 | src·target을 review-fix 재라우팅 힌트로 사용. BG97 dedup 키 (사유, PR, SHA, attempt)와 정합 — src_kind+kind가 사유, src_pr·src_head가 PR·SHA, 마커 `attempt`가 카드 회차에 대응. src_head ≠ 현재 head 또는 attempt ≠ 현재 execution_attempt면 과거 사건 — 현재 회차 입력에서 제외하고 새 이벤트로 재확인. 과거 원본 실패를 현재 attempt로 다시 태깅하지 않는다 |
-| [submit-remind] | JXYS | agent·lease_expires·head로 무반응 승격 카운터 입력. 카운터는 현재 lease·현재 head 기준 — head 변경 시 리셋(JXYS 검증기준 3), lease_expires가 현재 lease와 다른 과거 마커는 카운터 입력으로 쓰지 않는다 |
+| [rework-stuck] | BG97 | **제거됨(D1 #196)** — 이력. | src·target을 review-fix 재라우팅 힌트로 사용. BG97 dedup 키 (사유, PR, SHA, attempt)와 정합 — src_kind+kind가 사유, src_pr·src_head가 PR·SHA, 마커 `attempt`가 카드 회차에 대응. src_head ≠ 현재 head 또는 attempt ≠ 현재 execution_attempt면 과거 사건 — 현재 회차 입력에서 제외하고 새 이벤트로 재확인. 과거 원본 실패를 현재 attempt로 다시 태깅하지 않는다 |
+| [submit-remind] | JXYS | **제거됨(D2 #199)** — 이력. | agent·lease_expires·head로 무반응 승격 카운터 입력. 카운터는 현재 lease·현재 head 기준 — head 변경 시 리셋(JXYS 검증기준 3), lease_expires가 현재 lease와 다른 과거 마커는 카운터 입력으로 쓰지 않는다 |
 | [auto-classified] | 사람/트리아지 | label 채택·기각 — 채택되면 라벨 카드가 되어 다음 폴링에 참표 편입(자동) |
 | [possible-duplicate] | 사람/트리아지 | ref 중복 확인 — 자동 취소 없음 |
-| [review-stall] | 12MZ | 감지 보조 기록 — probe 자체 감지와 중복돼도 무해(이벤트 키 상이). 이벤트 키당 1회, 장기 정체 재알림은 소비자 정책 |
+| [review-stall] | 12MZ | **제거됨(D1 #196)** — 이력. | 감지 보조 기록 — probe 자체 감지와 중복돼도 무해(이벤트 키 상이). 이벤트 키당 1회, 장기 정체 재알림은 소비자 정책 |
 | [verdict-seen] | 없음 | 관측 다이제스트. 액션 없음 |
-| [fix-stall] | BG97 | review-fix 재발령 입력. minutes·kind로 무진행과 즉시실패 구분 — dispatch-failed는 즉시 발화(대기 없음), no-progress는 TT_DAEMON_FIX_STALL_MIN(기본 45분) 경과 후. 진행 증거(dispatch 실행 코멘트·재리뷰·판정·수령)가 마커 뒤에 있으면 침묵. 발단: PR#93 [review-fix] 위임 후 dispatch 미실행을 사람이 발견(2026-10-11), PR#114는 '수정 dispatch 실패(에이전트 미등록)'로 기록 |
+| [fix-stall] | BG97 | [ci-fix] 위임 재발령 입력(D1로 review-fix 위임 감시 퇴역). minutes·kind로 무진행과 즉시실패 구분 — dispatch-failed는 즉시 발화(대기 없음), no-progress는 TT_DAEMON_FIX_STALL_MIN(기본 45분) 경과 후. 진행 증거(dispatch 실행 코멘트·재리뷰·판정·수령)가 마커 뒤에 있으면 침묵. 발단: PR#93 [review-fix] 위임 후 dispatch 미실행을 사람이 발견(2026-10-11), PR#114는 '수정 dispatch 실패(에이전트 미등록)'로 기록 |
 
 ## 3. 검증 기준 (M4NHG5DF-5YM3)
 
