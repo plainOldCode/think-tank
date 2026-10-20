@@ -43,6 +43,23 @@ def test_graph_deterministic():
     assert s1._card_pr_urls == s2._card_pr_urls
 
 
+def test_comment_url_candidate_observed_failed_triggers_observe_failed():
+    """RC 회귀(agy a3) — 코멘트 PR URL 후보의 관측 실패는 'PR 없음'이 아니라
+    observe-failed다. 그래프 치환에서 후보를 (repo, pr) 튜플 세트로 넣어
+    observed 매칭이 깨졌던 결함의 재발 방지. repo 출처만 코멘트 URL(T3YT 픽스처 재사용)."""
+    from test_t3yt import issue as t3_issue, snap as t3_snap, OLD, REPO
+    i = t3_issue("M58SPX0G-NB5T", body="코멘트의 PR만 후보")  # repo 마커 없음
+    i["comments"] = [{"id": 2, "author": "codex",
+                      "body": f"관련: https://github.com/{REPO}/pull/9"}]
+    s = t3_snap([i], prs=[], pr_observed={REPO: "failed"}, degraded=["pr_list"])
+    acts = core.decide(s)
+    notes = [a for a in acts if a.get("issue") == i["id"]]
+    assert not any("needs-merge" in (a.get("marker") or "") for a in notes), \
+        "관측 실패 repo는 'PR 없음' 판정 금지"
+    om = [a for a in notes if "observe-failed" in (a.get("marker") or "")]
+    assert om and REPO in om[0]["reason"]
+
+
 def test_parse_helpers_keep_contracts():
     """비-decide 호출자용 위임 함수도 정본 파서와 동일 결과."""
     issue = _rich_issue()

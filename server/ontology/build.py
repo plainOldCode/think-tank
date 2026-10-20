@@ -28,9 +28,9 @@ def parse_comment_pr_repos(comments):
 class Graph:
     """카드 중심 관계 질의 — decide의 재파싱 지점을 대체한다(NB5T 단계 치환).
 
-    P5(M5BH91TA-S28F) — 레거시 [review-req] 질의(parse_requested·requested_reviewers)와
-    edge 저장소(add_edge·has_edge·edges·link_pr)는 prod 리더가 없어 제거했다. 유일
-    질의는 comment_pr_repos(core.py decide ③). edge provenance는 문서 RD §4.1 역사.
+    P5(M5BH91TA-S28F) — 레거시 [review-req] 질의와 edge 저장소(_edges 계열)는
+    prod 리더가 없어 제거했다. 유일 질의는 comment_pr_repos(core.py decide ③).
+    edge provenance는 문서 RD §4.1 역사.
     """
 
     def __init__(self):
