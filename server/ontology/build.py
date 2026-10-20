@@ -8,7 +8,6 @@ author·attempt·repo·pr·sha)를 갖는다. 동일 스냅샷 → 동일 그래
 import re
 
 PR_URL = re.compile(r"https://github\.com/([\w.-]+/[\w.-]+)/pull/(\d+)")
-PR_SHA = re.compile(r"#(\d+)/([0-9a-fA-F]{8})")
 
 
 def parse_comment_pr_repos(comments):
@@ -25,40 +24,17 @@ def parse_comment_pr_repos(comments):
     return seen
 
 
-def parse_requested(comments):
-    """[review-req #pr/sha8] 마커의 '→ <agent>' → {(pr_no, sha8): set(agent)}.
-
-    core._requested_reviewers의 정본 구현 — probe 코멘트만, (pr, sha8) 단위."""
-    table = {}
-    for c in comments or []:
-        if c.get("author") != "probe":
-            continue
-        body = c.get("body") or ""
-        m = re.search(r"→\s*(\S+)", body)
-        if not m:
-            continue
-        agent = m.group(1).rstrip(".")
-        for pm in PR_SHA.finditer(body):
-            table.setdefault((int(pm.group(1)), pm.group(2).lower()), set()).add(agent)
-    return table
-
 
 class Graph:
-    """카드 중심 관계 질의 — decide의 재파싱 지점을 대체한다(NB5T 단계 치환)."""
+    """카드 중심 관계 질의 — decide의 재파싱 지점을 대체한다(NB5T 단계 치환).
+
+    P5(M5BH91TA-S28F) — 레거시 [review-req] 질의(parse_requested·requested_reviewers)와
+    edge 저장소(add_edge·has_edge·edges·link_pr)는 prod 리더가 없어 제거했다. 유일
+    질의는 comment_pr_repos(core.py decide ③). edge provenance는 문서 RD §4.1 역사.
+    """
 
     def __init__(self):
-        self._edges = []            # (s, p, o, prov)
         self._card_pr_urls = {}     # card_id → [(repo, pr_no)]
-        self._card_review_req = {}  # card_id → {(pr_no, sha8): set(agent)}
-
-    def add_edge(self, s, p, o, **prov):
-        self._edges.append((s, p, o, prov))
-
-    def has_edge(self, s, p, o):
-        return any(e[0] == s and e[1] == p and e[2] == o for e in self._edges)
-
-    def edges(self):
-        return list(self._edges)
 
     def set_comment_pr_repos(self, card_id, pairs):
         self._card_pr_urls[card_id] = list(pairs)
@@ -67,23 +43,10 @@ class Graph:
         """Card —commentUrl→ PR — 코멘트 등장 순 중복 제거."""
         return list(self._card_pr_urls.get(card_id) or [])
 
-    def set_requested(self, card_id, table):
-        self._card_review_req[card_id] = {k: set(v) for k, v in table.items()}
-
-    def requested_reviewers(self, card_id, pr_no, sha8):
-        """Card@PR@Head —requestedToReview→ Agent(probe 마커 출처)."""
-        return set(self._card_review_req.get(card_id, {}).get((pr_no, (sha8 or "").lower()), set()))
-
-    def link_pr(self, card_id, repo, pr_no, sha=None, **prov):
-        self.add_edge(card_id, "linkedTo", f"{repo}#{pr_no}",
-                      repo=repo, pr=pr_no, sha=sha, **prov)
-
 
 def build_graph(snap):
     """스냅샷 → Graph 투영. 결정적 — 동일 스냅샷은 동일 그래프."""
     g = Graph()
     for i in snap.get("issues") or []:
-        comments = i.get("comments") or []
-        g.set_comment_pr_repos(i["id"], parse_comment_pr_repos(comments))
-        g.set_requested(i["id"], parse_requested(comments))
+        g.set_comment_pr_repos(i["id"], parse_comment_pr_repos(i.get("comments") or []))
     return g

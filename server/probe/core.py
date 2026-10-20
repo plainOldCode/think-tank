@@ -662,11 +662,6 @@ class _DecideCtx:
         # 재파싱 지점을 질의로 대체한다. 동작 불변 — golden 9종이 하드 조건.
         from ontology.build import build_graph
         self.graph = build_graph(snap)
-        for p in snap.get("prs") or []:
-            _iid = pr_card_id(p)
-            if _iid:
-                self.graph.link_pr(_iid, p.get("repo") or "", p.get("number") or 0,
-                                   sha=(p.get("head_sha") or "") or None)
         rmap = effective_review_map()  # 카운터파트 라우팅(M4JTJ970-WS3C) — env override 포함
         # 런타임 설정(XV84) — 저장 설정이 코드 기본을 덮는다. decide는 순수 함수라
         # snap에 조달된다(snapshot에서 GET /settings/review-routing).
