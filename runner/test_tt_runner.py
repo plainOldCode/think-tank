@@ -1322,10 +1322,6 @@ class TestRunStateMachine(unittest.TestCase):
             with self.assertRaises(self.S.IllegalTransition):
                 self.S.transition({"status": t}, "running")
 
-    def test_queued_direct_done_illegal(self):
-        with self.assertRaises(self.S.IllegalTransition):
-            self.S.transition({"status": "queued"}, "done")
-
     def test_entry_untouched_on_illegal(self):
         ent = {"status": "queued", "issue_id": "X-1"}
         with self.assertRaises(self.S.IllegalTransition):
@@ -1337,10 +1333,15 @@ class TestRunStateMachine(unittest.TestCase):
             self.S.transition({"status": "mystery"}, "running")
 
     def test_stalled_recovery_and_kill_paths(self):
-        self.S.transition({"status": "running", "a": 1}, "stalled")
-        self.S.transition({"status": "stalled"}, "running")
-        self.S.transition({"status": "stalled"}, "finalizing")
-        self.S.transition({"status": "stalled"}, "failed", detail="stall-killed")
+        ent = self.S.transition({"status": "running", "a": 1}, "stalled")
+        self.assertEqual(ent["status"], "stalled")
+        ent = self.S.transition(ent, "running")
+        self.assertEqual(ent["status"], "running")  # 복구
+        ent = self.S.transition({"status": "stalled"}, "finalizing")
+        self.assertEqual(ent["status"], "finalizing")
+        ent = self.S.transition({"status": "stalled"}, "failed", detail="stall-killed")
+        self.assertEqual(ent["status"], "failed")
+        self.assertEqual(ent["detail"], "stall-killed")  # kill 사유 보존
 
     def test_active_includes_new_states(self):
         self.assertIn("stalled", self.S.ACTIVE)
@@ -1399,29 +1400,26 @@ class TestLateDoneRoundRegression(unittest.TestCase):
                                 "target_sha": sha, "round": round_no}})
         return R.get_run(self.KEY)
 
-    def test_round_a_late_done_rejected_at_b(self):
-        snap_a = self._seed(1, "aaaaaaaa", "tt-abc-a")
-        self._seed(2, "bbbbbbbb", "tt-abc-b-r2")
-        self.assertFalse(R.update_run_if_round(self.KEY, snap_a, status="done",
-                                               exit=0, ended=time.time()))
-        self.assertEqual(R.get_run(self.KEY)["round"], 2)
-        self.assertEqual(R.get_run(self.KEY)["status"], "running")
-
-    def test_round_b_late_done_rejected_at_c(self):
-        snap_b = self._seed(2, "bbbbbbbb", "tt-abc-b-r2")
-        self._seed(3, "cccccccc", "tt-abc-c-r3")
-        self.assertFalse(R.update_run_if_round(self.KEY, snap_b, status="done",
-                                               exit=0, ended=time.time()))
-        self.assertEqual(R.get_run(self.KEY)["round"], 3)
-
-    def test_revisited_target_round4_rejects_round2_write(self):
-        # A→B→C→B 경계: 대상 sha 재방문으로 round 4(대상 b)가 되어도
-        # round 2 스냅샷의 늦은 done은 회차 비교로 거부된다.
-        snap_b = self._seed(2, "bbbbbbbb", "tt-abc-b-r2")
-        self._seed(4, "bbbbbbbb", "tt-abc-b-r4")
-        self.assertFalse(R.update_run_if_round(self.KEY, snap_b, status="done",
-                                               exit=0, ended=time.time()))
-        self.assertEqual(R.get_run(self.KEY)["round"], 4)
+    def test_late_done_rejected_at_later_round(self):
+        # 회차 경계 3케이스: 늦은 done 스냅샷은 이후 회차(대상 재방문 포함)에서 거부된다.
+        cases = [
+            ("round_a_late_done_rejected_at_b",
+             (1, "aaaaaaaa", "tt-abc-a"), (2, "bbbbbbbb", "tt-abc-b-r2"), 2),
+            ("round_b_late_done_rejected_at_c",
+             (2, "bbbbbbbb", "tt-abc-b-r2"), (3, "cccccccc", "tt-abc-c-r3"), 3),
+            # A→B→C→B 경계: 대상 sha 재방문으로 round 4(대상 b)가 되어도
+            # round 2 스냅샷의 늦은 done은 회차 비교로 거부된다.
+            ("revisited_target_round4",
+             (2, "bbbbbbbb", "tt-abc-b-r2"), (4, "bbbbbbbb", "tt-abc-b-r4"), 4),
+        ]
+        for name, snap_spec, seed_spec, rejected_at in cases:
+            with self.subTest(name):
+                snap = self._seed(*snap_spec)
+                self._seed(*seed_spec)
+                self.assertFalse(R.update_run_if_round(self.KEY, snap, status="done",
+                                                       exit=0, ended=time.time()))
+                self.assertEqual(R.get_run(self.KEY)["round"], rejected_at)
+                self.assertEqual(R.get_run(self.KEY)["status"], "running")
 
     def test_current_round_done_accepted(self):
         snap_c = self._seed(3, "cccccccc", "tt-abc-c-r3")

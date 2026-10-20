@@ -67,32 +67,29 @@ def test_parse_sse_accepts_bytes_and_ping_among_events():
 
 # ---------- 필터 로직 ----------
 
-def test_comment_signal_on_my_card_wakes():
-    row = _row(payload={"author": "agy", "preview": "review: approve\n좋다"})
-    prompt = R.handle_event(row, cache=_cache())
-    assert prompt is not None and "I-1" in prompt and "review: approve" in prompt
-
-
-def test_comment_request_changes_wakes():
-    row = _row(payload={"author": "reviewer@host",
-                        "preview": "review: request-changes\n필수 수정 1) ..."})
-    assert R.handle_event(row, cache=_cache()) is not None
-
-
-def test_comment_merge_hash_wakes():
-    row = _row(payload={"author": "claude",
-                        "preview": "PR delivery: github:x#113 head=aa base=main\nmerge=fb9c5675"})
-    assert R.handle_event(row, cache=_cache()) is not None
-
-
-def test_probe_ci_fail_comment_wakes_assignee():
+@pytest.mark.parametrize("kind,payload,expect", [
+    ("comment.added", {"author": "agy", "preview": "review: approve\n좋다"},
+     ["I-1", "review: approve"]),
+    ("comment.added", {"author": "reviewer@host",
+                       "preview": "review: request-changes\n필수 수정 1) ..."}, None),
+    ("comment.added", {"author": "claude",
+                       "preview": "PR delivery: github:x#113 head=aa base=main\nmerge=fb9c5675"}, None),
     # 7FQH — probe ci-fix 위임 코멘트(작업자 wake). preview[:120] 잘림 대비
     # [CI:fail]은 첫 줄, 마커 dedup 라인은 둘째 줄.
-    row = _row(payload={"author": "probe",
-                        "preview": "[CI:fail] @tester@ci #115 — tests 확인하라\n"
-                                   "[ci-fix a3 #115/7941d573] PR#115 CI 실패 — 위임"})
+    ("comment.added", {"author": "probe",
+                       "preview": "[CI:fail] @tester@ci #115 — tests 확인하라\n"
+                                  "[ci-fix a3 #115/7941d573] PR#115 CI 실패 — 위임"},
+     ["[CI:fail]", "#115"]),
+    ("issue.updated", {"state": "done", "fields": ["state"]}, None),
+    ("issue.updated", {"state": "blocked", "fields": ["state"]}, None),
+], ids=["comment_signal_on_my_card", "comment_request_changes", "comment_merge_hash",
+        "probe_ci_fail_comment_wakes_assignee", "issue_updated_done", "issue_updated_blocked"])
+def test_wake_signals(kind, payload, expect):
+    row = _row(kind=kind, payload=payload)
     prompt = R.handle_event(row, cache=_cache())
-    assert prompt is not None and "[CI:fail]" in prompt and "#115" in prompt
+    assert prompt is not None
+    for substr in expect or []:
+        assert substr in prompt
 
 
 def test_probe_ci_fail_다른_담당자면_무시():
@@ -101,66 +98,33 @@ def test_probe_ci_fail_다른_담당자면_무시():
     assert R.handle_event(row, cache=_cache(assignee="other@host")) is None
 
 
-def test_signal_mid_sentence_ignored():
-    """판정 필수 1 — 접수 안내 문구 본문 중간의 신호어는 매칭하지 않는다."""
-    row = _row(payload={"author": "some-agent",
-                        "preview": "보고 접수. 이후 verify → done 흐름으로 종결됩니다"})
-    assert R.handle_event(row, cache=_cache()) is None
-
-
-def test_tt_server_receipt_comment_never_wakes():
-    """판정 필수 1 — tt-server 접수 코멘트는 신호어가 줄 시작에 와도 무시한다."""
-    row = _row(payload={"author": "tt-server",
-                        "preview": "접수됨: verify → done 흐름 안내\nreview: approve 대기"})
-    assert R.handle_event(row, cache=_cache()) is None
-
-
-def test_self_comment_never_wakes():
-    row = _row(payload={"author": R.TT_AGENT,
-                        "preview": "merge=abc 내 보고"})
-    assert R.handle_event(row, cache=_cache()) is None
-
-
-def test_other_assignee_card_ignores():
-    row = _row(payload={"author": "agy", "preview": "review: approve"})
-    assert R.handle_event(row, cache=_cache(assignee="other@host")) is None
+@pytest.mark.parametrize("kind,payload,cache_assignee", [
+    # 담당자 불일치 캐시 — 다른 카드 이벤트는 깨우지 않는다
+    ("comment.added", {"author": "agy", "preview": "review: approve"}, "other@host"),
+    # 판정 필수 1 — 접수 안내 문구 본문 중간의 신호어는 매칭하지 않는다
+    ("comment.added", {"author": "some-agent",
+                       "preview": "보고 접수. 이후 verify → done 흐름으로 종결됩니다"}, None),
+    # 판정 필수 1 — tt-server 접수 코멘트는 신호어가 줄 시작에 와도 무시한다
+    ("comment.added", {"author": "tt-server",
+                       "preview": "접수됨: verify → done 흐름 안내\nreview: approve 대기"}, None),
+    ("comment.added", {"author": R.TT_AGENT, "preview": "merge=abc 내 보고"}, None),
+    ("comment.added", {"author": "agy", "preview": "진행 중입니다"}, None),
+    # 판정 필수 2 — service.bump() 노이즈: state가 fields에 없으면 무시
+    ("issue.updated", {"state": "done", "fields": ["updated_at", "blocked_detail"]}, None),
+    ("issue.updated", {"state": "done"}, None),  # fields 없음 → 보수적 무시
+    ("issue.updated", {"state": "in_progress", "fields": ["state"]}, None),
+], ids=["other_assignee_card", "signal_mid_sentence", "tt_server_receipt", "self_comment",
+        "comment_without_signal", "issue_updated_without_state_change",
+        "issue_updated_state_missing_fields", "issue_updated_in_progress"])
+def test_no_wake_signals(kind, payload, cache_assignee):
+    row = _row(kind=kind, payload=payload)
+    assert R.handle_event(row, cache=_cache(assignee=cache_assignee)) is None
 
 
 def test_dispatch_entity_ignores_without_issue_fetch():
     row = _row(kind="dispatch.updated", entity="dispatch", entity_id="D-9",
                payload={"state": "done"})
     assert R.handle_event(row, cache=None) is None
-
-
-def test_issue_updated_done_and_blocked_wake():
-    done = _row(kind="issue.updated", payload={"state": "done", "fields": ["state"]})
-    assert R.handle_event(done, cache=_cache()) is not None
-    blocked = _row(kind="issue.updated",
-                   payload={"state": "blocked", "fields": ["state"]})
-    assert R.handle_event(blocked, cache=_cache()) is not None
-
-
-def test_issue_updated_without_state_change_no_wake():
-    """판정 필수 2 — service.bump() 노이즈: state가 fields에 없으면 무시."""
-    row = _row(kind="issue.updated",
-               payload={"state": "done", "fields": ["updated_at", "blocked_detail"]})
-    assert R.handle_event(row, cache=_cache()) is None
-
-
-def test_issue_updated_state_missing_fields_no_wake():
-    row = _row(kind="issue.updated", payload={"state": "done"})  # fields 없음 → 보수적 무시
-    assert R.handle_event(row, cache=_cache()) is None
-
-
-def test_issue_updated_in_progress_no_wake():
-    row = _row(kind="issue.updated",
-               payload={"state": "in_progress", "fields": ["state"]})
-    assert R.handle_event(row, cache=_cache()) is None
-
-
-def test_comment_without_signal_no_wake():
-    row = _row(payload={"author": "agy", "preview": "진행 중입니다"})
-    assert R.handle_event(row, cache=_cache()) is None
 
 
 # ---------- 콜드 스타트 ----------

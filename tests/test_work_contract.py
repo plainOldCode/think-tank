@@ -500,11 +500,11 @@ def test_human_verify_노트_없으면_거부(client):
 def test_human_자가승인은_허용하되_이름_나란히_기록(client):
     issue = start(client)  # assignee=worker
     r = client.post(f"/issues/{issue['id']}/verify",
-                    json={"verifier": "probe", "evidence": "직접 확인", "human": True})
+                    json={"verifier": "worker", "evidence": "직접 확인", "human": True})
     assert r.status_code == 200
     comments = client.get(f"/issues/{issue['id']}").json()["comments"]
     body = next(c["body"] for c in comments if "사람 승인" in c["body"])
-    assert "worker" in body and "assignee" in body.lower() or "작업" in body
+    assert "worker" in body and ("assignee" in body.lower() or "작업" in body)
 
 
 def test_claim_review는_review상태에서만_가능하고_상태를_바꾸지_않는다(client):

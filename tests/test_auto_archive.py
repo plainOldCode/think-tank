@@ -116,16 +116,6 @@ def test_completed_before_필터는_나이로_직접_고른다(client, tmp_path)
     assert [c["id"] for c in r.json()] == [old_i["id"]]
 
 
-def test_재개된_카드는_archived가_해제된다(client):
-    """P77 R2 후속: done→todo 재개 시 archived=1 잔존 방지."""
-    i = _mk(client)
-    _done(client, i["id"])
-    _age(tmp_path_factory(), i["id"]) if False else None
-    # (나이 무관 — archived 플래그만 확인)
-    import sqlite3
-    con = sqlite3.connect(str(client.app.state.db_path) if hasattr(client.app, "state") else None)
-
-
 def test_재개된_카드는_archived가_해제된다(client, tmp_path):
     """P77 R2 후속: done→todo 재개 시 archived=1 잔존 방지."""
     i = _mk(client)
@@ -155,10 +145,13 @@ def test_스윕은_서버_엔드포인트를_한_번_걷는다(monkeypatch):
 def test_스윕은_비활성_409를_조용히_넘긴다(monkeypatch):
     import probe.core
     import urllib.error
+    calls = []
     def fake(url, path, method="GET", body=None):
+        calls.append((url, path, method))
         raise urllib.error.HTTPError(path, 409, "disabled", None, None)
     monkeypatch.setattr(probe.core, "api", fake)  # 예외 없이 통과해야 한다
     probe.core.execute("http://x", {"agent": "probe", "action": "archive-sweep", "days": 14})
+    assert calls == [("http://x", "/maintenance/archive-sweep", "POST")]  # 스윕 경로 1회 호출
 
 
 def test_스윕은_나이순이라_보존이_뒤를_가리지_못한다(client, tmp_path):

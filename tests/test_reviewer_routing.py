@@ -115,27 +115,24 @@ def test_매핑확장으로도_가족_우회_자기리뷰_불가():
 
 # --- pick_reviewer: 미가용 폴백 (검증기준 — 폴백 순서 회귀) ---
 
-def test_1순위_오프라인이면_폴백한다():
-    agents = _agents("claude", "kanban-adapter", "opencode-tp13")  # codex 오프라인
-    assert pick_reviewer("opencode-tp13", agents, set(), RMAP) == "claude"
-
-
-def test_폴백순서는_agy_다음_codex_다음_claude다():
+@pytest.mark.parametrize("impl,available,leases,expected", [
+    # 1순위 오프라인 → 폴백 (codex 오프라인)
+    ("opencode-tp13", ["claude", "kanban-adapter", "opencode-tp13"], set(), "claude"),
     # codex 구현 → claude 1순위(카운터파트 표). claude 오프라인 → agy
-    agents = _agents("codex", "agy")
-    assert pick_reviewer("codex", agents, set(), RMAP) == "agy"
+    ("codex", ["codex", "agy"], set(), "agy"),
     # agy도 오프라인 → codex는 자기 리뷰라 제외 → claude가 남지만 이미 오프라인 → None
-    assert pick_reviewer("codex", _agents("codex"), set(), RMAP) is None
+    ("codex", ["codex"], set(), None),
     # opencode 구현 → codex 1순위 오프라인 → agy → agy도 오프라인 → claude
-    agents2 = _agents("opencode-tp13", "claude")
-    assert pick_reviewer("opencode-tp13", agents2, set(), RMAP) == "claude"
-
-
-def test_폴백에서도_구현가족은_제외된다():
-    # codex 구현: claude·kanban-adapter 모두 오프라인 → codex는 자기 리뷰라 제외 → None
-    agents = _agents("codex", "opencode-tp13")
-    assert pick_reviewer("codex", agents, set(), RMAP) is None
-    assert pick_reviewer("codex", agents + _agents("claude"), set(), RMAP) == "claude"
+    ("opencode-tp13", ["opencode-tp13", "claude"], set(), "claude"),
+    # 구현가족 제외: codex 구현 — claude·kanban-adapter 모두 오프라인 → 자기 리뷰 제외 → None
+    ("codex", ["codex", "opencode-tp13"], set(), None),
+    # 같은 구성에 claude만 온라인이면 claude 지목
+    ("codex", ["codex", "opencode-tp13", "claude"], set(), "claude"),
+], ids=["first_choice_offline_falls_back", "fallback_order_agy_codex_claude",
+        "all_offline_yields_none", "opencode_two_step_fallback",
+        "impl_family_excluded", "impl_family_included_when_online"])
+def test_폴백_순서(impl, available, leases, expected):
+    assert pick_reviewer(impl, _agents(*available), leases, RMAP) == expected
 
 
 def test_리스_보유_리뷰어는_미가용이다():

@@ -194,20 +194,16 @@ def test_pr_flags_fill_delivery(cli, tmp_path):
                         "number": 111, "head_sha": head, "base": "main"}
 
 
-def test_absent_delivery_without_pr_becomes_report(cli, tmp_path):
+@pytest.mark.parametrize("pre_delivery,expected_mode",
+                         [(None, "report"),        # 미지정 → report 승격
+                          ({"mode": "local"}, "local")])  # 저장된 local 유지
+def test_delivery_mode_default_and_preserved(cli, tmp_path, pre_delivery, expected_mode):
     run, _ = cli
-    iid, path = claimed_report(run, tmp_path)
+    kw = {} if pre_delivery is None else {"delivery": pre_delivery}
+    iid, path = claimed_report(run, tmp_path, **kw)
     response = run("submit", iid, "--report", str(path), "--json")
     assert response.returncode == 0, response.stderr
-    assert json.loads(response.stdout)["completion_report"]["delivery"]["mode"] == "report"
-
-
-def test_stored_local_delivery_is_not_rewritten(cli, tmp_path):
-    run, _ = cli
-    iid, path = claimed_report(run, tmp_path, delivery={"mode": "local"})
-    response = run("submit", iid, "--report", str(path), "--json")
-    assert response.returncode == 0, response.stderr
-    assert json.loads(response.stdout)["completion_report"]["delivery"]["mode"] == "local"
+    assert json.loads(response.stdout)["completion_report"]["delivery"]["mode"] == expected_mode
 
 
 def test_verify_human_flag_keeps_evidence_and_marks_human(cli):

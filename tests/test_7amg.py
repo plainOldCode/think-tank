@@ -118,7 +118,8 @@ def test_record_failure_does_not_break_decide(tmp_log, tmp_path, monkeypatch):
     os.chmod(tmp_path / "no-dir" / "x", 0o500)  # 쓰기 불가
     try:
         judge_mod.log_decide_actions({"cycle_id": "c"}, [{"action": "x", "issue": "I"}],
-                                     log=broken)
+                                     log=broken)  # 예외가 새지 않는다 — 동작 불변 계약
+        assert not os.path.exists(broken.path)  # 기록 실패 — 파일이 만들어지지 않는다
     finally:
         os.chmod(tmp_path / "no-dir" / "x", 0o700)
 

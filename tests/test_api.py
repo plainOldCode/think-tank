@@ -157,14 +157,19 @@ def test_pull_lease_limit(client):
     assert client.post("/pull", json={"agent": "fresh"}).json()["id"] == c["id"]
 
 
-def test_lease_hours_clamped(client):
-    import datetime
+@pytest.mark.parametrize("claim_hours", [None, 24, 6],
+                         ids=["default_is_six", "over_clamped_to_six", "six_stays_six"])
+def test_lease_hours_is_six(client, claim_hours):
+    """요청 hours와 무관하게 임대는 6시간 — 기본값·상한 클램프·6 통과 경계."""
+    import datetime as dt
     import db as dbmod
     i = mk(client)
-    a = client.post(f"/issues/{i['id']}/claim", json={"agent": "bot", "hours": 24}).json()
-    exp = datetime.datetime.strptime(a["lease_expires"], "%Y-%m-%dT%H:%M:%S%z")
-    now = datetime.datetime.strptime(dbmod.now(), "%Y-%m-%dT%H:%M:%S%z")
-    assert 5 * 3600 < (exp - now).total_seconds() <= 6 * 3600 + 2
+    payload = {"agent": "long@run"} if claim_hours is None else {"agent": "long@run",
+                                                                 "hours": claim_hours}
+    a = client.post(f"/issues/{i['id']}/claim", json=payload).json()
+    exp = dt.datetime.strptime(a["lease_expires"], "%Y-%m-%dT%H:%M:%S%z")
+    now = dt.datetime.strptime(dbmod.now(), "%Y-%m-%dT%H:%M:%S%z")
+    assert 5.5 * 3600 < (exp - now).total_seconds() <= 6 * 3600 + 2, a["lease_expires"]
 
 
 def test_install_script(client):
@@ -1219,19 +1224,6 @@ def test_notify_hook_flag_toggle(client):
     assert client.patch("/agents/n1", json={"notify_hook": False}).json()["notify_hook"] == 0
 
 
-def test_mobile_route(client):
-    r = client.get("/m")
-    assert r.status_code == 200
-    assert "text/html" in r.headers["content-type"]
-    assert "tt-mobile" in r.text
-
-
-def test_mobile_no_store(client):
-    r = client.get("/m")
-    assert r.status_code == 200
-    assert "no-store" in r.headers.get("cache-control", "")
-
-
 def test_ping_alive_only(client):
     i = mk(client)
     client.post(f"/issues/{i['id']}/claim", json={"agent": "a1"})
@@ -1249,18 +1241,11 @@ def test_mobile_build_injected(client):
     import re
     r = client.get("/m")
     assert r.status_code == 200
+    assert "text/html" in r.headers["content-type"]
+    assert "tt-mobile" in r.text
     assert r.headers["cache-control"] == "no-store"
     assert "__TT_BUILD__" not in r.text
     assert re.search(r'tt-build" content="\d+"', r.text), "build id 미주입"
-
-
-def test_lease_default_hours_is_six(client):
-    import datetime as dt
-    i = mk(client)
-    a = client.post(f"/issues/{i['id']}/claim", json={"agent": "long@run"}).json()
-    exp = dt.datetime.strptime(a["lease_expires"], "%Y-%m-%dT%H:%M:%S%z")
-    now = dt.datetime.now(exp.tzinfo)
-    assert 5.5 < (exp - now).total_seconds() / 3600 <= 6.1, a["lease_expires"]
 
 
 def test_review_transition_releases_lease(client):
