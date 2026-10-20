@@ -21,7 +21,7 @@ How probe links PRs to cards and merges them — based on the server worktree ~/
 ## Merge preconditions (all required)
 - Card: work_contract exists + execution_attempt ≥ 1 + state not done/cancelled
 - PR: non-draft + repo match (required when the card names a repo) + all checks SUCCESS
-- Review gate: on the TT path a valid reviewer verdict on the current `review_subject` is required; the legacy `TT_REVIEW_AGENT` env gate was removed (U4 #186) — reviewers come from `settings/review-routing` + the counterparty map (`TT_REVIEW_MAP` override). review-gate.md keeps the retired PR-head design (history)
+- Review gate: on the TT path a valid reviewer verdict on the current `review_subject` is required; the legacy single-agent env gate was removed (U4 #186) — reviewers come from `settings/review-routing` + the counterparty map (`TT_REVIEW_MAP` override). review-gate.md keeps the retired PR-head design (history)
   - Verdict comment contract (TT card, author=reviewer): line 1 `review: approve|request-changes`, line 2 the exact subject token — `TT#<card>@a<attempt>/<hash>` for TT submissions, `PR#<n>@<sha8>` for PR mirrors (server/review_subject.py)
   - Unreviewed→`tt-review`, request-changes→`tt-review-fix` (return + delegate fixing); approval alone does not merge — TT path: matching `delivery` + probe verify → done (delivery receipt)
 - After merging, the server daemon automates verify→done (ZK3G)
