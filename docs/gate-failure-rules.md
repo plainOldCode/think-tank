@@ -5,7 +5,7 @@
 ## 0. 결론 요약
 
 1. **매트릭스 15행 전부를 "규칙표(데이터)"로 확정한다.** LLM이 관여하는 행은 3곳뿐이다 — unknown 분류, no_pr의 문서/코드 구분, ci_failed·evidence_rejected의 사유 요약. 나머지 12행은 규칙만(R), 사람(H), 또는 probe 수정(BUG)으로 처리한다.
-2. **처리 구분(R/R+S/R+C/H/BUG)을 판단기 출력 타입과 정합시킨다.** LLM이 낼 수 있는 출력은 `annotate`(요약)·`rank`(제안)뿐이고, `hold`는 규칙(반복 억제)도 내며, `allow`·`merge`는 규칙 전용이다 — probe-restructure-design.md §5.2 단조성 원칙을 그대로 계승한다.
+2. **처리 구분(R/R+S/R+C/H/BUG)을 판단기 출력 타입과 정합시킨다.** LLM이 낼 수 있는 출력은 `annotate`(요약)·`rank`(제안)뿐이고, `hold`는 규칙(반복 억제)도 내며, `allow`·`merge`는 규칙 전용이다 — docs/archive/probe-restructure-design.md §5.2 단조성 원칙을 그대로 계승한다.
 3. **반복 사건 억제 규칙**: (사유 코드, 범위) 키 카운터가 임계 N에 도달하면 사람에게 1회 통보 후 해당 조합을 스킵한다. 해제는 사람 전용 — probe가 자동 해제하지 않는다. draft_merge_loop(260건/1카드 이상치)의 재발을 막는 주 장치다.
 4. **소형 9B급 모델은 unknown 행 그림자 모드 전용이다.** 제안을 로그로 쌓고 사람이 검토해 표에 정식 반영하는 것이 유일한 반영 경로다. 평가는 count 기반만이고 accuracy류 지표는 측정 불가로 명시한다.
 5. **기존 계약은 보존된다.** policy 안정 코드(`[policy: …]`), probe 코멘트 마커 7종 형식, 409 코드(own_work/lease_held/review_occupied)는 변경하지 않는다. 새 유형 대응은 코드가 아니라 표에 행을 추가하는 방식이다.
@@ -38,8 +38,8 @@
 
 | # | 리뷰 발견사항 | 처리 |
 | --- | --- | --- |
-| 1 | probe-restructure-design.md:535 마크다운 자기 카운트 불일치(펜스 8개 vs 실측 10개·절 16 vs 17) | **본 PR 범위 밖** — 병합 후 소형 정정 카드 권고. 본 문서의 자기 점검 수치는 커밋 시점 실측으로 기록(§8) |
-| 2 | 마커 7종(probe 코멘트) vs 9종(원문 분석 §A) 정의 차이 | 본 문서는 **probe 코멘트 마커 7종 표**(probe-restructure-design.md §4.3: review-req, review-fix, ci-fix, needs-merge, stale-notify, draft-flagged, pr-adopted)를 따른다. 마커 재정의는 하지 않는다 |
+| 1 | docs/archive/probe-restructure-design.md:535 마크다운 자기 카운트 불일치(펜스 8개 vs 실측 10개·절 16 vs 17) | **본 PR 범위 밖** — 병합 후 소형 정정 카드 권고. 본 문서의 자기 점검 수치는 커밋 시점 실측으로 기록(§8) |
+| 2 | 마커 7종(probe 코멘트) vs 9종(원문 분석 §A) 정의 차이 | 본 문서는 **probe 코멘트 마커 7종 표**(docs/archive/probe-restructure-design.md §4.3: review-req, review-fix, ci-fix, needs-merge, stale-notify, draft-flagged, pr-adopted)를 따른다. 마커 재정의는 하지 않는다 |
 | 3 | 판단 로그 스키마에 trace_id 필드 없음(§8.1) vs §12.5 매핑표 행 존재 | §5에서 로그를 인용할 때 trace_id를 **선택 필드**로 명시한다 |
 | 4 | "GPU 약 95% 상시 사용"의 출처 뉘앙스 | 소형 모델 런타임 논의(§7)에서 출처 카드(M4GQ1HSK-P7KQ) 표기를 계승한다 |
 | 5 | 보고서 "단일 파일 555줄" vs 실제 554줄 | 본 문서는 main 문서 554줄(5a90bad 기준 실측)로 표기한다 |
@@ -62,7 +62,7 @@
 
 ### 3.2 출력 타입 매핑 (단조성 원칙 정합)
 
-probe-restructure-design.md §5.2의 단조성 — LLM 출력은 `hold`/`escalate`/`annotate`/`rank` 4값뿐이고 `allow`·`merge`는 규칙만 낸다 — 을 처리 구분에 대응시키면:
+docs/archive/probe-restructure-design.md §5.2의 단조성 — LLM 출력은 `hold`/`escalate`/`annotate`/`rank` 4값뿐이고 `allow`·`merge`는 규칙만 낸다 — 을 처리 구분에 대응시키면:
 
 | 처리 구분 | 규칙이 내는 출력 | LLM이 낼 수 있는 출력 |
 | --- | --- | --- |
@@ -74,7 +74,7 @@ probe-restructure-design.md §5.2의 단조성 — LLM 출력은 `hold`/`escalat
 
 - **allow·merge는 어떤 처리 구분에서도 LLM 출력이 아니다.** 매트릭스 어느 행도 병합 경로를 LLM에 두지 않는다.
 - **LLM 부재 시에도 각 행의 기본 대응은 완결되야 한다**(graceful degrade). 소형 모델은 그림자 모드(§7)로 시작하므로 상시 존재가 아니다. R+S·R+C 행의 규칙 부분은 LLM 없이 동일하게 동작해야 한다.
-- 판단 로그: 모든 LLM 개입은 로그 필수(probe-restructure-design.md §8.1 스키마; trace_id는 선택 필드).
+- 판단 로그: 모든 LLM 개입은 로그 필수(docs/archive/probe-restructure-design.md §8.1 스키마; trace_id는 선택 필드).
 
 ## 4. 사유 코드 규칙표
 
@@ -179,7 +179,7 @@ probe-restructure-design.md §5.2의 단조성 — LLM 출력은 `hold`/`escalat
 > 아래는 역사 기록이다.
 
 - **적용 범위 한정**: C1(unknown 분류)만. C2·S1/S2는 규칙이 1차이고 모델은 보조라, 그림자 시작은 unknown 한 행부터다.
-- **런타임**: dgx-local shadow로 시작(probe-restructure-design.md §7.2 계승 — 판단 로그·게이트 불변). mini 상주는 TT 서버 응답시간 회귀 count 실측(W0~W2)을 통과한 다음에만 검토. 9B급 후보의 구체 모델명·수치는 출처 카드(M4GQ1HSK-P7KQ)의 "계획 가정" 뉘앙스를 유지하며 표기한다 — **실효 성능은 확인 안 됨**.
+- **런타임**: dgx-local shadow로 시작(docs/archive/probe-restructure-design.md §7.2 계승 — 판단 로그·게이트 불변). mini 상주는 TT 서버 응답시간 회귀 count 실측(W0~W2)을 통과한 다음에만 검토. 9B급 후보의 구체 모델명·수치는 출처 카드(M4GQ1HSK-P7KQ)의 "계획 가정" 뉘앙스를 유지하며 표기한다 — **실효 성능은 확인 안 됨**.
 - **평가는 count 기반만**: 제안 수 / 사람이 채택해 표에 반영한 수 / 무응답 수 / 매칭 실패 수. **accuracy·정확률 등 사람 정답이 필요한 지표는 측정 불가로 명시하고 제외한다** — 초안의 원칙(읽는 법)과 설계 문서 §8.3을 그대로 계승.
 - **반영 경로**: 로그 → 사람 검토 → 규칙표 행 추가. 모델이 규칙표를 직접 수정하는 경로는 없다.
 
@@ -227,8 +227,8 @@ probe-restructure-design.md §5.2의 단조성 — LLM 출력은 `hold`/`escalat
 
 - M4JYTVXP-WVBY(본 카드) — 작업 사양·검증기준
 - M4JMYZAX-2BTP 코멘트: 게이트 실패 사유 매트릭스 초안(probe-design@box, 2026-10-10), PR #78 리뷰 판정(kanban-adapter, 2026-10-10 21:35), 리뷰 점유 기록
-- PR #78 — plainOldCode/think-tank, docs/probe-restructure-design.md +554, merged(3ccd38ef), checks 2/2 success
-- probe-restructure-design.md(main, 554줄 @5a90bad) — §5.2 단조성, §4.3 마커 7종, §8.1 판단 로그, §8.3 count 평가
+- PR #78 — plainOldCode/think-tank, docs/docs/archive/probe-restructure-design.md +554, merged(3ccd38ef), checks 2/2 success
+- docs/archive/probe-restructure-design.md(main, 554줄 @5a90bad) — §5.2 단조성, §4.3 마커 7종, §8.1 판단 로그, §8.3 count 평가
 - server/policy.py(origin/main 5a90bad) — reason 코드 목록, LOW_RISK_LABELS
 - server/probe/core.py(origin/main 5a90bad) — 마커 발행 지점(need-merge 385행대, draft-flagged 397-398행대, review-req/fix 324-350행대)
 - M4JTJ970-WS3C — 리뷰어 카운터파트 라우팅(본 문서 lease_conflict_401 행과 정합)

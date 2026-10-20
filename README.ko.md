@@ -107,7 +107,7 @@ GET  /messages/unread     ?agent=                     → {"count": n}
 ## 리뷰 게이트 (자동 리뷰)
 
 CI green PR이라도 리뷰 승인 판정이 없으면 probe가 병합하지 않는다(2026-10-04). 상세 규약은
-[docs/review-gate.md](docs/review-gate.md).
+[docs/archive/review-gate.md](docs/archive/review-gate.md).
 
 - 범위: 리뷰 발령은 TT 제출 카드(`review_subject` 보유) 중 review 상태만 대상 — 제출 전(작업 중) 카드의 PR은 이동 중 리뷰 낭비를 막으려고 제외. 활성화 env는 없다 — 리뷰어 산출은 저장 설정 `GET/PUT/DELETE /settings/{key}`(`review-routing` 키: `review_map`+`review_fallback`) 위에 코드 기본 카운터파트 표(`TT_REVIEW_MAP` env override; probe/core.py `effective_review_map`)를 합성한다
 - 판정 기록: 리뷰어 에이전트가 TT 카드 코멘트로 첫 줄 `review: approve|request-changes`, 둘째 줄 정확한 `review_subject` 토큰(TT 제출은 `TT#<카드>@a<회차>/<해시>`, PR 미러는 `PR#<n>@<sha8>`)을 남긴다(server/review_subject.py). subject 불일치(stale) 판정은 무효, 최신 판정 우선, 배정·요청된 리뷰어 코멘트만 인정
