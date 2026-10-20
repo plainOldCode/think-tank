@@ -5,7 +5,7 @@ v0.1 · 2026-10-04 · Parent: M425EVXW-N0AN · Implementation: probe (M428RMBY-X
 ## Purpose
 
 Q614 supersedes the PR-required lifecycle for cards with a valid submitted report:
-see [TT submission review](tt-submission-review.md). TT verdicts quote the card's
+see [TT submission review](../tt-submission-review.md). TT verdicts quote the card's
 `review_subject`; PR comments are optional mirrors. The PR-head format below
 remains the legacy GitHub adapter's format for cards outside that path.
 
