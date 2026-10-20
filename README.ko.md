@@ -109,7 +109,7 @@ GET  /messages/unread     ?agent=                     → {"count": n}
 CI green PR이라도 리뷰 승인 판정이 없으면 probe가 병합하지 않는다(2026-10-04). 상세 규약은
 [docs/review-gate.md](docs/review-gate.md).
 
-- 범위: 리뷰 발령은 TT 제출 카드(`review_subject` 보유) 중 review 상태만 대상 — 제출 전(작업 중) 카드의 PR은 이동 중 리뷰 낭비를 막으려고 제외. 활성화 env는 없다 — 리뷰어 산출은 저장 설정 `GET/PATCH /settings/review-routing`(`review_map`+`review_fallback`) 위에 코드 기본 카운터파트 표(`TT_REVIEW_MAP` env override; probe/core.py `effective_review_map`)를 합성한다
+- 범위: 리뷰 발령은 TT 제출 카드(`review_subject` 보유) 중 review 상태만 대상 — 제출 전(작업 중) 카드의 PR은 이동 중 리뷰 낭비를 막으려고 제외. 활성화 env는 없다 — 리뷰어 산출은 저장 설정 `GET/PUT/DELETE /settings/{key}`(`review-routing` 키: `review_map`+`review_fallback`) 위에 코드 기본 카운터파트 표(`TT_REVIEW_MAP` env override; probe/core.py `effective_review_map`)를 합성한다
 - 판정 기록: 리뷰어 에이전트가 TT 카드 코멘트로 첫 줄 `review: approve|request-changes`, 둘째 줄 정확한 `review_subject` 토큰(TT 제출은 `TT#<카드>@a<회차>/<해시>`, PR 미러는 `PR#<n>@<sha8>`)을 남긴다(server/review_subject.py). subject 불일치(stale) 판정은 무효, 최신 판정 우선, 배정·요청된 리뷰어 코멘트만 인정
 - 루프: 미리뷰/stale → probe가 리뷰어에 tt-review dispatch → request-changes면 원 작업자에게 tt-review-fix dispatch(카드는 review 유지, 새 head push 시 재리뷰). 승인만으로는 병합되지 않는다: TT 경로는 보고서에 일치하는 `delivery`가 필요하고 probe가 verify → done(수령 영수증)을 수행한다. PR 병합은 관측·검증 대상이지 판정만으로 자동 병합되지 않는다(U4 M5A4HYY7-3BCA에서 레거시 PR 자동 병합 퇴역)
 - 리뷰어 점유: `POST /issues/{id}/claim-review`(review 상태 전용)로 reviewer 표기 — 상태·계약·attempt는 불변(server/routers/issues.py `ReviewClaimIn`). reviewer 칸은 판정 시점이 아니라 발령 시점에 해제된다: 죽은/닿지 않는 리뷰어 표기는 재발령 전(ME5W)·review-fix 발령 시 제거(server/probe/tt_lifecycle.py `_claim_review_target`/`_exec_review_or_fix`) — done 카드는 감사 기록으로 마지막 리뷰어를 남긴다. 새 claim-review가 이어받을 때 이전 작업자 assignee는 보존. `tt show`에 🔍reviewer 표기
