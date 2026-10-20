@@ -5,12 +5,14 @@
 입력(마커·라벨·카운터)을 만든다. state PATCH 경로를 갖지 않는다 —
 tests가 이를 보장한다(검증기준 3).
 
-기능 6종(단일 폴링 루프):
+기능 4종(단일 폴링 루프):
   1. 분류기       — 라벨 없는 카드 → 인덱스 top-k 투표 → [auto-classified] 제안
-  2. 제출 대기    — in_progress+lease 만료 임박+무진행 → [submit-remind] 독려(JXYS 감지부)
-  3. fix 미실행   — [ci-fix] 위임 후 무진행/즉시실패 → [fix-stall](BG97 감지부)
-  4. 판정 워처    — 신규 판정 코멘트 → [verdict-seen] 다이제스트
-  5. 중복 감지    — 라벨 없는 신규 카드가 기존 카드와 0.93+ → [possible-duplicate]
+  2. fix 미실행   — [ci-fix] 위임 후 무진행/즉시실패 → [fix-stall](BG97 감지부)
+  3. 판정 워처    — 신규 판정 코멘트 → [verdict-seen] 다이제스트
+  4. 중복 감지    — 라벨 없는 신규 카드가 기존 카드와 0.93+ → [possible-duplicate]
+
+  D2(M5BH92HC-9RAE, 사용자 결정): 제출 대기 감시는 제거했다 — probe가 유일한
+  submit-remind 생산자(PR CI green 트리거, D2 단일화 결정).
 
   D1(M5BH925Y-G09E, 사용자 결정 a): 생산자가 사라진 레거시 마커 감시 2종과
   fix 위임의 레거시 마커 분기는 제거했다 — 라이브 마지막 출현 10-13, 현행
@@ -344,17 +346,6 @@ def cycle(index, seen, fetcher=None, poster=None, boundary_predicates=None):
         iid, st = i["id"], i["state"]
         comments = _comments(iid, fetcher)
 
-        # --- 2: 제출 대기 감시 — lease 만료 임박 + 카드 갱신 정체 ---
-        if st == "in_progress" and i.get("lease_by"):
-            exp = i.get("lease_expires") or ""
-            head = _card_head(comments)
-            if exp and parse_ts(exp) - now < 3600 and \
-                    not _event_key_present(comments, "submit-remind",
-                                           {"agent": i["lease_by"],
-                                            "lease_expires": exp, "head": head}):
-                poster(iid, f"[submit-remind] agent={i['lease_by']} "
-                            f"lease_expires={exp} head={head} — 완료 보고나 heartbeat 없음")
-
         # --- 7: fix 위임 미실행 감시(BG97 감지부) — [ci-fix] 위임 후 무진행 또는 즉시 실패 ---
         if st not in ("done", "cancelled"):
             fix_c = _fix_marker(comments)
@@ -430,15 +421,6 @@ def _decompose_src(token):
     if not m:
         return None
     return m.group(1), m.group(2) or "-", m.group(3), m.group(4)
-
-
-def _card_head(comments):
-    """카드 코멘트에서 최신 PR head(sha8) 추출 — probe류 PR 마커 #<n>/<sha8>. 없으면 '-'."""
-    for c in reversed(comments):
-        m = re.search(r"#\d+/([0-9a-f]{6,8})", c.get("body") or "")
-        if m:
-            return m.group(1)[:8]
-    return "-"
 
 
 def _fix_marker(comments):

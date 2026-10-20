@@ -144,31 +144,32 @@ def test_중복_감지는_0_93_이상에서_발화한다(tmp_path, monkeypatch):
 
 
 def test_임베딩_실패시_감시기능은_계속_동작한다(tmp_path):
-    # 검증기준 5 — embed()가 None을 돌려도 2~5 감시는 도는 것을 카드 상태로 확인
+    # 검증기준 5 — embed()가 None을 돌려도 감시는 도는 것을 카드 상태로 확인
+    # (D2: 제출 대기 감시 제거 — fix-stall 감시로 지속성 확인)
     idx = daemon.Index(os.path.join(tmp_path, "idx.db"))
-    soon = "2020-01-01T00:00:00+09:00"  # 과거 — 만료 임박
-    f = Fake([_i("M4WORK-0001", state="in_progress", lease_by="codex",
-                 lease_expires=soon)])
+    f = Fake([_i("M4WORK-0001", state="review", comments=[
+        {"author": "probe", "id": 1, "ts": _OLD,
+         "body": "[ci-fix a1 #93/3a18c0b5] PR#93 — 수정 위임"}])])
     daemon.cycle(idx, set(), fetcher=f.fetch, poster=f.post)
-    assert any("submit-remind" in b for _, b in f.notes)
+    assert any("fix-stall" in b for _, b in f.notes)
     assert f.patches == []
 
 
 def test_v1_마커는_억제하지_않고_v2로_1회_전환한다(tmp_path):
     """설계 §2 — v1 코멘트(필드 없음)는 이벤트 키 매치가 안 되므로 v2 전환 1회 허용."""
     idx = daemon.Index(os.path.join(tmp_path, "idx.db"))
-    soon = "2020-01-01T00:00:00+09:00"
-    i = _i("M4WORK-0002", state="in_progress", lease_by="codex",
-           lease_expires=soon)
-    i["comments"] = [{"author": "tt-embedding-daemon", "id": 1,
-                      "body": "[submit-remind] codex — lease 만료 임박", "ts": ""}]
+    i = _i("M4WORK-0002", state="review", comments=[
+        {"author": "probe", "id": 1, "ts": _OLD,
+         "body": "[ci-fix a1 #93/3a18c0b5] PR#93 — 수정 위임"},
+        {"author": "tt-embedding-daemon", "id": 2,
+         "body": "[fix-stall] codex — 위임 무진행", "ts": ""}])
     f = Fake([i])
     daemon.cycle(idx, set(), fetcher=f.fetch, poster=f.post)
     # v1 존재 → v2 구조화 전환 1회
-    assert len([b for _, b in f.notes if "submit-remind" in b]) == 1
+    assert len([b for _, b in f.notes if "fix-stall" in b]) == 1
     # 같은 이벤트 키로 재실행 → 재게시 없음
     daemon.cycle(idx, set(), fetcher=f.fetch, poster=f.post)
-    assert len([b for _, b in f.notes if "submit-remind" in b]) == 1
+    assert len([b for _, b in f.notes if "fix-stall" in b]) == 1
 
 
 def test_판정_워처는_신규판정을_1회만_다이제스트한다(tmp_path):
@@ -187,16 +188,9 @@ def test_판정_워처는_신규판정을_1회만_다이제스트한다(tmp_path
 
 
 def test_v2_마커는_정규화된_필드를_갖는다(tmp_path):
-    """M4NHG5DF-5YM3 — 6종 마커 계약: 첫 행이 [kind] key=value ... 형식."""
+    """M4NHG5DF-5YM3 — 마커 계약: 첫 행이 [kind] key=value ... 형식(D2로 제출 독려 제외)."""
     import re
     idx = daemon.Index(os.path.join(tmp_path, "idx.db"))
-    soon = (datetime.now(tz(timedelta(hours=9))) + timedelta(minutes=30)).isoformat()
-    f = Fake([_i("M4NEW-0001", "in_progress", lease_by="codex", lease_expires=soon)])
-    daemon.cycle(idx, set(), fetcher=f.fetch, poster=f.post)
-    # 제출 독려 — agent + lease_expires 필드
-    assert any(re.search(r"^\[submit-remind\] agent=codex lease_expires=\S+", b)
-               for _, b in f.notes)
-
     # 판정 워처 — key=card:comment 필드
     idx2 = daemon.Index(os.path.join(tmp_path, "idx2.db"))
     f2 = Fake([_i("M4NEW-0002", "review", reviewer="claude",
