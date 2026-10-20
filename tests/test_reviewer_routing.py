@@ -4,7 +4,7 @@
 - codex→claude, hermes/opencode/claude→codex (기본 표, 가족 prefix 정규화)
 - 미표기·미매칭→codex 기본, codex* 가족 구현→claude (자기 리뷰 방지 우선)
 - 자기 리뷰 방지 가드는 고정 가족 어휘+어댑터 별칭(kanban-adapter≡hermes)+본인
-  신원 — TT_REVIEW_MAP 확장으로 우회 불가
+  신원 — 라우팅 확장(저장 설정)으로 우회 불가
 - 미가용 폴백: agy→codex→claude, 구현 가족 제외 (발령자 결정 2026-10-12)
 - 수령 인계: probe가 대신 claim-review — 거부(409)면 다음 후보, 전원 거부·활성
   점유면 마커 없이 다음 사이클 재시도
@@ -78,12 +78,13 @@ def test_ci봇은_구현_에이전트가_아니다():
     assert agent_family("doc-check") is None
 
 
-def test_TT_REVIEW_MAP으로_override와_가족_확장(monkeypatch):
+def test_env_라우팅은_무시되고_기본표가_불변이다(monkeypatch):
+    """D3(M5BH92X3-JS7Q) — env 레이어 제거: 설정은 저장값(review-routing)만."""
     monkeypatch.setenv("TT_REVIEW_MAP", "codex->tt-reviewer, agy->claude")
     m = probe.core.effective_review_map()
-    assert route_reviewer("codex", m) == "tt-reviewer"
-    assert route_reviewer("agy", m) == "claude"
-    assert route_reviewer("hermes", m) == "codex"  # 기본 표 잔존
+    assert m == probe.core.DEFAULT_REVIEW_MAP  # env 무시 — 라우팅 결과 불변
+    assert route_reviewer("codex", m) == "claude"
+    assert route_reviewer("hermes", m) == "codex"
 
 
 # --- 자기 리뷰 방지 가드: 고정 어휘·어댑터 별칭·본인 신원 (리뷰 R2) ---
@@ -103,10 +104,10 @@ def test_헤르메스_구현엔_대행_어댑터도_제외된다():
                          _agents("kanban-adapter", "codex"), set(), RMAP) == "codex"
 
 
-def test_TT_REVIEW_MAP으로_가족_우회_자기리뷰_불가(monkeypatch):
-    # 매핑 키(codex-labs)가 최장 prefix로 codex와 갈라져도 제외 가드는 고정 어휘 기준
-    monkeypatch.setenv("TT_REVIEW_MAP", "codex-labs->codex")
-    m = probe.core.effective_review_map()
+def test_매핑확장으로도_가족_우회_자기리뷰_불가():
+    # 저장 설정으로 매핑 키(codex-labs)를 확장해도 제외 가드는 고정 어휘 기준 —
+    # env 레이어 제거(D3)로 확장은 저장 설정 합성(_DecideCtx)과 동일 형태로 주입
+    m = {**probe.core.DEFAULT_REVIEW_MAP, "codex-labs": "codex"}
     assert route_reviewer("codex-labs", m) == "codex"
     assert pick_reviewer("codex-labs", _agents("codex"), set(), m) is None
     assert pick_reviewer("codex-labs", _agents("codex", "claude"), set(), m) == "claude"

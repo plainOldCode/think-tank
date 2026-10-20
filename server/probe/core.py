@@ -131,7 +131,7 @@ def collect_repos(issues):
 
 # --- 카운터파트 리뷰어 라우팅 (M4JTJ970-WS3C, docs/review-gate.md 룰셋) ---
 
-# 자기 리뷰 방지용 고정 가족 어휘 — TT_REVIEW_MAP 확장과 무관하게 이 어휘로만 제외한다
+# 자기 리뷰 방지용 고정 가족 어휘 — 매핑 확장과 무관하게 이 어휘로만 제외한다
 # (매핑 키 codex-labs->codex로 가족 경유 자기 리뷰를 만들 수 없다)
 # cursor: cursor-review(읽기전용 리뷰 프로필)는 가족 동반 — 구현 cursor의 자기 리뷰 방지(XV84)
 # 3QMV — 가족 어휘·해석 규칙은 server/identity.py 단일 소스로 이동. 아래
@@ -140,7 +140,8 @@ from identity import (FAMILY_ALIASES, REVIEW_FAMILIES, agent_family,  # noqa: F4
                       effective_host_family_map, parse_host_family_map)
 from identity import alias_resolve as _identity_alias_resolve
 from identity import resolve as _identity_resolve
-# 발령자 결정(2026-10-10) 기본 카운터파트 표 — TT_REVIEW_MAP env로 override·확장
+# 발령자 결정(2026-10-10) 기본 카운터파트 표 — 저장 설정(review-routing)으로 override·확장
+# (D3: env 레이어 제거 — 웹 편집(XV84)으로 충분, mini에서 env 미사용 실측)
 DEFAULT_REVIEW_MAP = {"codex": "claude", "claude": "codex",
                       "hermes": "codex", "opencode": "codex"}
 # 리뷰어 미가용 폴백 순서 — 발령자 결정 갱신(2026-10-14, XV84): agy→cursor-review→
@@ -175,22 +176,12 @@ NON_EXECUTORS = ("kanban-adapter", "codex-read-only", "tt-reviewer")
 CI_BOTS = ("doc-check", "e2e")
 
 
-def parse_review_map(raw):
-    """TT_REVIEW_MAP='codex->claude,claude->codex' → dict. 빈 칸·불량 항목은 무시."""
-    out = {}
-    for part in (raw or "").split(","):
-        if "->" not in part:
-            continue
-        k, _, v = part.partition("->")
-        k, v = k.strip().lower(), v.strip()
-        if k and v:
-            out[k] = v
-    return out
-
-
 def effective_review_map():
-    """기본 카운터파트 표 + env override — decide가 사이클당 1회 산출."""
-    return {**DEFAULT_REVIEW_MAP, **parse_review_map(os.getenv("TT_REVIEW_MAP", ""))}
+    """기본 카운터파트 표 — decide가 사이클당 1회 산출.
+
+    D3(M5BH92X3-JS7Q): env override 레이어 제거 — 저장 설정
+    (settings/review-routing)이 유일한 런타임 override다(_DecideCtx 합성)."""
+    return dict(DEFAULT_REVIEW_MAP)
 
 
 def _receivable(a):
@@ -662,7 +653,7 @@ class _DecideCtx:
         # 재파싱 지점을 질의로 대체한다. 동작 불변 — golden 9종이 하드 조건.
         from ontology.build import build_graph
         self.graph = build_graph(snap)
-        rmap = effective_review_map()  # 카운터파트 라우팅(M4JTJ970-WS3C) — env override 포함
+        rmap = effective_review_map()  # 카운터파트 라우팅(M4JTJ970-WS3C) — 저장 설정이 덮는다
         # 런타임 설정(XV84) — 저장 설정이 코드 기본을 덮는다. decide는 순수 함수라
         # snap에 조달된다(snapshot에서 GET /settings/review-routing).
         routing = snap.get("review_routing") or {}
