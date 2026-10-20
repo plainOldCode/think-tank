@@ -8,10 +8,13 @@ tests가 이를 보장한다(검증기준 3).
 기능 6종(단일 폴링 루프):
   1. 분류기       — 라벨 없는 카드 → 인덱스 top-k 투표 → [auto-classified] 제안
   2. 제출 대기    — in_progress+lease 만료 임박+무진행 → [submit-remind] 독려(JXYS 감지부)
-  3. 세션 사망    — review+리뷰어 점유+review-req 마커 노령 → [review-stall] 감지(12MZ 보조)
-  4. 재작업 플래그 — probe 실패/실행불가 노트 → [rework-stuck] 플래그(BG97 감지부)
-  5. 판정 워처    — 신규 판정 코멘트 → [verdict-seen] 다이제스트
-  6. 중복 감지    — 라벨 없는 신규 카드가 기존 카드와 0.93+ → [possible-duplicate]
+  3. fix 미실행   — [ci-fix] 위임 후 무진행/즉시실패 → [fix-stall](BG97 감지부)
+  4. 판정 워처    — 신규 판정 코멘트 → [verdict-seen] 다이제스트
+  5. 중복 감지    — 라벨 없는 신규 카드가 기존 카드와 0.93+ → [possible-duplicate]
+
+  D1(M5BH925Y-G09E, 사용자 결정 a): 생산자가 사라진 레거시 마커 감시 2종과
+  fix 위임의 레거시 마커 분기는 제거했다 — 라이브 마지막 출현 10-13, 현행
+  생산자는 tt-review 계열과 ci-fix뿐이다.
 
 마커 dedup: (마커, 카드, 키) 재게시 금지. 임베딩 실패 시 루프 생존, 1·6만 보류.
 """
@@ -33,7 +36,6 @@ POLL = int(os.environ.get("TT_DAEMON_POLL", "60"))
 DB_PATH = os.environ.get("TT_DAEMON_DB",
                          os.path.expanduser("~/tt-embedding-daemon/index.db"))
 DAEMON = "tt-embedding-daemon"
-STALE_HOURS = 12.0
 FIX_STALL_MIN = float(os.environ.get("TT_DAEMON_FIX_STALL_MIN", "45"))
 DUP_THRESHOLD = 0.93
 LABEL_GAP = 0.01
@@ -164,26 +166,6 @@ def _comments(card, fetcher):
         return (fetcher(f"/issues/{card}") or {}).get("comments") or []
     except Exception:
         return []
-
-
-def _marker_present(comments, marker, key=None):
-    for c in comments:
-        if c.get("author") != DAEMON:
-            continue
-        b = c.get("body") or ""
-        if marker in b and (key is None or key in b):
-            return True
-    return False
-
-
-def _probe_note(comments, *pats):
-    for c in comments:
-        if c.get("author") != "probe":
-            continue
-        b = c.get("body") or ""
-        if all(p in b for p in pats):
-            return b
-    return None
 
 
 def _fetch(path):
@@ -373,36 +355,7 @@ def cycle(index, seen, fetcher=None, poster=None, boundary_predicates=None):
                 poster(iid, f"[submit-remind] agent={i['lease_by']} "
                             f"lease_expires={exp} head={head} — 완료 보고나 heartbeat 없음")
 
-        # --- 3: 세션 사망 감시 — review-req 마커 노령 + 무판정 ---
-        if st == "review" and i.get("reviewer"):
-            reqs = [c for c in comments if c.get("author") == "probe"
-                    and "[review-req #" in (c.get("body") or "")]
-            last_ts = parse_ts(reqs[-1].get("ts") or "") if reqs else None
-            if last_ts and now - last_ts > STALE_HOURS * 3600:
-                key = i.get("reviewer") or ""
-                if not _event_key_present(comments, "review-stall",
-                                          {"reviewer": key,
-                                           "req_ts": reqs[-1].get("ts") or ""}):
-                    hours = (now - last_ts) / 3600
-                    poster(iid, f"[review-stall] reviewer={key} "
-                                f"since_hours={hours:.0f} req_ts={reqs[-1].get('ts') or ''} "
-                                f"— 감지 기록(12MZ 보조)")
-
-        # --- 4: 재작업 릴레이 플래그 — probe 실패 노트 패턴(BG97 감지부) ---
-        pb = _probe_note(comments, "수정 dispatch")
-        if pb and "사람" in pb:
-            sk, satt, spr, shead = _decompose_src(act_key(pb)) or ("unknown", "-", "-", "-")
-            att_card = str(i.get("execution_attempt") or 1)
-            if not _event_key_present(comments, "rework-stuck",
-                                      {"src_kind": sk, "src_att": satt, "src_pr": spr,
-                                       "src_head": shead, "attempt": att_card}):
-                kind = "404" if "404" in pb else ("non-executor" if "실행" in pb else "failed")
-                poster(iid, f"[rework-stuck] src_kind={sk} src_att={satt} src_pr={spr} "
-                            f"src_head={shead} attempt={att_card} "
-                            f"target={i.get('assignee') or 'none'} kind={kind} "
-                            f"— 재작업 릴레이 정체 플래그")
-
-        # --- 7: review-fix 미실행 감시(BG97 감지부) — 위임 후 무진행 또는 즉시 실패 ---
+        # --- 7: fix 위임 미실행 감시(BG97 감지부) — [ci-fix] 위임 후 무진행 또는 즉시 실패 ---
         if st not in ("done", "cancelled"):
             fix_c = _fix_marker(comments)
             if fix_c:
@@ -423,7 +376,7 @@ def cycle(index, seen, fetcher=None, poster=None, boundary_predicates=None):
                                     f"src_pr={spr} src_head={shead} attempt={att_card} "
                                     f"minutes={minutes:.0f} "
                                     f"kind={'dispatch-failed' if immediate else 'no-progress'} "
-                                    f"— review-fix 재발령 검토(BG97)")
+                                    f"— tt-review-fix 재발령 검토(BG97)")
 
         # --- 5: 판정 워처 ---
         for c in comments:
@@ -489,11 +442,12 @@ def _card_head(comments):
 
 
 def _fix_marker(comments):
-    """최신 probe fix 위임 마커 코멘트 — [review-fix #n/sha] 또는 [ci-fix aN #n/sha]."""
+    """최신 probe fix 위임 마커 코멘트 — [ci-fix aN #n/sha].
+
+    D1: 레거시 review- 마커는 생산자가 없어(마지막 10-12) 감시 대상에서 제외했다."""
     for c in reversed(comments):
         b = c.get("body") or ""
-        if c.get("author") == "probe" and \
-                re.match(r"^\[(review-fix|ci-fix)\b", b):
+        if c.get("author") == "probe" and re.match(r"^\[ci-fix\b", b):
             return c
     return None
 
@@ -510,7 +464,7 @@ def _progressed(comments, fix_c, issue):
         b = c.get("body") or ""
         if c.get("author", "").startswith("runner@") and "dispatch#" in b:
             return True
-        if "[review-req #" in b or b.split("\n", 1)[0].startswith("review: "):
+        if b.split("\n", 1)[0].startswith("review: "):
             return True
     if issue["state"] == "in_progress" and issue.get("lease_by"):
         return True
