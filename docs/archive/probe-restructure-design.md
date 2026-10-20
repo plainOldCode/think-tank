@@ -506,7 +506,7 @@ accuracy, precision/recall, "올바른 배정률", "리뷰 품질" 등 **사람�
 **레포·공개 소스**
 
 - plainOldCode/think-tank — docs 8종(본 문서 추가로 9종), probe 관련 PR #22/#23/#24/#50/#63/#15/#16. "judge/LLM/ontology" 공개 검색 결과 없음
-- think-tank 내부 문서: docs/review-gate.md(리뷰어 엔진 실측), docs/dispatchd.md(30초 루프 설계), docs/metrics-2week-experiment.md(#3e 지표·수집기), docs/probe-e2e.md(실측 기록 포인터)
+- think-tank 내부 문서: docs/archive/review-gate.md(리뷰어 엔진 실측), docs/archive/dispatchd.md(30초 루프 설계), docs/metrics-2week-experiment.md(#3e 지표·수집기), docs/archive/probe-e2e.md(실측 기록 포인터)
 - 내부 카드: M4DEJVY1-XFH2(리팩토링 에픽), M3M0GF1K-G1HT(온톨로지 업무플로우 설계 리뷰), M4GQ1HSK-P7KQ(dgx-local 서빙 제약 기록), M4FFCB9J-2AAB(#3e 지표), M4J9V1EW-VV45(원문 분석)
 
 ## 부록 C. 기준 커밋 실측 정리 (HEAD 545d0c0)
@@ -537,7 +537,7 @@ accuracy, precision/recall, "올바른 배정률", "리뷰 품질" 등 **사람�
 3. **회귀 테스트**: probe 관련 8개 테스트 파일 — **130 passed, 41 warnings**(1.08s, Python 3.11.16 + pytest 8.3.5). 41건의 경고는 기존 것(fastapi `on_event` 비권장 등)으로 본 변경과 무관하다. 본 PR은 문서 추가뿐이라 코드 동작은 변하지 않는다.
 4. **시크릿**: `bash scripts/secret-scan.sh` 통과. 추가로 본 문서에 대해 IPv4·hostname·토큰 패턴 grep을 직접 수행해 0건을 확인했다. 서버 주소는 `TT_URL`로만 표기했다.
 5. **마크다운**: 코드펜스 10개(짝수, 태그 json/sh/무태그 혼재), 표 16개 — 열 수 불일치 0행, `## ` 절 17개. 본문 상호 참조(§7.3↔§12.1, §8.1↔§12.5, §8.2↔§12.1)의 존재를 확인했다. (기준 커밋 `bfe9d39` 재실측 2026-10-11 — M4K88XBN-E67B. 이후 커밋과 불일치가 생기면 이 수치는 갱신 대상이다.)
-6. **변경 범위**: `git diff main --stat` — `docs/probe-restructure-design.md` 신규 1개 파일 외 변경 없음. 코드·기존 문서·설정은 건드리지 않았다.
+6. **변경 범위**: `git diff main --stat` — `docs/archive/probe-restructure-design.md` 신규 1개 파일 외 변경 없음. 코드·기존 문서·설정은 건드리지 않았다.
 
 재현 명령:
 
@@ -554,5 +554,5 @@ python3 -m venv .venv311 && .venv311/bin/pip install pytest fastapi httpx pydant
   tests/test_completion_via_merge.py tests/test_execute_merge_head_guard.py
 # → 130 passed, 41 warnings (Python 3.11 기준; 3.9은 PEP 604 유니온으로 미지원)
 bash scripts/secret-scan.sh
-git diff main --stat   # docs/probe-restructure-design.md 1개 파일만
+git diff main --stat   # docs/archive/probe-restructure-design.md 1개 파일만
 ```

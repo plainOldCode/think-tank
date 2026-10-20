@@ -1,4 +1,4 @@
-"""카운터파트 리뷰어 라우팅 (M4JTJ970-WS3C) — docs/review-gate.md 룰셋.
+"""카운터파트 리뷰어 라우팅 (M4JTJ970-WS3C) — docs/archive/review-gate.md 룰셋.
 
 리뷰는 작성 에이전트의 카운터파트(상대편)가 맡는다 — 자기 작업 자기 리뷰 방지.
 - codex→claude, hermes/opencode/claude→codex (기본 표, 가족 prefix 정규화)

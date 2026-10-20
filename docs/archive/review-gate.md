@@ -169,7 +169,7 @@ probe auto-review + probe auto-review-fix on one PR simultaneously). The guard i
 리뷰 방식: working copy에서 git diff 기준 변경 파일 통독 + 변경 심볼 grep으로
 호출자 확인. 공용 모듈(service/probe/routers) 변경 시 호출자 추적 필수.
 판정 기준: 계약 v2.1 준수, 시크릿 노출, 테스트 적절성, 놓친 엣지.
-결과 제출: TT 카드 코멘트가 정본, PR 코멘트는 선택적 미러(포맷: docs/review-gate.md).
+결과 제출: TT 카드 코멘트가 정본, PR 코멘트는 선택적 미러(포맷: docs/archive/review-gate.md).
 첫 줄 'review: approve' 또는 'review: request-changes', 둘째 줄 'PR#<n>@<sha8>'.
 ```
 

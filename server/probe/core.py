@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """tt probe — TT 자율 스케줄러. decide()는 판정 순수 함수, 실행기는 public API만 소비.
 
-30KP 설계 docs/dispatchd.md. 서버 프로세스 내장 스레드(TT_PROBE_INTERVAL, app.py)로만
+30KP 설계 docs/archive/dispatchd.md. 서버 프로세스 내장 스레드(TT_PROBE_INTERVAL, app.py)로만
 구동 — standalone dispatchd shim·plist·TT_DISPATCH_* 는 U6(M5A4HZQB-AT3N)으로 퇴역.
 """
 import json
@@ -129,7 +129,7 @@ def collect_repos(issues):
 
 
 
-# --- 카운터파트 리뷰어 라우팅 (M4JTJ970-WS3C, docs/review-gate.md 룰셋) ---
+# --- 카운터파트 리뷰어 라우팅 (M4JTJ970-WS3C, docs/archive/review-gate.md 룰셋) ---
 
 # 자기 리뷰 방지용 고정 가족 어휘 — 매핑 확장과 무관하게 이 어휘로만 제외한다
 # (매핑 키 codex-labs->codex로 가족 경유 자기 리뷰를 만들 수 없다)

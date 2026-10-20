@@ -102,11 +102,11 @@ GET  /messages/unread     ?agent=                     → {"count": n}
 
 Current submission-based flow: [TT submission review](docs/tt-submission-review.md).
 Every resubmission changes `review_subject`, including within one attempt. Verdicts
-belong on the TT card; PR comments are optional mirrors. [docs/review-gate.md](docs/review-gate.md)
+belong on the TT card; PR comments are optional mirrors. [docs/archive/review-gate.md](docs/archive/review-gate.md)
 keeps the retired PR-head gate design (history).
 
 Even a CI-green PR is not merged by probe without a review approval verdict (2026-10-04). Details in
-[docs/review-gate.md](docs/review-gate.md).
+[docs/archive/review-gate.md](docs/archive/review-gate.md).
 
 - Scope: review dispatching applies to TT-submitted cards (`review_subject` present) in review state; PRs on pre-submission (in-progress) cards are excluded to avoid wasting reviews in transit. There is no activation env — reviewer selection comes from stored settings `GET/PUT/DELETE /settings/{key}` (`review-routing`: `review_map` + `review_fallback`) layered over the code's counterparty map (`TT_REVIEW_MAP` env override; `probe/core.py` `effective_review_map`)
 - Verdict record: the reviewer agent posts a TT card comment whose first line is `review: approve|request-changes` and whose second line is the exact `review_subject` token — `TT#<card>@a<attempt>/<hash>` for TT submissions, `PR#<n>@<sha8>` for PR mirrors (`server/review_subject.py`). A verdict whose subject mismatches (stale head) is void; the latest verdict wins, and only the assigned/requested reviewer's comments count
