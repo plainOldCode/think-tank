@@ -1,9 +1,29 @@
 """M59BE4HD-ME5W: STALL-kill fast-path — 죽은 리뷰어 재발령이 리스 만료를 기다리지 않는다."""
 import sqlite3
+import urllib.error
+import urllib.request
 from datetime import datetime, timedelta
+
+import pytest
 
 import probe.core as core
 from test_tt_lifecycle import snap, submitted
+
+
+@pytest.fixture(autouse=True, scope="module")
+def _no_webhook_wait():
+    """더미 훅 호스트(x/y)로의 notify 전송 대기 제거 — urlopen timeout=10이 DNS
+    환경에 따라 10s까지 걸린다(198.18.0.1 블랙홀 실측). 즉시 실패 스텁으로 대체 —
+    전달 실패 무시 경로(best-effort)는 그대로 검사된다. 모듈 스코프로 워커 스레드
+    생존 중 복원되는 창을 없앤다."""
+    orig = urllib.request.urlopen
+
+    def fail_fast(req, *a, **kw):
+        raise urllib.error.URLError("webhook disabled in tests")
+
+    urllib.request.urlopen = fail_fast
+    yield
+    urllib.request.urlopen = orig
 
 
 def review_round(client, tmp_path, issue, reviewer, killed=True, session_agent=None,

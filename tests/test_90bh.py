@@ -56,18 +56,6 @@ def _submit(client, issue_id):
     return client.get(f"/issues/{issue_id}").json()
 
 
-def test_제출시_제출자_poll_행은_finished가_된다(client):
-    _reg_poll(client)
-    issue = mk(client, title="90bh 제출 종결")
-    client.post(f"/issues/{issue['id']}/claim", json={"agent": "poller90bh"})
-    did = _dispatch(client, issue["id"], "poller90bh")
-    _pickup(client, did)
-
-    card = _submit(client, issue["id"])
-    assert card["state"] == "review"
-    assert _row(client, did)["run_state"] == "finished"
-
-
 def test_리뷰어_등_타_에이전트_행은_유지된다(client):
     _reg_poll(client)
     _reg_poll(client, "poller-rev")

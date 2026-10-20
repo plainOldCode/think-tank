@@ -1,7 +1,15 @@
+import os
+import tempfile
+
 import pytest
 from fastapi.testclient import TestClient
 
 from app import create_app
+
+# §8.1 판단 로그 격리 — JudgeLog 기본 경로(judge-log.jsonl)가 리포 루트에 생기지
+# 않게 한다(커밋 전 rm 습관의 근본 해결). 명시적 경로를 쓰는 테스트는 무관.
+os.environ.setdefault("TT_JUDGE_LOG", os.path.join(
+    tempfile.gettempdir(), "tt-test-judge-%d.jsonl" % os.getpid()))
 
 
 @pytest.fixture

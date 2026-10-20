@@ -53,21 +53,22 @@ def test_별칭에_내부_골뱅이_호스트_표기는_허용한다(client):
     assert r.json()["aliases"] == ["codex@m2pro", "codex@m2max"]
 
 
-def test_다른_에이전트_이름과_겹치는_별칭은_거부한다(client):
-    _agent(client, "ghost-h")
-    r = _agent(client, "ghost-i", aliases=["ghost-h"])
+@pytest.mark.parametrize("seed,seed_aliases,name,aliases,detail_has", [
+    ("ghost-h", [], "ghost-i", ["ghost-h"], True),   # 다른 에이전트 이름과 겹침
+    (None, None, "ghost-l", ["ghost-l"], False),     # 자기 이름과 같음 — 중복 거부
+], ids=["clashes_other_agent_name", "clashes_own_name"])
+def test_겹치는_별칭은_거부한다(client, seed, seed_aliases, name, aliases, detail_has):
+    if seed:
+        _agent(client, seed, aliases=seed_aliases)
+    r = _agent(client, name, aliases=aliases)
     assert r.status_code == 422
-    assert "ghost-h" in r.json()["detail"]
+    if detail_has:
+        assert "ghost-h" in r.json()["detail"]
 
 
 def test_다른_에이전트별칭과_겹치는_별칭은_거부한다(client):
     _agent(client, "ghost-j", aliases=["shared-alias"])
     r = _agent(client, "ghost-k", aliases=["shared-alias"])
-    assert r.status_code == 422
-
-
-def test_자기_이름과_같은_별칭은_중복이라_거부한다(client):
-    r = _agent(client, "ghost-l", aliases=["ghost-l"])
     assert r.status_code == 422
 
 

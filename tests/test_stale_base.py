@@ -1,4 +1,5 @@
 import os
+import pytest
 import subprocess
 from pathlib import Path
 
@@ -36,12 +37,6 @@ def check(repo, args=(), env_extra=None):
                           cwd=repo, capture_output=True, text=True, env=env)
 
 
-def test_최신_base는_통과(tmp_path):
-    repo = make_repo(tmp_path)
-    git(repo, "checkout", "-q", "feature")
-    assert check(repo).returncode == 0
-
-
 def test_뒤처진_base는_차단(tmp_path):
     repo = make_repo(tmp_path)
     commit(repo, "main.txt", ["m1"], "main 이동")  # origin/main 전진
@@ -51,7 +46,13 @@ def test_뒤처진_base는_차단(tmp_path):
     assert p.returncode == 1 and "rebase" in p.stderr and "origin/main" in p.stderr
 
 
-def test_main에_우리_커밋_포함이면_통사(tmp_path):
+def _repo_최신_base(tmp_path):
+    repo = make_repo(tmp_path)
+    git(repo, "checkout", "-q", "feature")
+    return repo
+
+
+def _repo_main이_feature_포함(tmp_path):
     repo = make_repo(tmp_path)
     git(repo, "checkout", "-q", "feature")
     commit(repo, "f.txt", ["f1"], "feature 작업")
@@ -59,7 +60,14 @@ def test_main에_우리_커밋_포함이면_통사(tmp_path):
     git(repo, "merge", "-q", "feature")  # main이 feature를 포함
     git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
     git(repo, "checkout", "-q", "feature")
-    # feature는 origin/main 뒤가 아니라 포함 관계 — 통과
+    return repo
+
+
+@pytest.mark.parametrize("setup", [_repo_최신_base, _repo_main이_feature_포함],
+                         ids=["최신_base는_통과", "main에_우리_커밋_포함이면_통과"])
+def test_통과_시나리오(tmp_path, setup):
+    # feature가 origin/main 뒤처지지 않으면(미포함·포함 관계 모두) 통과
+    repo = setup(tmp_path)
     assert check(repo).returncode == 0
 
 
