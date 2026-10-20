@@ -534,45 +534,11 @@ def test_claim_review는_review상태에서만_가능하고_상태를_바꾸지_
     r = client.post(f"/issues/{claimed['id']}/claim-review", json={"agent": "claude"})
     assert r.status_code == 409  # 이중 점유 불가
 
-    # 판정 후 리뷰어 반납 — probe release-reviewer 경로
+    # 판정 후 리뷰어 반납 — 수동 PATCH(reviewer만 해제)
     r = client.patch(f"/issues/{claimed['id']}", json={"version": body["version"], "reviewer": ""})
     assert r.status_code == 200
     assert r.json()["reviewer"] is None
 
-
-def test_probe_반납은_실제_핸들러에서_reviewer와_lease를_지우고_assignee를_보존한다(client, monkeypatch):
-    """R1 통합 회귀 — probe execute → 실제 PATCH → reviewer/lease 해제, 작업자 assignee 유지."""
-    import probe.core
-
-    issue = client.post("/issues", json={"acceptance": "완료 기준: 테스트 통과", "title": "반납 통합"}).json()
-    claimed = client.post(f"/issues/{issue['id']}/claim", json={"agent": "worker"}).json()
-    client.patch(f"/issues/{issue['id']}", json={"state": "done", "completion_report": {
-        "contract_version": claimed["work_contract"]["version"], "attempt": 1, "method": "planned",
-        "design": {"criteria": "c", "verification": "v"},
-        "implementation": {"summary": "s", "commands": "cc"},
-        "verification": {"commands": "ccc", "evidence": "e"},
-        "result": "passed", "limitations": ""}})
-    body = client.post(f"/issues/{issue['id']}/claim-review", json={"agent": "codex"}).json()
-    assert body["reviewer"] == "codex" and body["lease_by"] == "codex"
-    # 유효 판정 기록(R7 필터 통과용) — 코멘트가 버전을 올리므로 반납 액션은 최신 버전 기준
-    client.post(f"/issues/{issue['id']}/comments", json={
-        "author": "codex", "body": "review: approve\nPR#1@aaaaaaaa"})
-    cur_version = client.get(f"/issues/{issue['id']}").json()["version"]
-
-    def fake_api(url, path, method="GET", payload=None):
-        if method == "GET":
-            return client.get(path).json()
-        return client.request(method, path, json=payload).json()
-
-    monkeypatch.setattr(probe.core, "api", fake_api)
-    probe.core.execute("u", {"issue": issue["id"], "action": "release-reviewer",
-                             "reviewer": "codex", "pr": 1, "head_sha": "a" * 8,
-                             "expected_version": cur_version})
-    d = client.get(f"/issues/{issue['id']}").json()
-    assert d["reviewer"] is None
-    assert d["lease_by"] == "" and d["lease_expires"] is None
-    assert d["assignee"] == "worker"  # review-fix 대상 보존
-    assert d["state"] == "review" and d["execution_attempt"] == 1
 
 
 def test_리뷰어_lease만료_후_타_리뷰어_인계_가능(client):
@@ -623,43 +589,6 @@ def test_리뷰어_재claim은_한도_제외되고_타인은_한도_적용(clien
     r = client.post(f"/issues/{other2['id']}/claim-review", json={"agent": "claude"})
     assert r.status_code == 409 and "lease limit" in r.json()["detail"]
 
-
-def test_stale_반납은_재작업자_lease를_보존한다(client, monkeypatch):
-    """R5 — release-reviewer 실행 시 lease_by가 다른 에이전트(재작업자)면 lease를 건드리지 않는다."""
-    import probe.core
-
-    issue = client.post("/issues", json={"acceptance": "완료 기준: 테스트 통과", "title": "stale 반납"}).json()
-    claimed = client.post(f"/issues/{issue['id']}/claim", json={"agent": "worker"}).json()
-    client.patch(f"/issues/{issue['id']}", json={"state": "done", "completion_report": {
-        "contract_version": claimed["work_contract"]["version"], "attempt": 1, "method": "planned",
-        "design": {"criteria": "c", "verification": "v"},
-        "implementation": {"summary": "s", "commands": "cc"},
-        "verification": {"commands": "ccc", "evidence": "e"},
-        "result": "passed", "limitations": ""}})
-    body = client.post(f"/issues/{issue['id']}/claim-review", json={"agent": "codex"}).json()
-    # 유효 판정 기록(R7 필터 통과용) — codex 판정 PR#1@aaaaaaaa
-    client.post(f"/issues/{issue['id']}/comments", json={
-        "author": "codex", "body": "review: approve\nPR#1@aaaaaaaa"})
-    cur_version = client.get(f"/issues/{issue['id']}").json()["version"]
-    # 재작업자가 lease를 넘겨받은 상태(리뷰어 claim은 아직 미반납 — stale 액션 도착 시나리오)
-    import sqlite3
-    con = sqlite3.connect(client.app.state.db_path)
-    con.execute("UPDATE issues SET lease_by='worker', lease_expires='2099-01-01T00:00:00+00:00' WHERE id=?", (issue["id"],))
-    con.commit(); con.close()
-
-    def fake_api(url, path, method="GET", payload=None):
-        if method == "GET":
-            return client.get(path).json()
-        return client.request(method, path, json=payload).json()
-
-    monkeypatch.setattr(probe.core, "api", fake_api)
-    probe.core.execute("u", {"issue": issue["id"], "action": "release-reviewer", "reviewer": "codex",
-                             "pr": 1, "head_sha": "a" * 8,
-                             "expected_version": cur_version})
-    d = client.get(f"/issues/{issue['id']}").json()
-    assert d["reviewer"] is None          # 리뷰어 점유는 해제
-    assert d["lease_by"] == "worker"      # 재작업자 lease 보존
-    assert d["assignee"] == "worker"
 
 
 def test_작업자_재claim은_이전_리뷰어_표기를_제거한다(client):

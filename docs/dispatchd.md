@@ -1,5 +1,13 @@
 # dispatchd — TT autonomous dispatch design (M3PEVTDH-5CCS)
 
+> **DEPRECATED (2026-10-20, U6 M5A4HZQB-AT3N / PR #188)** — the standalone
+> `dispatchd.py` shim, `deploy/com.tt.dispatchd.plist`, and `TT_DISPATCH_*` envs
+> are removed. Probe now runs as an in-server thread: `TT_PROBE_INTERVAL>0`
+> in tt-server (app.py); the judgment core is `probe.core.decide()` and the
+> entry point is `probe.loop()`. This document remains as the 30KP design
+> record (M3PG5Q9W-30KP); launchd co-residency and the standalone loop sections
+> no longer apply.
+
 Status: design finalized v1 (2026-09-29, M3PG5Q9W-30KP). Implementation is under the 5R5B-or-below cards.
 
 ## Decision summary
