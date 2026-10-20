@@ -171,18 +171,6 @@ def test_v1_마커는_억제하지_않고_v2로_1회_전환한다(tmp_path):
     assert len([b for _, b in f.notes if "submit-remind" in b]) == 1
 
 
-def test_rework_플래그는_probe_실패_노트에서_발화한다(tmp_path):
-    idx = daemon.Index(os.path.join(tmp_path, "idx.db"))
-    i = _i("M4FIX-0001", state="review")
-    i["comments"] = [{"author": "probe", "id": 2,
-                      "body": "[review-fix #9/aaaaaaaa] 수정 dispatch 대상이 실행 불가"
-                              " 에이전터(kanban-adapter) — 사람/감독관 판단 대기",
-                      "ts": ""}]
-    f = Fake([i])
-    daemon.cycle(idx, set(), fetcher=f.fetch, poster=f.post)
-    assert any("rework-stuck" in b for _, b in f.notes)
-
-
 def test_판정_워처는_신규판정을_1회만_다이제스트한다(tmp_path):
     idx = daemon.Index(os.path.join(tmp_path, "idx.db"))
     i = _i("M4REV-0001", state="review", reviewer="claude")
@@ -217,17 +205,16 @@ def test_v2_마커는_정규화된_필드를_갖는다(tmp_path):
     daemon.cycle(idx2, set(), fetcher=f2.fetch, poster=f2.post)
     assert any(re.search(r"^\[verdict-seen\] key=M4NEW-0002:7$", b) for _, b in f2.notes)
 
-    # 재작업 플래그 — src/target/kind 필드
+    # fix-stall — src/attempt/kind 필드(D1: review-fix 분기 제거, ci-fix만 감시)
     idx3 = daemon.Index(os.path.join(tmp_path, "idx3.db"))
     f3 = Fake([_i("M4NEW-0003", "review",
-                  comments=[{"author": "probe", "id": 8,
-                             "body": "수정 dispatch 404 — 사람 개입 필요 [review-fix #5/abc12345]",
-                             "ts": "2026-10-11T00:00:00+0900"}])])
+                  comments=[{"author": "probe", "id": 8, "ts": "2020-01-01T00:00:00+0900",
+                             "body": "[ci-fix a1 #5/abc12345] PR#5 — 수정 위임"}])])
     daemon.cycle(idx3, set(), fetcher=f3.fetch, poster=f3.post)
-    m = [b for _, b in f3.notes if b.startswith("[rework-stuck]")]
+    m = [b for _, b in f3.notes if b.startswith("[fix-stall]")]
     assert m and re.search(
-        r"^\[rework-stuck\] src_kind=review-fix src_att=- src_pr=5 src_head=abc12345 "
-        r"attempt=1 target=\S+ kind=404 — ", m[-1])
+        r"^\[fix-stall\] src_kind=ci-fix src_att=a1 src_pr=5 src_head=abc12345 "
+        r"attempt=1 minutes=\d+ kind=no-progress — ", m[-1])
 
 
 def test_v2_스키마는_v1_마커와_dedup_호환이다(tmp_path, monkeypatch):
@@ -269,22 +256,22 @@ _OLD = "2026-10-11T10:00:00+0900"  # cycle 기준 과거
 
 
 def test_fix_stall은_위임후_무진행에서_발화한다(tmp_path):
-    """M4NNZX0M-8A28 — review-fix 위임 후 45분+ 무진행 → [fix-stall] no-progress."""
+    """M4NNZX0M-8A28 — ci-fix 위임 후 45분+ 무진행 → [fix-stall] no-progress."""
     idx, f = _fix_카드(tmp_path, [
         {"author": "probe", "id": 1, "ts": _OLD,
-         "body": "[review-fix #93/3a18c0b5] PR#93 request-changes — review 반납+수정 위임"},
+         "body": "[ci-fix a1 #93/3a18c0b5] PR#93 request-changes — review 반납+수정 위임"},
     ])
     daemon.cycle(idx, set(), fetcher=f.fetch, poster=f.post)
     m = [b for _, b in f.notes if b.startswith("[fix-stall]")]
     assert len(m) == 1
-    assert re.search(r"src_kind=review-fix src_att=- src_pr=93 src_head=3a18c0b5 "
+    assert re.search(r"src_kind=ci-fix src_att=a1 src_pr=93 src_head=3a18c0b5 "
                      r"attempt=1 minutes=\d+ kind=no-progress — ", m[0])
 
 
 def test_fix_stall은_dispatch가_이어지면_침묵한다(tmp_path):
     idx, f = _fix_카드(tmp_path, [
         {"author": "probe", "id": 1, "ts": _OLD,
-         "body": "[review-fix #93/3a18c0b5] PR#93 — 수정 위임"},
+         "body": "[ci-fix a1 #93/3a18c0b5] PR#93 — 수정 위임"},
         {"author": "runner@m2max", "id": 2, "ts": "2026-10-11T10:05:00+0900",
          "body": "runner:m2max dispatch#360 → tmux tt-opencode-360 (queued)"},
     ])
@@ -297,7 +284,7 @@ def test_fix_stall은_즉시실패에서_바로_발화한다(tmp_path):
     now_ts = datetime.now(tz(timedelta(hours=9))).isoformat()
     idx, f = _fix_카드(tmp_path, [
         {"author": "probe", "id": 1, "ts": now_ts,
-         "body": "[review-fix #114/b99b25f7] 수정 dispatch 실패(에이전트 미등록) — 재시도 필요"},
+         "body": "[ci-fix a1 #114/b99b25f7] 수정 dispatch 실패(에이전트 미등록) — 재시도 필요"},
     ])
     daemon.cycle(idx, set(), fetcher=f.fetch, poster=f.post)
     m = [b for _, b in f.notes if b.startswith("[fix-stall]")]
@@ -310,7 +297,7 @@ def test_fix_stall은_이벤트키당_1회다(tmp_path):
     now_ts = datetime.now(tz(timedelta(hours=9))).isoformat()
     idx, f = _fix_카드(tmp_path, [
         {"author": "probe", "id": 1, "ts": now_ts,
-         "body": "[review-fix #93/3a18c0b5] 수정 dispatch 실패(에이전트 미등록) — 재시도 필요"},
+         "body": "[ci-fix a1 #93/3a18c0b5] 수정 dispatch 실패(에이전트 미등록) — 재시도 필요"},
     ])
     daemon.cycle(idx, set(), fetcher=f.fetch, poster=f.post)
     daemon.cycle(idx, set(), fetcher=f.fetch, poster=f.post)
