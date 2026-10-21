@@ -118,7 +118,7 @@
   경로로 남긴 선택. attempt 상한 강제는 "사람이 카드를 N회 작업한 것"을
   거부하는 셈이라 근거가 없다.
 - 따라서 probe·리뷰어는 attempt 숫자를 실패 신호로 읽지 않는다. 회차 해석이
-  필요한 판정(예: budget:attempt>=2)은 이미 policy.budget_reason이 담당하며,
+  필요한 판정(예: budget:claims>=2)은 이미 policy.budget_reason이 담당하며,
   이는 **자동 수령 풀**에만 적용된다(수동 claim 무관).
 
 ## 5. 비범위 (카드 명시)

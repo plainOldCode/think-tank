@@ -212,6 +212,7 @@ def claim(issue_id: str, p: ClaimIn, ctx: Ctx = Depends(get_ctx)):
                                    "started_at": dbmod.now(),
                                    "work_contract": json.dumps(ctx.contract, ensure_ascii=False),
                                    "execution_attempt": row["execution_attempt"] + 1,
+                                   "claim_count": (row["claim_count"] or 0) + 1,
                                    "lease_by": p.agent, "lease_expires": dbmod.future(p.safe_hours()),
                                    "heartbeat_at": dbmod.now(),
                                    "todo_since": None}, row["version"])
@@ -436,7 +437,7 @@ def pull(p: ClaimIn, ctx: Ctx = Depends(get_ctx)):
             if cand["state"] == "todo":
                 res = c.execute(
                     "UPDATE issues SET state='in_progress', assignee=?, reviewer=NULL, premise_rework=0, started_at=?, lease_by=?, lease_expires=?, "
-                    "heartbeat_at=?, updated_at=?, work_contract=?, execution_attempt=execution_attempt+1, "
+                    "heartbeat_at=?, updated_at=?, work_contract=?, execution_attempt=execution_attempt+1, claim_count=claim_count+1, "
                     "version=version+1 WHERE id=? AND state='todo' AND assignee=''",
                     (p.agent, ts, p.agent, dbmod.future(p.safe_hours()), ts, ts,
                      json.dumps(ctx.contract, ensure_ascii=False), iid),
@@ -444,7 +445,7 @@ def pull(p: ClaimIn, ctx: Ctx = Depends(get_ctx)):
             else:
                 res = c.execute(
                     "UPDATE issues SET assignee=?, lease_by=?, lease_expires=?, heartbeat_at=?, updated_at=?, "
-                    "work_contract=?, execution_attempt=execution_attempt+1, version=version+1 "
+                    "work_contract=?, execution_attempt=execution_attempt+1, claim_count=claim_count+1, version=version+1 "
                     "WHERE id=? AND state='in_progress' AND lease_expires<?",
                     (p.agent, p.agent, dbmod.future(p.safe_hours()), ts, ts,
                      json.dumps(ctx.contract, ensure_ascii=False), iid, ts),

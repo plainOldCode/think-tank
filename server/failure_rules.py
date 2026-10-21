@@ -79,7 +79,7 @@ FAILURE_RULES = (
                              "(tt-runner.py stall_check) — 재dispatch·반복 에스컬레이션은 미연결"},
 
     {"code": "budget_exhausted",
-     "judgment": "dispatch-tries>=2 (policy 안정 코드 budget_reason)",
+     "judgment": "dispatch-tries>=2 · claims>=2 (policy 안정 코드 budget_reason)",
      "default": "needs-human 유지 — 완화 금지",
      "handling": HANDLING_R, "wired": "server/probe/core.py decide ③ + execute needs-human",
      "agg": "2", "note": "현행 안전장치 그대로"},

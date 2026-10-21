@@ -221,6 +221,33 @@ def connect(path):
             con.execute(f"ALTER TABLE issues ADD COLUMN {col}")
         except sqlite3.OperationalError:
             pass
+    # M5BNMHB7-RBQE: 예산 축을 claim 횟수로 — execution_attempt는 회차 ID로 남긴다.
+    # 신설 1회만 백필(재기동마다 덮지 않음): events 시대 카드는 claim 이벤트 수
+    # (pull은 via=pull 이벤트, claim은 issue.updated fields에 lease_by·started_at 동시 포함),
+    # events 이전 생성 카드는 execution_attempt(보수적 — 현행 동작 보존).
+    _cols = {r[1] for r in con.execute("PRAGMA table_info(issues)").fetchall()}
+    if "claim_count" not in _cols:
+        con.execute("ALTER TABLE issues ADD COLUMN claim_count INTEGER NOT NULL DEFAULT 0")
+        _row = con.execute("SELECT MIN(ts) FROM events").fetchone()
+        _first = _row[0] if _row else None
+        if _first:
+            _claims = {}
+            for _eid, _payload in con.execute(
+                    "SELECT entity_id, payload FROM events WHERE kind='issue.updated' AND entity='issue'").fetchall():
+                try:
+                    _p = json.loads(_payload)
+                except (ValueError, TypeError):
+                    continue
+                _f = _p.get("fields") or []
+                if _p.get("via") == "pull" or (_p.get("state") == "in_progress"
+                                               and "lease_by" in _f and "started_at" in _f):
+                    _claims[_eid] = _claims.get(_eid, 0) + 1
+            for _eid, _n in _claims.items():
+                con.execute("UPDATE issues SET claim_count=? WHERE id=? AND created_at>=?", (_n, _eid, _first))
+            con.execute("UPDATE issues SET claim_count=execution_attempt WHERE created_at<?", (_first,))
+        else:
+            con.execute("UPDATE issues SET claim_count=execution_attempt")
+        con.commit()
     # todo_since 백필 — 진입 시각 미상 기존 todo는 생성각으로(보수적 지연 판정, 사람 판단용)
     try:
         con.execute("UPDATE issues SET todo_since=created_at WHERE state='todo' AND todo_since IS NULL")

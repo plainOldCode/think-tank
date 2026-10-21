@@ -193,7 +193,7 @@ docs/archive/probe-restructure-design.md §5.2의 단조성 — LLM 출력은 `h
 
 ## 9. 계약 보존 명시
 
-- **policy 안정 문자열 코드**는 변경 금지: state:terminal, archived, state:backlog, state:blocked, state:review, lease_held, budget:dispatch-tries>=2, budget:attempt>=2, not_auto. 본 규칙표는 이 코드 위에서 읽히는 데이터다.
+- **policy 안정 문자열 코드**는 변경 금지: state:terminal, archived, state:backlog, state:blocked, state:review, lease_held, budget:dispatch-tries>=2, budget:claims>=2, not_auto. (budget:attempt>=2는 2026-10-21 M5BNMHB7-RBQE로 budget:claims>=2로 교체 — 예산 축이 claim 횟수가 됨) 본 규칙표는 이 코드 위에서 읽히는 데이터다.
 - **probe 코멘트 마커 7종** 형식(review-req, review-fix, ci-fix, needs-merge, stale-notify, draft-flagged, pr-adopted)은 변경 금지. 새 사유는 마커가 아니라 표 행으로 대응한다.
 - **409 코드**(own_work/lease_held/review_occupied)는 리뷰 라우팅(카드 M4JTJ970-WS3C)과 정합 — 본 규칙표의 lease_conflict_401 행도 같은 코드를 참조한다.
 - **1카드=1PR** — 본 설계도 단일 PR(브랜치 tt/M4JYTVXP-WVBY-gate-failure-rules)로 제출한다.

@@ -65,7 +65,9 @@ def _label_track(issues, label, exclude_id):
     n = len(priors)
     done_r = sum(1 for x in priors if x["state"] == "done") / n
     nh_r = sum(1 for x in priors if x.get("waiting_for") == "human") / n
-    atts = [float(x.get("execution_attempt") or 0) for x in priors]
+    # M5BNMHB7-RBQE: 라벨 트랙 점수도 claim 횟수 기준 — 본문 수정은 노이스다.
+    atts = [float(x.get("claim_count") if x.get("claim_count") is not None
+                  else x.get("execution_attempt") or 0) for x in priors]
     avg_att = sum(atts) / n
     score = done_r - nh_r - min(0.5, max(0.0, avg_att - 1) * 0.1)
     return {"n": n, "done_r": done_r, "nh_r": nh_r, "avg_att": avg_att, "score": score}
