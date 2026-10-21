@@ -46,8 +46,18 @@ def test_active_lease_blocks_expired_lease_does_not():
 
 def test_budget_blocked_codes():
     assert policy.busy_reason(_i(dispatches=2), now=NOW) == "budget:dispatch-tries>=2"
-    assert policy.busy_reason(_i(execution_attempt=2), now=NOW) == "budget:attempt>=2"
-    assert policy.busy_reason(_i(dispatches=1, execution_attempt=1), now=NOW) is None
+    assert policy.busy_reason(_i(claim_count=2), now=NOW) == "budget:claims>=2"
+    assert policy.busy_reason(_i(dispatches=1, claim_count=1), now=NOW) is None
+
+
+def test_body_edits_do_not_consume_budget():
+    """M5BNMHB7-RBQE — execution_attempt(회차 ID)는 예산이 아니다. 본문 수정만으로
+    올라간 attempt는 자동 배정을 막지 않는다(claim 횟수만 예산 축)."""
+    # 본문 수정 2회 → attempt 2, claim 0 — 배정 가능해야 한다
+    edited = _i(execution_attempt=2)
+    assert policy.busy_reason(edited, now=NOW) is None
+    # 반대로 claim 2회면 attempt와 무관하게 예산 소진
+    assert policy.busy_reason(_i(claim_count=2, execution_attempt=0), now=NOW) == "budget:claims>=2"
 
 
 def test_not_auto_only_when_auto_mode():

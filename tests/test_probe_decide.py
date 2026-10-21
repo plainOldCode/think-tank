@@ -148,9 +148,15 @@ def test_two_dispatch_tries_becomes_needs_human_not_work():
     assert decide(snap([t])) == [act("T1", "needs-human", "budget:dispatch-tries>=2")]
 
 
-def test_attempt_two_becomes_needs_human():
+def test_claims_two_becomes_needs_human():
+    t = issue("T1", labels=["auto"], claim_count=2)
+    assert decide(snap([t])) == [act("T1", "needs-human", "budget:claims>=2")]
+
+
+def test_body_edit_attempt_does_not_block_auto_dispatch():
+    """M5BNMHB7-RBQE — 본문 수정만으로 오른 attempt(claim 0)는 자동 배정을 막지 않는다."""
     t = issue("T1", labels=["auto"], execution_attempt=2)
-    assert decide(snap([t])) == [act("T1", "needs-human", "budget:attempt>=2")]
+    assert decide(snap([t])) == [act("T1", "work", "pool")]
 
 
 def test_disabled_or_hookless_agent_is_skipped():

@@ -52,7 +52,7 @@ Concurrent claims use the `version` column as an optimistic lock — `pull` is d
 
 `server/policy.py` is the one source for "can this card take new work / a review claim" — probe auto-assignment and `POST /pull` **enforce** it (ineligible candidates are skipped / never dispatched), while `POST /issues/{id}/claim` uses it to **annotate** applicable non-todo rejections (the `[policy: <code>]` suffix may be absent; budget-exhausted todo cards are not blocked on direct claim). Codes surface verbatim in claim 409 bodies, probe logs (`[probe] cycle ... skips={...}`) and `needs-human` reasons:
 
-`state:terminal` · `archived` · `state:backlog` · `state:blocked` · `state:review` · `state:in_progress` · `state:todo` · `lease_held` (= runner running; expired leases are re-claimable, not busy) · `budget:dispatch-tries>=2` · `budget:attempt>=2` · `not_auto` (probe auto mode: no `auto` label).
+`state:terminal` · `archived` · `state:backlog` · `state:blocked` · `state:review` · `state:in_progress` · `state:todo` · `lease_held` (= runner running; expired leases are re-claimable, not busy) · `budget:dispatch-tries>=2` · `budget:claims>=2` (claim+pull pickups; body edits don't consume it) · `not_auto` (probe auto mode: no `auto` label).
 
 Review-claim eligibility (`policy.review_eligible`): `review` state + work contract (`no_contract`), not the agent's own work (`own_work` — also enforced by claim-review 409), no other reviewer's active lease (`review_occupied`). Cross-review auto-claim: probe picks an idle non-author agent and dispatches the review contract; requests dedupe via the `[review-req #pr/sha8]` marker comment.
 

@@ -10,7 +10,7 @@ reason code는 안정(stable) 문자열 — 로그·코멘트 파싱 전제라 �
 - "state:blocked"         차단(why-blocked 대기)
 - "state:review"          리뷰 중 — 새 작업 배정 불가(리뷰 자체는 계속)
 - "lease_held"            유효 작업 lease = 러너 실행 중(동일 차원, 단일 코드)
-- "budget:dispatch-tries>=2" / "budget:attempt>=2"   #1 배정 건너뜀 예산
+- "budget:dispatch-tries>=2" / "budget:claims>=2"   #1 배정 건너뜀 예산
 - "not_auto"              auto 모드인데 auto 라벨 없음(probe 한정)
 - "no_verify"             auto 모드인데 brief_verify(정확한 명령) 비어 있음(P8MN)
 """
@@ -92,11 +92,14 @@ def _get(i, k, default=None):
 
 
 def budget_reason(i):
-    """#1 배정 건너뜀 예산 — dispatch 횟수·실행 회차 상한."""
+    """#1 배정 건너뜀 예산 — dispatch 횟수·claim 횟수 상한(M5BNMHB7-RBQE).
+
+    예산 축은 claim 횟수(claim+pull 수령)다. 본문 수정 등 scope 변경은
+    execution_attempt(회차 ID)만 올리므로 예산을 소모하지 않는다."""
     if (_get(i, "dispatches") or 0) >= 2:
         return "budget:dispatch-tries>=2"
-    if (_get(i, "execution_attempt") or 0) >= 2:
-        return "budget:attempt>=2"
+    if (_get(i, "claim_count") or 0) >= 2:
+        return "budget:claims>=2"
     return None
 
 
