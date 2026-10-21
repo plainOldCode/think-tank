@@ -248,17 +248,26 @@ def _exec_verify_or_deliver(core, url, act, cur):
 
 
 def _review_repo(core, url, cur):
-    """리뷰 지시문 위치 표기용 저장소(AXXW) — 카드 repo 마커 → 부모 카드 순.
+    """리뷰 지시문 위치 표기용 저장소(AXXW) — 카드 마커 → 부모 카드 → PR 제출물.
 
     report 모드 제출물의 delivery에는 위치가 없다(실측 #666: 리뷰어가 $HOME 전체
-    find로 들어가 26분+ 무음 → STALL → TIMEOUT kill). 위치는 카드 첫 줄
-    `repo: owner/name` 마커와 card_repo() 라벨 폴백이 이미 계약이므로 그걸 쓴다."""
+    find로 들어가 26분+ 무음 → STALL → TIMEOUT kill). 순서: 카드 첫 줄
+    `repo: owner/name` 마커(card_repo 라벨 폴백 포함) → 부모 카드 마커 →
+    completion_report.delivery.repo(PR 제출물). 어느 경로든 프로브 틱이 죽지
+    않게 부모 페치 실패는 흡수한다(agy RC1 — api는 url+path를 직접 조립한다)."""
     repo = core.card_repo(cur)
     if not repo and cur.get("parent_id"):
-        parent = core.api(url, cur["parent_id"])
+        try:
+            parent = core.api(url, "/issues/%s" % cur["parent_id"])
+        except Exception:
+            parent = None
         if isinstance(parent, dict):
             repo = core.card_repo(parent)
-    return repo
+    if not repo:
+        _d = ((cur.get("completion_report") or {}).get("delivery") or {})
+        if isinstance(_d, dict) and _d.get("repo"):
+            repo = _d["repo"]
+    return repo or None
 
 
 def _review_dispatch_message(act, target, repo=None):

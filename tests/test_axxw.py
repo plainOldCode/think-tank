@@ -8,6 +8,9 @@ from probe.tt_lifecycle import _review_dispatch_message, _review_repo
 
 
 class _FakeCore:
+    """api 계약 준수 모의 — probe.core.api는 url.rstrip('/')+path를 직접 조립하므로
+    경로는 반드시 /issues/<id> 형태여야 한다(agy RC1·RC2)."""
+
     @staticmethod
     def card_repo(issue):
         from probe.core import card_repo
@@ -15,8 +18,7 @@ class _FakeCore:
 
     @staticmethod
     def api(url, path, *a, **k):
-        # 부모 카드 페치 흉내 — parent_id가 path에 있으면 본문 있는 카드 반환
-        if path == "PARENT":
+        if path == "/issues/PARENT":
             return {"id": "PARENT", "title": "에픽", "body": "완료 기준: 리뷰\nrepo: owner/parent-repo"}
         return None
 
@@ -25,6 +27,12 @@ class _NoParentCore(_FakeCore):
     @staticmethod
     def api(url, path, *a, **k):
         return None
+
+
+class _BrokenCore(_FakeCore):
+    @staticmethod
+    def api(url, path, *a, **k):
+        raise ConnectionError("네트워크 단절 — 프로브 틱이 죽으면 안 된다")
 
 
 ACT = {"issue": "TT-1", "subject": "s", "retry": 0}
@@ -58,6 +66,19 @@ def test_둘_다_없으면_미지정_문구로_예외_없다():
     m = _msg(repo=repo)
     assert "저장소 미지정" in m
     assert "$HOME 전체 find" in m
+
+
+def test_부모_페치_실패는_흡수되고_PR_제출물_delivery로_폴백한다():
+    # agy RC1 — 부모 카드 404·네트워크 오류여도 프로브 틱이 중단되지 않는다
+    cur = {"id": "TT-5", "title": "t", "body": "본문만", "parent_id": "PARENT",
+           "completion_report": {"delivery": {"mode": "pr", "repo": "owner/pr-repo"}}}
+    assert _review_repo(_BrokenCore, "u", cur) == "owner/pr-repo"
+    # 마커·부모 모두 없어도 delivery.repo가 최종 폴백
+    cur2 = {"id": "TT-6", "title": "t", "body": "본문만", "completion_report": {"delivery": {"repo": "owner/pr-repo2"}}}
+    assert _review_repo(_NoParentCore, "u", cur2) == "owner/pr-repo2"
+    # completion_report가 이상 형태여도 예외 없음
+    for bad in (None, {}, {"delivery": None}, {"delivery": "x"}):
+        assert _review_repo(_NoParentCore, "u", {"title": "t", "completion_report": bad}) is None
 
 
 def test_라벨_폴백도_마커_대신_쓴다():
