@@ -1858,3 +1858,23 @@ class Test2NHNApproval(unittest.TestCase):
         self.assertEqual(R.is_approval(""), (False, None))
         self.assertEqual(R.is_approval("승인 #abc"), (False, None))
         self.assertEqual(R.is_approval("작업 지시\n승인"), (False, None))  # 첫 줄만 본다
+
+
+class TestAckRemoval(unittest.TestCase):
+    """M58QRREG-A00H — poll 배달 후 /ack 호출 제거(서버 라우트 부재 → 매 발령 405 노이즈)."""
+
+    def setUp(self):
+        self.saved = {n: getattr(R, n) for n in ("execute_once", "tt_http_raw")}
+        R.execute_once = lambda p, session: None
+        self.http = []
+        R.tt_http_raw = lambda method, path, body=None: self.http.append((method, path))
+
+    def tearDown(self):
+        for n, orig in self.saved.items():
+            setattr(R, n, orig)
+
+    def test_poll_배달은_ack를_보내지_않는다(self):
+        # 수신 확인은 pickup의 status=ok 마킹(이중 전달 차단)이 이미 담당한다.
+        R.deliver_item({"dispatch_id": 901, "issue_id": "ACK-1", "agent": "p-read",
+                        "message": "작업", "context": ""})
+        self.assertEqual(self.http, [])
