@@ -387,9 +387,6 @@ def _probe_marker(i, marker):
                if c.get("author") == "probe")
 
 
-# 12MZ reviewer_session_failed — 판정 없는 리뷰 정체(W S3C 실측: codex 세션이
-# dispatch 후 스트림 오류로 사망 → 같은 마커 dedup에 걸려 영구 정체).
-REVIEW_RETRY_MAX = 3
 # BG97 relay 관측자 — 이 author들의 코멘트는 '활동'으로 세지 않는다(관측·시스템 기록).
 # runner 계열(runner@host)도 활동에서 제외한다 — 세션 수명 관측(queued/done/failed/
 # STALL-killed)일 뿐 워커 진행 증거가 아니므로, 실패 기록 하나가 무반응 양도를
@@ -1093,9 +1090,6 @@ def patch_ids_for(repo, base, shas):
         if pid:
             out[(repo, sha)] = pid
     return out
-
-
-REVIEW_STATUS_CTX = "tt/review-approved"
 
 
 def collect_prs(repos=None):

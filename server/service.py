@@ -94,14 +94,31 @@ def bump(c, issue_id, fields, expected_version=None):
     c.commit()
 
 
+def original_instruction(message):
+    """첨부(standing orders·brief) 이전 원본 지시문 복원(2NHN) — 게이트 스코프.
+
+    러너의 파괴적 패턴 게이트·승인 판정은 첨부가 섞인 본문이 아니라 원본을 봐야
+    한다. DB 스키마 변경 없이 전달 본문에서 섹션 마커 앞부분으로 복원한다."""
+    cut = len(message or "")
+    for marker in ("\n\n[standing orders]", "\n\n[brief]"):
+        i = (message or "").find(marker)
+        if i != -1 and i < cut:
+            cut = i
+    return (message or "")[:cut]
+
+
 def finish_issue_dispatches(c, issue_id):
-    """Close active projections in the caller's issue transaction; no hook required."""
-    ph = ",".join("?" * len(config.ACTIVE_RUN_STATES))
+    """Close active projections in the caller's issue transaction; no hook required.
+
+    held(게이트 보류) 행도 종료 카드에서는 닫는다(2NHN) — ACTIVE_RUN_STATES는
+    그대로(활성 정의 불변)이고 여기서만 확장한다."""
+    states = (*config.ACTIVE_RUN_STATES, "held")
+    ph = ",".join("?" * len(states))
     rows = c.execute(
         f"SELECT id FROM dispatches WHERE issue_id=? AND run_state IN ({ph}) "
         "AND EXISTS (SELECT 1 FROM issues i WHERE i.id=dispatches.issue_id "
         "AND (i.state IN ('done','cancelled') OR i.archived=1))",
-        (issue_id, *config.ACTIVE_RUN_STATES)).fetchall()
+        (issue_id, *states)).fetchall()
     ts = dbmod.now()
     for row in rows:
         c.execute("UPDATE dispatches SET run_state='finished', ended_at=? WHERE id=?",

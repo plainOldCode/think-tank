@@ -104,6 +104,8 @@ def _dispatch_payload(issue, ag, p, did, issue_id, request, ctx, prev, tail,
         # 러너가 페이로드의 agent로 프로필을 정확 매칭한다 — 등록명(폴백 해석 후)을
         # 실어 보내야 codex@m2max → codex 폴백이 실제 세션을 연다(WGT4 리뷰 R1).
         "agent": agent_name or p.agent, "author": p.author, "message": p.message,
+        # 2NHN: 게이트·승인 판정용 원본 지시문 — 러너는 첨부물을 판정에 쓰지 않는다.
+        "instruction": service.original_instruction(p.message),
         "context": "" if p.fresh else (prev["context"] if prev else ""),
         "comments": tail,
         "tt_url": str(request.base_url).rstrip("/"),
@@ -508,7 +510,7 @@ def dispatch_progress(issue_id: str, dispatch_id: int, p: DispatchProgress, requ
         # Closed issues may accept old physical cleanup, but historical completion
         # comments must never be added to the current attempt's evidence.
         accept_comment = bool(p.comment) and current_attempt
-        if closed and p.state in config.ACTIVE_RUN_STATES:
+        if closed and (p.state in config.ACTIVE_RUN_STATES or p.state == "held"):
             service.finish_issue_dispatches(c, issue_id)
             return dict(c.execute("SELECT * FROM dispatches WHERE id=?", (dispatch_id,)).fetchone())
         ts = p.ts if p.ts else dbmod.now()

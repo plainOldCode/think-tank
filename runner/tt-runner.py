@@ -60,8 +60,42 @@ PROGRESS_S = int(os.environ.get("TT_RUNNER_PROGRESS_S", "30"))
 DEFAULT_TIMEOUT_S = 1800
 OVERRIDE_KEYS = {"model", "reasoning", "workspace", "continue_session"}
 APPROVE_WORDS = {"승인", "approve"}
-# 파괴적 명령어 원문 목록은 미확보 — 아래는 그 전까지의 최소 초안 목록이며
-# 후속 작업에서 원문과 대조·대체해야 한다(미실증 항목으로 전달).
+# 서버가 dispatch message 뒤에 붙이는 섹션 마커 — 원본 지시문 복원 경계(2NHN).
+_ATTACH_MARKERS = ("\n\n[standing orders]", "\n\n[brief]")
+
+
+def instruction_of(p):
+    """게이트·승인 판정 대상 지시문 — 서버 첨부(standing orders·brief) 제외(2NHN).
+
+    서버는 dispatch payload에 instruction(첨부 전 원본)을 실어준다. 구 서버처럼
+    필드가 없으면 본문 첫 섹션으로 폴백한다. 에이전트 전달 본문은 기존대로
+    message 전체다 — 이 함수는 판정에만 쓴다."""
+    if p.get("instruction") is not None:
+        return p.get("instruction") or ""
+    msg = p.get("message") or ""
+    cut = len(msg)
+    for marker in _ATTACH_MARKERS:
+        i = msg.find(marker)
+        if i != -1:
+            cut = min(cut, i)
+    return msg[:cut]
+
+
+def is_approval(message):
+    """승인 판정 — 첫 줄 정확 일치만(2NHN).
+
+    서버가 모든 발령에 brief를 붙이므로 전문 일치('승인')는 달성 불가능했다 —
+    첫 줄이 '승인'/'approve'(대소문자 무시)이거나 '승인 #<dispatch_id>' 형태면
+    승인으로 본다. 접두 일치는 금지 — "approve the PR…" 같은 일반 지시가 해제로
+    오판된다. 반환: (승인 여부, 지정 dispatch_id|None)."""
+    first = (message or "").strip().split("\n", 1)[0].strip()
+    m = re.match(r"^(?:승인|approve)(?:\s+#(\d+))?$", first, re.IGNORECASE)
+    if not m:
+        return False, None
+    return True, int(m.group(1)) if m.group(1) else None
+# 파괴적 패턴 게이트는 지시문 원본(instruction — 서버 첨부 제외)만 검사한다(2NHN).
+# 아래는 진성 파괴적 지시 패턴 목록. 카드 brief 본문은 검사 대상이 아니다(에이전트는
+# 카드를 읽는다) — brief VERIFY의 생성물 정리 명령까지 보류하지 않는다(8G41 실측).
 DESTRUCTIVE = [
     r"rm\s+(-[a-z]*\s+)*-?[rRf]", r"\bgit\s+push\b", r"\bsudo\b",
     r"\bdrop\s+(table|database|schema)\b", r"\bmkfs\b", r"\bkillall\b",
@@ -555,6 +589,7 @@ def claim_dispatch(p, ctx_session=None, ctx_alive=False):
                 runs[key] = {"status": "queued", "issue_id": str(p["issue_id"]),
                              "dispatch_id": p["dispatch_id"], "agent": str(p.get("agent") or ""),
                              "message": p.get("message", ""), "context_in": p.get("context", ""),
+                             "instruction": instruction_of(p),
                              "work_contract": p.get("work_contract"),
                              "execution_attempt": p.get("execution_attempt", 0),
                              "opts": p.get("_opts") or {},
@@ -579,6 +614,7 @@ def claim_dispatch(p, ctx_session=None, ctx_alive=False):
             runs[key] = {"status": "queued", "issue_id": str(p["issue_id"]),
                          "dispatch_id": p["dispatch_id"], "agent": str(p.get("agent") or ""),
                          "message": p.get("message", ""), "context_in": p.get("context", ""),
+                         "instruction": instruction_of(p),
                          "work_contract": p.get("work_contract"),
                          "execution_attempt": p.get("execution_attempt", 0),
                          "opts": p.get("_opts") or {},
@@ -1171,9 +1207,10 @@ def execute_once(p, session):
         tt_comment(ent["issue_id"], "runner:%s dispatch#%s 거부 — agent '%s' 미등록이거나 CLI 미설치 (장부:%s)"
                    % (machine_name(), p["dispatch_id"], p.get("agent"), key))
         return
-    pat = destructive_hit(message)
+    pat = destructive_hit(instruction_of(ent))
     if pat and not ent.get("approved"):
         set_status(key, "held", gate=pat)
+        progress_projection(ent, "held")  # 2NHN — 보류도 점유: probe 재시도·stalled 오판 방지
         tt_comment(ent["issue_id"],
                    "runner:%s dispatch#%s 보류 — 파괴적 패턴(%s) 감지. 계속하려면 '승인'으로 재-dispatch. (장부:%s)"
                    % (machine_name(), p["dispatch_id"], pat, key))
@@ -1223,12 +1260,22 @@ def execute_once(p, session):
 
 
 def maybe_approve_release(p):
-    """held 런: message가 '승인'이면 대기 중이던 원 메시지를 통과시킨다."""
-    if (p.get("message") or "").strip().lower() not in APPROVE_WORDS:
+    """held 런: 승인(첫 줄 정확 일치)이면 대기 중이던 원 메시지를 통과시킨다(2NHN).
+
+    '승인 #<id>'는 그 dispatch의 held 런만 릴리스한다 — 다른 held는 유지.
+    해제 대상이 없으면 False(호출자가 APPROVE-NOTHING 로그)."""
+    ok, target = is_approval(instruction_of(p))
+    if not ok:
         return False
-    held = latest_held(p["issue_id"])
-    if not held:
-        return False
+    if target is not None:
+        held = "%s#%s" % (p["issue_id"], target)
+        with ledger_lock():
+            if (load_runs().get(held) or {}).get("status") != "held":
+                return False
+    else:
+        held = latest_held(p["issue_id"])
+        if not held:
+            return False
     ent = get_run(held)
     if not ent:
         return False
@@ -1694,7 +1741,7 @@ def deliver_item(p):
     """polling로 들어온 dispatch도 webhook과 동일한 execute_once 게이트를 통과한다."""
     if not all(k in p for k in ("dispatch_id", "issue_id", "message")):
         return
-    if (p.get("message") or "").strip().lower() in APPROVE_WORDS and maybe_approve_release(p):
+    if is_approval(instruction_of(p))[0] and maybe_approve_release(p):
         return
     session, fresh = prepare(p)
     if fresh:
@@ -1767,7 +1814,7 @@ class H(BaseHTTPRequestHandler):
         # 응답 == 실제 수락·선점한 회차. 장부 파일 연산만 동기 실행하고 네트워크
         # 부수효과(TT 코멘트·흡수 finalize 보고)는 deferred로 미뤄 즉시 200 계약 유지.
         decided = None
-        if (p.get("message") or "").strip().lower() not in APPROVE_WORDS:
+        if not is_approval(instruction_of(p))[0]:
             try:
                 decided = preempt_round(p)
             except Exception as e:
@@ -1780,8 +1827,7 @@ class H(BaseHTTPRequestHandler):
 
     def _safe(self, p, decided=None):
         try:
-            msg = (p.get("message") or "").strip().lower()
-            if msg in APPROVE_WORDS:
+            if is_approval(instruction_of(p))[0]:
                 if not maybe_approve_release(p):
                     log("APPROVE-NOTHING dispatch#%s — 대기 중인 held 런 없음" % p.get("dispatch_id"))
                 return
