@@ -1754,3 +1754,107 @@ class BinaryPaneDecodeTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Test2NHNApproval(unittest.TestCase):
+    """M5CTMZH0-2NHN — 게이트 스코프(instruction)·첫 줄 승인·#<id> 지정 해제·held 투영."""
+
+    def setUp(self):
+        self.comments = []
+        self.prog_calls = []
+        self._saved = {n: getattr(R, n) for n in ("tt_comment", "tt_progress", "resolve_profile",
+                                                  "guard_workspace", "start_session", "execute_once")}
+
+        R.tt_comment = lambda iid, body: self.comments.append((str(iid), body))
+        R.tt_progress = lambda iid, did, payload: self.prog_calls.append((str(iid), did, payload)) or True
+        R.resolve_profile = lambda p: {"profile_name": "test"}
+        R.guard_workspace = lambda prof, ws: (TMP, None)
+        R.start_session = lambda key, prof, session, ws: None
+        self.released = []
+        R.execute_once = lambda p, session: self.released.append((p, session))
+
+    def tearDown(self):
+        for n, orig in self._saved.items():
+            setattr(R, n, orig)
+
+    def _held(self, issue, did, msg="rm -rf stuff"):
+        R.prepare({"dispatch_id": did, "issue_id": issue, "agent": "p-read",
+                   "message": msg, "context": ""})
+        R.update_run("%s#%s" % (issue, did), status="held", gate="rm")
+
+    def test_첫줄_승인은_brief가_붙어도_latest_held를_해제한다(self):
+        self._held("A1", 501)
+        p = {"dispatch_id": 601, "issue_id": "A1",
+             "message": "승인\n\n[brief]\n- VERIFY: rm -f x"}  # 서버 첨부 시뮬레이션
+        self.assertTrue(R.maybe_approve_release(p))
+        self.assertEqual(self.released[0][0]["message"], "rm -rf stuff")  # 원본 통과
+        self.assertEqual(R.get_run("A1#501")["approved"], True)
+
+    def test_승인_ID_지정은_그_런만_해제한다(self):
+        self._held("A2", 701)
+        self._held("A2", 702)
+        p = {"dispatch_id": 602, "issue_id": "A2", "message": "승인 #702"}
+        self.assertTrue(R.maybe_approve_release(p))
+        self.assertEqual([p2 for p2, _s in self.released][0]["dispatch_id"], 702)
+        self.assertEqual(R.get_run("A2#701")["status"], "held")   # 다른 held 유지
+        self.assertEqual(R.get_run("A2#702")["approved"], True)
+
+    def test_지정_대상이_held가_아니면_해제하지_않는다(self):
+        self._held("A3", 701)
+        self.assertFalse(R.maybe_approve_release(
+            {"dispatch_id": 603, "issue_id": "A3", "message": "승인 #999"}))
+        self.assertEqual(self.released, [])
+
+    def test_접두_문장은_승인이_아니다(self):
+        self._held("A4", 701)
+        for msg in ("approve the PR", "승인 부탁", "please approve", "승인해라"):
+            self.assertEqual(R.is_approval(msg), (False, None))
+            self.assertFalse(R.maybe_approve_release(
+                {"dispatch_id": 604, "issue_id": "A4", "message": msg}))
+        self.assertEqual(R.get_run("A4#701")["status"], "held")
+
+    def test_instruction_필드면_게이트는_instruction만_본다(self):
+        # brief의 rm -f는 보류하지 않는다 — VERIFY 생성물 정리(8G41 사례)
+        p = {"dispatch_id": 705, "issue_id": "A5", "agent": "p-read",
+             "instruction": "폴더를 정리하라",
+             "message": "폴더를 정리하라\n\n[brief]\n- VERIFY: rm -f x", "context": ""}
+        session, fresh = R.prepare(p)
+        self.assertTrue(fresh)
+        R.execute_once = self._saved["execute_once"]  # 실제 execute_once — 게이트만 검사
+        R.execute_once(p, session)
+        self.assertNotEqual(R.get_run("A5#705")["status"], "held")
+
+        # instruction에 진성 파괴 패턴이면 여전히 held + held 투영
+        p2 = {"dispatch_id": 706, "issue_id": "A5", "agent": "p-read",
+              "instruction": "rm -rf /tmp/target", "message": "rm -rf /tmp/target", "context": ""}
+        session2, fresh2 = R.prepare(p2)
+        self.assertTrue(fresh2)
+        R.execute_once(p2, session2)
+        self.assertEqual(R.get_run("A5#706")["status"], "held")
+        self.assertIn("held", [c[2]["state"] for c in self.prog_calls])
+
+    def test_instruction_없으면_첫_섹션만_검사한다(self):
+        # 구 서버 폴백 — brief 섹션의 rm -f는 무시
+        R.execute_once = self._saved["execute_once"]  # 실제 execute_once — 게이트 검사
+        p = {"dispatch_id": 707, "issue_id": "A6", "agent": "p-read",
+             "message": "do thing\n\n[brief]\n- VERIFY: rm -f x", "context": ""}
+        session, fresh = R.prepare(p)
+        self.assertTrue(fresh)
+        R.execute_once(p, session)
+        self.assertNotEqual(R.get_run("A6#707")["status"], "held")
+        # 첫 섹션 자체가 파괴적이면 held
+        p2 = {"dispatch_id": 708, "issue_id": "A6", "agent": "p-read",
+              "message": "rm -rf build\n\n[brief]\n- ok", "context": ""}
+        session2, fresh2 = R.prepare(p2)
+        self.assertTrue(fresh2)
+        R.execute_once(p2, session2)
+        self.assertEqual(R.get_run("A6#708")["status"], "held")
+
+    def test_is_approval_단위(self):
+        self.assertEqual(R.is_approval("승인"), (True, None))
+        self.assertEqual(R.is_approval("APPROVE"), (True, None))
+        self.assertEqual(R.is_approval("승인 #686"), (True, 686))
+        self.assertEqual(R.is_approval("approve #686"), (True, 686))
+        self.assertEqual(R.is_approval(""), (False, None))
+        self.assertEqual(R.is_approval("승인 #abc"), (False, None))
+        self.assertEqual(R.is_approval("작업 지시\n승인"), (False, None))  # 첫 줄만 본다

@@ -16,7 +16,6 @@ import os
 HANDLING_R = "R"          # 규칙만
 HANDLING_R_S = "R+S"      # 규칙 + LLM 요약(advisory)
 HANDLING_H = "H"          # 사람 (통보만 자동)
-HANDLING_BUG = "BUG"      # probe 수정으로 제거
 HANDLING_C = "C"          # 분류(advisory) + 사람 확인
 HANDLING_PENDING = "미확인"  # 행 자체가 미확정(§8) — 운영 처리 구분 아님, 확인 전 표기
 
