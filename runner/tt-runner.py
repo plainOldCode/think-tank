@@ -1746,11 +1746,8 @@ def deliver_item(p):
     session, fresh = prepare(p)
     if fresh:
         execute_once(p, session)
-    # ACK는 장부 done과 별개 — 실패해도 실행을 되돌리지 않는다.
-    ack = tt_http_raw("POST", "/agents/%s/ack" % urllib.parse.quote(RUNNER_NAME),
-                      {"dispatch_id": p["dispatch_id"]})
-    if isinstance(ack, dict) and ack.get("HTTP") not in (None, 0):
-        log("ACK-FAIL dispatch#%s HTTP %s (실행 유지)" % (p["dispatch_id"], ack["HTTP"]))
+    # ACK 제거(M58QRREG-A00H): 서버에 ack 라우트가 없어 매 발령마다 405 노이즈.
+    # 수신 확인은 poll pickup의 status=ok 마킹(이중 전달 차단)이 이미 담당한다.
 
 
 def poll_loop(stop):
