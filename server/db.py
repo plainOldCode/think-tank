@@ -226,8 +226,16 @@ def connect(path):
     # (pull은 via=pull 이벤트, claim은 issue.updated fields에 lease_by·started_at 동시 포함),
     # events 이전 생성 카드는 execution_attempt(보수적 — 현행 동작 보존).
     _cols = {r[1] for r in con.execute("PRAGMA table_info(issues)").fetchall()}
+    _added = False
     if "claim_count" not in _cols:
-        con.execute("ALTER TABLE issues ADD COLUMN claim_count INTEGER NOT NULL DEFAULT 0")
+        try:
+            con.execute("ALTER TABLE issues ADD COLUMN claim_count INTEGER NOT NULL DEFAULT 0")
+            _added = True
+        except sqlite3.OperationalError:
+            # 동시 connect() 레이스(WAL 스냅샷에 미반영된 타 커넥션 커밋) — CI test_api
+            # 실측(2026-10-21). 이미 있으면 백필은 그 커넥션이 했다는 뜻: 건너뛴다.
+            pass
+    if _added:
         _row = con.execute("SELECT MIN(ts) FROM events").fetchone()
         _first = _row[0] if _row else None
         if _first:

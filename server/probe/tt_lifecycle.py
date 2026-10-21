@@ -247,10 +247,42 @@ def _exec_verify_or_deliver(core, url, act, cur):
     })
 
 
-def _review_dispatch_message(act, target):
+def _review_repo(core, url, cur):
+    """리뷰 지시문 위치 표기용 저장소(AXXW) — 카드 마커 → 부모 카드 → PR 제출물.
+
+    report 모드 제출물의 delivery에는 위치가 없다(실측 #666: 리뷰어가 $HOME 전체
+    find로 들어가 26분+ 무음 → STALL → TIMEOUT kill). 순서: 카드 첫 줄
+    `repo: owner/name` 마커(card_repo 라벨 폴백 포함) → 부모 카드 마커 →
+    completion_report.delivery.repo(PR 제출물). 어느 경로든 프로브 틱이 죽지
+    않게 부모 페치 실패는 흡수한다(agy RC1 — api는 url+path를 직접 조립한다)."""
+    repo = core.card_repo(cur)
+    if not repo and cur.get("parent_id"):
+        try:
+            parent = core.api(url, "/issues/%s" % cur["parent_id"])
+        except Exception:
+            parent = None
+        if isinstance(parent, dict):
+            repo = core.card_repo(parent)
+    if not repo:
+        _d = ((cur.get("completion_report") or {}).get("delivery") or {})
+        if isinstance(_d, dict) and _d.get("repo"):
+            repo = _d["repo"]
+    return repo or None
+
+
+def _review_dispatch_message(act, target, repo=None):
     """tt-review 지시문 — 리뷰어 점유 후 발송 본문."""
+    if repo:
+        loc = (f"제출물/카드의 저장소는 {repo}다. 체크아웃은 ~/Work/<저장소명> 또는 "
+               "~/Work/reviews/<카드>-a<회차>-<sha8> 컨벤션을 먼저 확인하고, "
+               "$HOME 전체 find·탐색은 금지한다. 위치를 못 찾으면 승인 대신 "
+               "request-changes로 '위치 불명'을 보고하라. ")
+    else:
+        loc = ("저장소 미지정 — 카드 본문/코멘트에서 확인하라. "
+               "$HOME 전체 find·탐색은 금지한다. ")
     return (
         f"[auto review] TT 카드 {act['issue']}, 제출물 {act['subject']}, 재시도={act.get('retry', 0)}. "
+        + loc +
         f"리뷰어 점유 완료(agent={target}). GET /issues/{act['issue']}의 completion_report와 "
         "acceptance를 읽고 보고가 가리키는 커밋/문서/로컬 산출물 및 실행 증거를 독립 검증하라. "
         "GitHub/Gitea PR은 있으면 보조 자료로 사용한다. 자료 접근 불가를 승인으로 간주하지 말라. "
@@ -350,7 +382,7 @@ def _exec_review_or_fix(core, url, act, cur, decision):
         cur = _claim_review_target(core, url, act, cur)
         if cur is None:
             return
-        message = _review_dispatch_message(act, target)
+        message = _review_dispatch_message(act, target, repo=_review_repo(core, url, cur))
     else:
         if cur.get("reviewer"):
             core.api(url, f"/issues/{iid}", "PATCH", {
