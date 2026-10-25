@@ -31,6 +31,16 @@ from .cards import (CARD_IN_ANY, CARD_REPO, PR_URL, REPO, REPO_CARDS,  # noqa: F
                     _PATCH_ID_CACHE, _comment_pr_repos, _gh_pr_head, _repos_default,
                     card_from_branch, card_repo, ci_passed, collect_prs,
                     collect_repos, patch_id_for, patch_ids_for, pr_card_id)
+# TMXJ-S2 — 마커·증거·억제 규칙과 라우팅 규칙을 모듈로 이동했다. 재수출 유지.
+from .markers import (CI_BOTS, _AUTO_CLASSIFIED_RE, _DISPATCH_ID_RE, _ESC_FMT,  # noqa: F401
+                      _RELAY_OBSERVERS, _RUNNER_FAIL_RE, _UNBLOCK_FMT, _comment_after,
+                      _comment_ts, _correct_loop_sections, _evidence_unresolved,
+                      _ev_open, _iso, _probe_marker, _rejection_verdicts,
+                      _repeat_count, _suppressed)
+from .routing import (DEFAULT_REVIEW_MAP, NON_EXECUTORS, REVIEW_FALLBACK,  # noqa: F401
+                      _alias_resolve, _assignable, _impl_family, _receivable,
+                      _resolve_agent, _resolve_executor, _routing_family,
+                      effective_review_map, pick_reviewer, route_reviewer)
 
 from service import REVIEW_CONTRACT
 from config import PROBE_ACTIVE_RUN_STATES  # W0DF — 활성 run 상태 단일 정의
@@ -47,7 +57,6 @@ def _auto_todo(issues, exclude=()):
 
 
 DAEMON_AUTHOR = "tt-embedding-daemon"
-_AUTO_CLASSIFIED_RE = re.compile(r"^\[auto-classified\]\s+label=(\S+)", re.MULTILINE)
 AC_PRIO_WEIGHT = 0.5  # score→우선순위 보정 상한(±0.5) — 사람이 지정한 priority를 넘지 않게
 
 
@@ -115,13 +124,10 @@ from identity import alias_resolve as _identity_alias_resolve
 from identity import resolve as _identity_resolve
 # 발령자 결정(2026-10-10) 기본 카운터파트 표 — 저장 설정(review-routing)으로 override·확장
 # (D3: env 레이어 제거 — 웹 편집(XV84)으로 충분, mini에서 env 미사용 실측)
-DEFAULT_REVIEW_MAP = {"codex": "claude", "claude": "codex",
-                      "hermes": "codex", "opencode": "codex"}
 # 리뷰어 미가용 폴백 순서 — 발령자 결정 갱신(2026-10-14, XV84): agy→cursor-review→
 # codex→claude. cursor-review는 cursor의 읽기전용 리뷰 프로필. 런타임 순서 조정은
 # 설정(settings/review-routing, 웹 편집)이 이 기본값을 덮는다 — 재배포 불필요.
 # 1순위는 카운터파트 표(DEFAULT_REVIEW_MAP)가 정하고, 이 체인은 그 뒤를 잇는다.
-REVIEW_FALLBACK = ("agy", "cursor-review", "codex", "claude")
 # 진행 중 run 상태 — config.PROBE_ACTIVE_RUN_STATES 단일 정의를 쓴다(W0DF).
 # 서버 dispatch 투영(queued/running/stalled) + 러너 장부 상태(finalizing/held).
 _ACTIVE_RUN_STATES = PROBE_ACTIVE_RUN_STATES
@@ -144,154 +150,36 @@ def _occupies_card(row, execution_attempt=None):
 # 실행 불가 에이전트 — dispatch를 보드 트리아지 변환·판정 전용으로 소비한다(코드 작업 불가).
 # work/resume/review-fix 배정 대상에서 제외(M4NCNNRW-PXCJ) — 2026-10-11 RTZ1: auto 풀이
 # kanban-adapter에 review-fix를 배정해 트리아지 카드만 만들고 정체(#343).
-NON_EXECUTORS = ("kanban-adapter", "codex-read-only", "tt-reviewer")
 # CI 봇은 구현 에이전트가 아니다 — 미표기 취급(기본 라우팅)
-CI_BOTS = ("doc-check", "e2e")
 
 
-def effective_review_map():
-    """기본 카운터파트 표 — decide가 사이클당 1회 산출.
-
-    D3(M5BH92X3-JS7Q): env override 레이어 제거 — 저장 설정
-    (settings/review-routing)이 유일한 런타임 override다(_DecideCtx 합성)."""
-    return dict(DEFAULT_REVIEW_MAP)
 
 
-def _receivable(a):
-    """등록 에이전트가 dispatch 전달 가능한 상태인지(전달 사다리·재위임용).
-
-    hook/watcher/relay는 base_url(관찰·전달 기준 주소)가 필요하고, poll(M3B5JHGP)은
-    runner_name 선언만으로 러너 pending inbox를 통해 수령한다 — 포트 없는
-    CLI 에이전트(codex·claude류)의 배정 배제를 막는다. receive_mode 미선언
-    hook 에이전트는 구 등록분 호환으로 base_url만으로 전달 가능(선언 강제는 배정 단계).
-    """
-    if not a.get("enabled"):
-        return False
-    if (a.get("receive_mode") or "").strip() == "poll":
-        return bool((a.get("runner_name") or "").strip())
-    return bool(a.get("base_url"))
 
 
-def _assignable(a):
-    """자동 배정 후보 — RQRT 수신 계약 선언까지 요구(미선언 claim 409 루프 예방)."""
-    if not (a.get("receive_mode") or "").strip():
-        return False
-    return _receivable(a)
 
 
 # agent_family는 identity.py로 이동 — 위 임포트로 재수출된다.
 
 
-def _routing_family(name, rmap):
-    """라우팅 lookup용 가족 — 매핑 키(최장 prefix) 우선, 다음 고정 가족."""
-    base = (name or "").strip().lower().split("@", 1)[0]
-    for fam in sorted(set(rmap), key=len, reverse=True):
-        if base.startswith(fam):
-            return fam
-    return agent_family(name)
 
 
-def _impl_family(assignee):
-    """구현 에이전트의 가족 — CI 봇은 구현 에이전트가 아니라 None."""
-    a = (assignee or "").strip()
-    return None if a.lower() in CI_BOTS else agent_family(a)
 
 
-def route_reviewer(assignee, rmap):
-    """구현 에이전트 → 카운터파트 리뷰어(순수 — 가용성 무관).
-
-    미표기(CI 봇 포함)·미매칭 가족 → codex 기본. codex* 가족 구현은 매핑값(claude)으로 —
-    자기 리뷰 방지 원칙이 codex 기본보다 우선(발령자 결정 2026-10-10).
-    구현 에이전트 소스는 카드 assignee — 서버 own_work 판정(claim-review 409)과 동일.
-    """
-    a = (assignee or "").strip()
-    if a.lower() in CI_BOTS:
-        a = ""
-    fam = _routing_family(a, rmap)
-    if fam and fam in rmap:
-        return rmap[fam]
-    return "codex"
 
 
-def _alias_resolve(cand, agents):
-    """별칭 사전 해석 — identity.alias_resolve 위임(3QMV 단일 소스)."""
-    return _identity_alias_resolve(cand, agents)
 
 
-def _resolve_agent(cand, agents):
-    """후보 → 실제 dispatch 대상 등록 에이전트 이름. 정확 일치 → 별칭 → 가족 매칭.
-
-    등록 에이전트 스냅샷(decide의 enabled+base_url 필터 통과 집합)에 없으면
-    None — 오프라인 판정의 기준. 규칙 본체는 identity.resolve(3QMV).
-    """
-    return _identity_resolve(cand, agents)
 
 
-def _resolve_executor(cand, agents):
-    """review-fix 발령 대상 해석 — 정확 일치 우선, 가족 매칭은 실행 가능 에이전트 한정.
-
-    PXCJ 리뷰 블로커: _resolve_agent의 가족 매칭은 등록 순서 첫 에이전트를 돌려
-    hermes@m2max·hermes가 kanban-adapter(실행 불가)로 해석될 수 있다 — hermes-m2max가
-    등록돼 있어도 수정 정체(#343 동형). 정확 일치가 NON_EXECUTOR면 그대로 돌려 실행
-    불가 통보 분기로 보내고, 가족 매칭은 NON_EXECUTORS를 제외한 후보만 본다. 리뷰어
-    라우팅(pick_reviewer)은 _resolve_agent를 그대로 쓴다 — 리뷰 대행은 의도된 동작.
-    """
-    for a in agents or []:
-        if a.get("name") == cand:
-            return cand
-    hit = _alias_resolve(cand, agents)
-    if hit:
-        return hit
-    fam = agent_family(cand)
-    for a in agents or []:
-        if a.get("name") in NON_EXECUTORS:
-            continue
-        if fam and agent_family(a.get("name")) == fam:
-            return a.get("name")
-    return None
 
 
 # --- 369Y(M5283JJH-369Y): 같은 지적 반복은 구조로 막기 — /correct 루프 차단 ---
 
 # 반려 사유 버킷(키워드 분류 — 대소문자 무시, 순서 민감: migration이 contract의
 # '스키마' 키워드보다 우선). 미분류는 general — 구조화 대상에서 뺀다.
-def _rejection_verdicts(cur):
-    """카드의 request-changes 판정 코멘트(시간순). TT·레거시 PR 경로 공용 형식.
-
-    71NK RC — 기계 author(runner 에코 등)의 첫 줄은 반려 집계에서 제외
-    (verdicts.is_machine_author — /rejections/summary와 동일 규칙)."""
-    out = []
-    for c in cur.get("comments") or []:
-        if first_line_verdict(c.get("body")) == "request-changes" \
-                and not _is_machine_author(c.get("author")):
-            out.append(c)
-    return out
 
 
-def _correct_loop_sections(cur):
-    """369Y — 발령문에 붙일 섹션 목록. 반복 유형 구조화 + 3회 반려 premise 강제.
-
-    같은 유형 2회 이상 → 구조화 체크 승격 지시. 카드 누적 반려 3회 이상 →
-    premise 재검토("같은 premise의 수정이 두 번 실패하면 premise부터 시험").
-    """
-    verdicts = _rejection_verdicts(cur)
-    if not verdicts:
-        return []
-    from collections import Counter
-    buckets = Counter(_classify_rejection(c.get("body") or "") for c in verdicts)
-    sections = []
-    repeated = sorted(((b, n) for b, n in buckets.items() if n >= 2 and b != "general"),
-                      key=lambda kv: (-kv[1], kv[0]))
-    if repeated:
-        lines = [f"- {b} 지적 {n}회 반복 — 수정 후 이 유형은 lint/테스트/계약 체크로 "
-                 "전환해 같은 지적이 재발하지 않게 한다" for b, n in repeated]
-        sections.append("--- 구조화 체크 승격 (369Y) ---\n" + "\n".join(lines))
-    if len(verdicts) >= 3:
-        sections.append(
-            "--- premise 재검토 (369Y) ---\n"
-            f"반려 {len(verdicts)}회 — 같은 premise의 수정이 두 번 실패했다면 premise부터 시험하라. "
-            "acceptance 정의와 접근 방식 자체를 재검토하고, 유지 근거를 카드 노트로 남긴다.")
-    return sections
 
 
 def _rejection_summary(url, days=30):
@@ -326,77 +214,20 @@ def _conversion_section(summary, cur):
     return "--- 반복 유형 전환 (RPXH) ---\n" + "\n".join(lines)
 
 
-def pick_reviewer(assignee, agents, busy, rmap, fallback=None):
-    """라우팅 + 미가용 폴백(순수). 전부 미가용이면 None — 레거시 폴백으로.
-
-    agents: 등록+활성 에이전트 스냅샷(오프라인 판정), busy: 활성 lease 보유
-    에이전트 이름 집합. 리스 보유는 에이전트 단위로만 판정한다(F3 — 가족 한 명의
-    lease가 가족 전체 후보를 막지 않는다, 검증기준 ①). 가족 매칭은 자기 리뷰
-    가드에만 쓴다. 작성자 본인 신원과 구현 가족(고정 어휘·어댑터 별칭·host 별칭
-    포함)은 매핑 확장과 무관하게 끝까지 제외된다 — 자기 리뷰 방지 유지.
-    """
-    a = (assignee or "").strip()
-    impl_fam = _impl_family(a)
-    primary = route_reviewer(assignee, rmap)
-    # 런타임 설정 우선(XV84) — fallback 인자가 snap["review_routing"]에서 온다
-    chain = [primary] + [c for c in (fallback or REVIEW_FALLBACK) if c != primary]
-    for cand in chain:
-        cand_fam = agent_family(cand)
-        if cand == a or (impl_fam and cand_fam == impl_fam):
-            continue  # 자기 리뷰 방지 — 본인 신원·구현 가족 후보 제외
-        name = _resolve_agent(cand, agents)
-        if name is None:
-            continue  # 오프라인
-        if name in (busy or []):
-            continue  # 리스 보유 — 에이전트 단위 판정(F3)
-        return name
-    return None
 
 
-def _probe_marker(i, marker):
-    return any(marker in (c.get("body") or "") for c in (i.get("comments") or [])
-               if c.get("author") == "probe")
 
 
 # BG97 relay 관측자 — 이 author들의 코멘트는 '활동'으로 세지 않는다(관측·시스템 기록).
 # runner 계열(runner@host)도 활동에서 제외한다 — 세션 수명 관측(queued/done/failed/
 # STALL-killed)일 뿐 워커 진행 증거가 아니므로, 실패 기록 하나가 무반응 양도를
 # 영구 차단해선 안 된다(리뷰 R5).
-_RELAY_OBSERVERS = {"probe", "tt-embedding-daemon", "tt-server", "board"}  # (사유,pr,sha) 카운터 한도 — 도달 시 needs-human 에스컬레이션
-_RUNNER_FAIL_RE = re.compile(r"runner:\S+ dispatch#(\d+) failed exit=[1-9]")
-_DISPATCH_ID_RE = re.compile(r"\(dispatch#(\d+)\)")
 
 
 
 
-def _comment_ts(c):
-    """댓글 시각 필드 — wire 형식은 ts(db.comments_of), 테스트/구형 호환 created_at."""
-    return c.get("ts") or c.get("created_at") or ""
 
 
-def _evidence_unresolved(i):
-    """현재 회차의 done 거부가 아직 해소되지 않았는지(리뷰 R5).
-
-    증거 경계(evidence_after_comment_id — 회차 리셋 시 갱신) 이후의 시스템
-    코멘트만 대상으로 한다. 경계 이전 거부는 이전 회차의 것 — 새 회차에서
-    재사용하지 않는다. 거부(DONE_GATE_MSG)와 접수('보고 접수') 중 최신
-    (ts, id 순)이 거부면 미해결. 접수된 성공 보고 뒤에 남은 과거 거부는
-    재요청하지 않는다. 접수 코멘트 이전 카드 호환으로 reported도 해소로 본다."""
-    b = i.get("evidence_after_comment_id") or 0
-    cands = []
-    for c in (i.get("comments") or []):
-        if c.get("author") != "tt-server" or (c.get("id") or 0) <= b:
-            continue
-        body = c.get("body") or ""
-        if body.startswith("done 증거 없음"):
-            cands.append(("reject", c.get("ts") or c.get("created_at") or "", c.get("id") or 0))
-        elif body.startswith("보고 접수"):
-            cands.append(("accept", c.get("ts") or c.get("created_at") or "", c.get("id") or 0))
-    if i.get("verification_status") == "reported":
-        return False
-    if not cands:
-        return False
-    return max(cands, key=lambda t: (t[1], t[2]))[0] == "reject"
 
 
 # ⑥ 반복 사건 억제(§6, TT M4K87YR0-HN7E) — 같은 (사유코드, 범위) 반복 N회 도달 시
@@ -405,55 +236,12 @@ def _evidence_unresolved(i):
 # dispatchd가 아닌 author가 남겼을 때만 카운터가 그 시점 이후로 재집계된다.
 # H 처리(budget_exhausted 등)와 reviewer_session_failed(자체 N=3)는 억제하지 않는다.
 
-_ESC_FMT = "[escalated ({}, {})]"
-_UNBLOCK_FMT = "[unblocked ({}, {})]"
 
 
-def _suppressed(i, code, scope):
-    """(억제 여부, 카운터 재집계 시작 comment id) — 해제 마커가 에스컬레이션보다
-    최신이면 해제된 것으로 보고 그 이후만 카운트한다."""
-    esc = _ESC_FMT.format(code, scope)
-    if not any(esc in (c.get("body") or "") for c in (i.get("comments") or [])):
-        return False, 0
-    since = 0
-    latest = None
-    for c in (i.get("comments") or []):
-        if c.get("author") in ("probe", "dispatchd"):
-            continue  # 사람 전용 해제 — probe 자동 초기화 금지(§6)
-        if _UNBLOCK_FMT.format(code, scope) in (c.get("body") or ""):
-            k = (c.get("ts") or c.get("created_at") or "", c.get("id") or 0)
-            if latest is None or k > latest[0]:
-                latest = (k, c.get("id") or 0)
-    if latest is None:
-        return True, 0
-    return False, latest[1]
 
 
-def _ev_open(i):
-    """⑤ 미해결 조건 — tt-server done 거부 미해소 또는 무보고 병합 미접수(JXYS R1).
-    판정(decide)과 집행(execute 재확인)이 같은 조건을 써야 독려가 실제 저장된다."""
-    cs = i.get("comments") or []
-    if any("done 증거 없음" in (c.get("body") or "") for c in cs
-           if c.get("author") == "tt-server") and _evidence_unresolved(i):
-        return True
-    if i.get("state") != "review":
-        return False  # 재작업 회귀 카드 — 옛 병합 기록으로 재독려 금지
-    mc = max((c for c in cs if c.get("author") == "probe"
-              and "merged — 완료 보고 없음" in (c.get("body") or "")),
-             key=lambda c: (_comment_ts(c), c.get("id") or 0), default=None)
-    if not mc:
-        return False
-    mt, mid = _comment_ts(mc), mc.get("id") or 0
-    return not any(c.get("author") == "tt-server"
-                   and "보고 접수" in (c.get("body") or "")
-                   and (_comment_ts(c), c.get("id") or 0) > (mt, mid) for c in cs)
 
 
-def _repeat_count(i, regex, since_id=0):
-    """probe 마커 코멘트 중 regex 일치 수(해제 시점 이후만) — (코드, 범위) 카운터."""
-    return sum(1 for c in (i.get("comments") or [])
-               if c.get("author") == "probe" and (c.get("id") or 0) > since_id
-               and re.search(regex, c.get("body") or ""))
 
 
 
@@ -489,23 +277,8 @@ def review_repeat_warn(url, iid, repeats):
 
 
 
-def _comment_after(x, dt, mid=0):
-    """(ts,id) 순서 판별 — DB 시각이 초 단위라 동초 접수도 id로 구분한다(리뷰 R2)."""
-    t = _iso(_comment_ts(x)) if dt else None
-    if t is None:
-        return False
-    if t > dt:
-        return True
-    if t == dt:
-        return (x.get("id") or 0) > (mid or 0)
-    return False
 
 
-def _iso(ts):
-    try:
-        return datetime.fromisoformat(ts)
-    except (ValueError, TypeError):
-        return None
 
 
 def _relay_timer_s(assignee, agents):
