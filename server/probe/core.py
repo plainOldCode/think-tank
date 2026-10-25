@@ -24,6 +24,14 @@ from datetime import datetime, timedelta
 import failure_rules
 import judge
 
+# TMXJ-S1 — 리프 심볼을 모듈로 이동했다. 아래 재수출로 기존 소비처
+# (`from probe.core import X`, probe/__init__)의 import 표면이 그대로 유지된다.
+from .http import GH, _gh, _post_json, api, get_version, gh_exec, gh_json  # noqa: F401
+from .cards import (CARD_IN_ANY, CARD_REPO, PR_URL, REPO, REPO_CARDS,  # noqa: F401
+                    _PATCH_ID_CACHE, _comment_pr_repos, _gh_pr_head, _repos_default,
+                    card_from_branch, card_repo, ci_passed, collect_prs,
+                    collect_repos, patch_id_for, patch_ids_for, pr_card_id)
+
 from service import REVIEW_CONTRACT
 from config import PROBE_ACTIVE_RUN_STATES  # W0DF — 활성 run 상태 단일 정의
 import policy
@@ -78,51 +86,14 @@ def _budget_blocked(i):
     return policy.budget_reason(i)
 
 
-def ci_passed(pr):
-    """CI green(순수): check-runs 1+ 전부 SUCCESS.
-    (9dbba0c 실사례 — gh run list의 headSha 반영이 체크 완료보다 늦어 사냥 실패;
-    gh pr checks는 HEAD check-runs 기준이라 이 병목이 없다 — run list는 병목이며 중복.)"""
-    checks = pr.get("checks") or []
-    return bool(checks) and all(c.get("state") == "SUCCESS" for c in checks)
 
 
-CARD_IN_ANY = re.compile(r"\bM[A-Z0-9]{6,9}-[A-Z0-9]{4}\b")
 
 
-def card_from_branch(branch):
-    # tt/ 접두어에 한정하지 않고 브랜치 전체에서 카드 ID 스캔 — 재작업 브랜치
-    # (hermes/…, fix/…) 흡수. 매칭은 8-4 ULID 실루엣(무작위 오탐 사실상 없음).
-    m = CARD_IN_ANY.search(branch or "")
-    return m.group(0) if m else None
 
 
-def pr_card_id(pr):
-    """PR→카드 조인 키. 브랜치(tt/<ID>-) 우선, 없으면 제목의 카드 ID(재작업으로
-    브랜치명이 규약 밖이 되는 경우 흡수 — 사용자 지시 2026-09-30)."""
-    iid = card_from_branch(pr.get("branch", ""))
-    if iid:
-        return iid
-    m = CARD_IN_ANY.search(pr.get("title", "") or "")
-    return m.group(0) if m else None
 
 
-def collect_repos(issues):
-    """PR 수집 repo 풀 — 알려진 repo(REPO_CARDS+TT_REPO_SCAN_EXTRA)는 항시, 카드 repo 표기는 동적.
-    review 카드 포함(GBE5 사고) + repo 미표기 카드도 known repo에서 브랜치/제목 ID로 발견된다(사용자 지시).
-    review 카드 코멘트의 PR URL도 편입(HG5S) — 스캔은 무해하고 실제 카드 연결은 pr_card_id 조인이 검증."""
-    out = sorted(set(REPO_CARDS.values()))
-    for extra in os.environ.get("TT_REPO_SCAN_EXTRA", "").split(","):
-        if extra.strip():
-            out.append(extra.strip())
-    for i in issues or []:
-        # in_progress 포함(JXYS R3) — 자동화 진입부 자체가 PR 수집을 전제로 한다.
-        if i["state"] in ("auto", "todo", "blocked", "review", "in_progress") or (i.get("labels") and "auto" in i["labels"]):
-            r = card_repo(i)
-            if r:
-                out.append(r)
-        if i["state"] == "review" and i.get("comments"):
-            out.extend(repo for repo, _ in _comment_pr_repos(i))
-    return out
 
 
 
@@ -485,13 +456,6 @@ def _repeat_count(i, regex, since_id=0):
                and re.search(regex, c.get("body") or ""))
 
 
-def _post_json(url, payload, timeout=5):
-    """90Y9 — 외부 hook으로 JSON POST(fire-and-forget). 실패는 호출부에서 생략."""
-    req = urllib.request.Request(url, method="POST",
-                                 data=json.dumps(payload).encode(),
-                                 headers={"content-type": "application/json"})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        return r.status
 
 
 def review_repeat_warn(url, iid, repeats):
@@ -523,17 +487,6 @@ def review_repeat_warn(url, iid, repeats):
         print(time.strftime("%F %T"), f"review-repeat hook 실패({e}) — 생략", flush=True)
 
 
-def _gh_pr_head(repo, pr_no):
-    """실행 직전 실제 PR head(sha8) — 카드 CAS는 GitHub push를 못 본다(리뷰 R3).
-
-    조회 실패는 None — 호출부는 폐기한다(오작동보다 침묵)."""
-    try:
-        # -q 필터는 원문 sha를 출력하므로 json.loads가 깨진다 — JSON 객체로 읽는다.
-        h = gh_json("pr", "view", str(pr_no), "--repo",
-                    repo or REPO_CARDS.get("think-tank", ""), "--json", "headRefOid")
-        return (str((h or {}).get("headRefOid") or "").strip()[:8]) or None
-    except Exception:
-        return None
 
 
 def _comment_after(x, dt, mid=0):
@@ -998,110 +951,35 @@ def decide(snap):
     return ctx.actions
 
 
-def api(url, path, method="GET", body=None):
-    req = urllib.request.Request(
-        url.rstrip("/") + path, method=method,
-        headers={"content-type": "application/json", "x-agent": os.getenv("TT_AGENT", "dispatchd")})
-    data = json.dumps(body).encode() if body is not None else None
-    with urllib.request.urlopen(req, data=data, timeout=15) as r:
-        raw = r.read().decode()
-    return json.loads(raw) if raw else None
 
 
-def get_version(url, iid):
-    return api(url, f"/issues/{iid}").get("version")
 
 
-def _repos_default():
-    return [r.strip() for r in os.environ.get("TT_REPO_SLUG", "plainOldCode/think-tank").split(",") if r.strip()]
 
 
-REPO_CARDS = {
-    "think-tank": "plainOldCode/think-tank",
-    "armour-wiki": "plainOldCode/armour-service-ops",
-    "armour": "plainOldCode/armour-service-ops",  # GBE5: hermes 표기 라벨 실측(2026-09-30)
-}
-REPO = os.environ.get("TT_REPO_SLUG", "plainOldCode/think-tank")
-
-CARD_REPO = re.compile(r"repo:\s*([\w.-]+/[\w.-]+)")
-PR_URL = re.compile(r"https://github\.com/([\w.-]+/[\w.-]+)/pull/(\d+)")
 
 
-def _comment_pr_repos(issue):
-    """카드 코멘트의 github PR URL → [(owner/repo, pr_no)] — 등장 순 중복 제거.
-
-    NB5T: 정본 파서는 ontology.build — decide는 그래프 질의를 쓴다(단계 치환)."""
-    from ontology.build import parse_comment_pr_repos
-    return parse_comment_pr_repos(issue.get("comments") or [])
 
 
-def card_repo(issue):
-    m = CARD_REPO.search((issue.get("body") or "") + " " + (issue.get("title") or ""))
-    if m:
-        return m.group(1)
-    for lab in issue.get("labels") or []:
-        if lab in REPO_CARDS:
-            return REPO_CARDS[lab]
-    return None
 
 
-GH = (shutil.which("gh")
-      or next((p for p in ("/opt/homebrew/bin/gh", "/usr/local/bin/gh") if os.path.exists(p)), "gh"))
 
 
-def _gh(args):
-    r = subprocess.run([GH, *[str(a) for a in args]], capture_output=True, text=True, timeout=120)
-    if r.returncode != 0:
-        raise RuntimeError(f"gh {' '.join(map(str, args))}: {r.stderr[:300]}")
-    return r.stdout
 
 
-def gh_json(*args):
-    return json.loads(_gh(list(args)) or "null")
 
 
-def gh_exec(*args):
-    return _gh(list(args))
+
 
 
 # SRJY — patch-id 프로세스 캐시: (repo, base, sha) → patch-id. 프로브 주기마다
 # 같은 head를 재계산하지 않게 한다(서버 재시작 시 재계산 — 무해).
-_PATCH_ID_CACHE = {}
 
 
-def patch_id_for(repo, base, sha):
-    """리뷰/병합 판정에 쓰는 git patch-id. 관측 실패는 None — 보류가 기본이다."""
-    from .providers import patch_id_of
-    if not repo or not base or not sha:
-        return None
-    key = (repo, base, sha)
-    if key not in _PATCH_ID_CACHE:
-        _PATCH_ID_CACHE[key] = patch_id_of(repo, base, sha, gh_exec)
-    return _PATCH_ID_CACHE[key]
 
 
-def patch_ids_for(repo, base, shas):
-    """readiness에 넘길 {(repo, sha): patch-id} 맵 — 실패 head는 생략(보류 유지)."""
-    out = {}
-    for sha in shas or []:
-        if not sha:
-            continue
-        pid = patch_id_for(repo, base, sha)
-        if pid:
-            out[(repo, sha)] = pid
-    return out
 
 
-def collect_prs(repos=None):
-    """Optional provider observations; TT_PR_PROVIDER=none disables GitHub I/O.
-
-    T3YT(M58SPT6D-T3YT): repo 단위 관측 결과(ok|failed)를 함수 속성에 실어
-    되돌린다 — 반환은 기존 PR 리스트 계약 유지(monkeypatch 호환). run_once가
-    snap["pr_observed"]로 승격한다."""
-    from .providers import collect
-    prs, observed = collect(list(repos) if repos else _repos_default(), gh_json)
-    collect_prs.observed = observed
-    return prs
 
 
 collect_prs.observed = {}
