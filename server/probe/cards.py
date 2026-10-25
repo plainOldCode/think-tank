@@ -142,3 +142,26 @@ def collect_prs(repos=None):
     prs, observed = collect(list(repos) if repos else _repos_default(), gh_json)
     collect_prs.observed = observed
     return prs
+
+
+# --- 진행 중 run 상태 — config.PROBE_ACTIVE_RUN_STATES 단일 정의(W0DF) ---
+
+from config import PROBE_ACTIVE_RUN_STATES  # W0DF — 활성 run 상태 단일 정의
+
+_ACTIVE_RUN_STATES = PROBE_ACTIVE_RUN_STATES
+
+
+def _occupies_card(row, execution_attempt=None):
+    """True when this dispatch should block a new review or fix spawn.
+
+    Terminal rows do not. An attempt strictly behind the card's current
+    execution_attempt is a leftover from an earlier round (M54E72RQ-SXGS) and
+    does not either — a killed session whose close was rejected used to sit here
+    forever and starve reviewer assignment. A missing attempt stays blocking.
+    """
+    if not isinstance(row, dict) or row.get("run_state") not in _ACTIVE_RUN_STATES:
+        return False
+    attempt = row.get("attempt")
+    if execution_attempt is not None and attempt is not None and attempt < execution_attempt:
+        return False
+    return True
