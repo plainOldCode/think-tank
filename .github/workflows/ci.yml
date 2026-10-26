@@ -7,16 +7,19 @@ jobs:
   tests:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: astral-sh/setup-uv@v5
         with:
           python-version: "3.12"
-      - uses: actions/setup-node@v4
+          # No requirements or lockfile. An empty glob skips the "nothing matched" warning.
+          cache-dependency-glob: ""
+      - uses: actions/setup-node@v5
         with:
           node-version: "22"
-      - run: uv venv --python 3.12 .venv
-      - run: uv pip install -p .venv/bin/python fastapi uvicorn httpx pytest coverage
+      # python-version already created and activated .venv. A second `uv venv` fails.
+      - run: uv pip install fastapi uvicorn httpx pytest coverage mypy
       - run: bash scripts/secret-scan.sh .
-      - run: .venv/bin/python -m pytest tests/ -q
+      - run: python -m pytest tests/ -q
+      - run: python -m mypy turbo --ignore-missing-imports
       - run: node tests/smoke_turbo_ui.mjs
       - run: PATH="$PWD/.venv/bin:$PATH" bash scripts/scenario-coverage.sh
