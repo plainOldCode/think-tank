@@ -14,7 +14,7 @@ BODY = "Implement the gate."
 CONTRACT = "Submit is rejected without a work token."
 SCOPE = {
     "paths": ["turbo/"],
-    "forbidden": ["server/db.py"],
+    "forbidden": ["turbo/legacy_schema.py"],
     "verify": [{"cmd": "pytest -q", "kind": "unit"}],
 }
 
@@ -237,7 +237,7 @@ def test_scope_and_verify_failure(tmp_path):
     assert outside.status_code == 409
     forbidden = client.post(f"/turbo/cards/{card['id']}/submit", json={
         "actor": "run-1", "sha": "ab" * 20, "pr": {},
-        "changed_paths": ["turbo/app.py", "server/db.py"], "work_token": token,
+        "changed_paths": ["turbo/app.py", "turbo/legacy_schema.py"], "work_token": token,
     })
     assert forbidden.status_code == 409
     failed = client.post(f"/turbo/cards/{card['id']}/submit", json={
@@ -286,10 +286,11 @@ def test_typecheck_level(tmp_path):
 
 
 def test_legacy_archive_is_read_only(tmp_path):
-    from db import connect
+    from turbo.legacy_schema import create_throwaway
 
     path = tmp_path / "tt.db"
-    con = connect(str(path))
+    create_throwaway(str(path))
+    con = sqlite3.connect(path)
     stamp = "2026-10-01T00:00:00+0000"
     con.execute(
         "INSERT INTO issues (id, title, body, state, created_at, updated_at, acceptance, "

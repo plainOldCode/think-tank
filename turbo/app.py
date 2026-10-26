@@ -12,7 +12,7 @@ from .errors import TurboError
 from .store import Store
 
 _STATIC = Path(__file__).resolve().parent / "static"
-_FONTS = Path(__file__).resolve().parents[1] / "server" / "static" / "fonts"
+_FONTS = _STATIC / "fonts"
 
 
 def _text(value: object) -> str:

@@ -342,3 +342,8 @@ def test_turbo_package_has_no_tmux_or_wake_relay():
     assert "tmux" not in text
     assert "send-keys" not in text
     assert not Path("scripts/tt-wake-relay.py").exists()
+    for gone in ("server", "runner", "skills", "cli", "daemon", "docs", "metrics"):
+        assert not Path(gone).exists(), gone
+    assert Path("deploy/com.tt.server.plist").is_file()
+    assert Path("scripts/deploy.sh").is_file()
+    assert Path("scripts/secret-scan.sh").is_file()
