@@ -96,6 +96,14 @@
         "interrupted": true,
         "spawns": 1
       }
+    },
+    {
+      "name": "the child already exited during the drain",
+      "op": "tick",
+      "expect": {
+        "state": "awaiting-human",
+        "spawns": 1
+      }
     }
   ]
 }

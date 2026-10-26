@@ -2,16 +2,16 @@
 
 `scripts/scenario-coverage.sh` measures `turbo/` with coverage.py branch coverage while `python -m turbo.scenarios run turbo/scenarios` drives a real server and the real `Runner`. The scenario engine and the tests are omitted (`--omit='*/turbo/scenarios/*'`). Nothing else is omitted, and there is no `# pragma: no cover`.
 
-`python -m turbo` and `python -m turbo.runner` run as child processes. The script sets `COVERAGE_PROCESS_START` so those processes are included. The server is stopped with SIGINT, which still writes the coverage file.
+`python -m turbo`, `python -m turbo.runner`, and `python -m turbo.migrate` run as child processes. The script sets `COVERAGE_PROCESS_START` so those processes are included. The server is stopped with SIGINT, which still writes the coverage file. The parent imports `turbo.migrate` so the `if __name__` false side is measured too.
 
 ## Result
 
 | | |
 |---|---|
-| Statements | **1276 / 1276 (100%)** |
-| Branches | **352 / 352 (100%)** |
+| Statements | **1541 / 1541 (100%)** |
+| Branches | **468 / 468 (100%)** |
 | Combined | **100%** |
-| Scenarios | **77** (`01` through `77`) |
+| Scenarios | **82** (`01` through `82`) |
 | `# TURBO-UNCOVERED` marks | **0** (the marker is gone) |
 
 The script passes `--fail-under=100`. CI runs it on pull requests and on pushes to `turbo`. A drop in statements or branches fails that job.
@@ -32,6 +32,11 @@ The script passes `--fail-under=100`. CI runs it on pull requests and on pushes 
 | `73` | `HttpAPI` reading a non-JSON error body |
 | `74`–`76` | `SubprocessProc` spawn, poll, output, SIGINT, and a child that deletes its output file |
 | `77` | `python -m turbo` and `python -m turbo.runner` (`--once`, the sleep loop, and a real webhook POST) |
+| `78` | `confirm: true` never auto-applies; a non-boolean `confirm` is rejected. `03` is the non-confirm default |
+| `79` | SIGINT, then SIGKILL after `TURBO_KILL_WAIT_S`, against a child that ignores SIGINT. `14` covers the child that is already dead while draining |
+| `80` | `metrics.stuck`: open cards, a live handle, no session, a handoff, and a dead turn. The live route rejects a non-list and drops non-strings |
+| `81` | Legacy migration: dry-run, import, re-run, no issues table, a thin table. The legacy file stays unchanged |
+| `82` | Scenario red-green: accept, pass-on-base, fail-on-head, missing file, bad JSON, bad cmd, scenario not in the commit, exempt, and no scenario |
 
 ## Code removed or restructured
 
@@ -52,4 +57,4 @@ Dead fallbacks were deleted instead of excluded:
 - Labels from sqlite are text. A list is not a label value.
 - `SubprocessProc.interrupt` always signals the child. The runner only interrupts a live poll.
 
-`scripts/mutate-guards.py` flips 110 guards. Each one fails its scenario.
+`scripts/mutate-guards.py` flips 131 guards. Each one fails its scenario.

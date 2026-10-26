@@ -7,10 +7,11 @@ only mergers. An agent ack is what makes a work token exist.
 import json
 
 from . import gate, scope, state
-from .clock import stamp
+from .clock import parse_stamp, stamp
 from .constants import DEFAULT_ANSWER_S
 from .drivers import HARNESSES
 from .errors import TurboError
+from .proof import prove
 from .store import Store, new_id, public_card
 
 ROLES = {"human", "runner", "agent", "probe"}
@@ -173,8 +174,10 @@ def ack(store: Store, card_id: str, actor: str, given_digest: str, nonce: str, c
 
 
 def ask(store: Store, card_id: str, actor: str, question: str, options: list,
-        default: str, clock) -> dict:
+        default: str, clock, confirm: bool = False) -> dict:
     store.require_role(actor, "agent")
+    if confirm is not True and confirm is not False:
+        raise TurboError(422, "confirm must be true or false")
     if not isinstance(question, str) or not question.strip():
         raise TurboError(422, "blocked_question is required")
     if not isinstance(options, list) or not 2 <= len(options) <= 4:
@@ -198,6 +201,7 @@ def ask(store: Store, card_id: str, actor: str, question: str, options: list,
             blocked_question=question.strip(),
             blocked_options=json.dumps(cleaned, ensure_ascii=False),
             blocked_default=default.strip(),
+            confirm=1 if confirm else 0,
             answer="",
             answer_by="",
             answered_at="",
@@ -208,6 +212,7 @@ def ask(store: Store, card_id: str, actor: str, question: str, options: list,
             "blocked_question": question.strip(),
             "blocked_options": cleaned,
             "blocked_default": default.strip(),
+            "confirm": confirm,
         }, now)
     return _view(store, card_id, reveal=False)
 
@@ -275,6 +280,8 @@ def apply_defaults(store: Store, actor: str, clock) -> dict:
     applied = []
     with store.transaction():
         for card in store.awaiting_deadline(now):
+            if card["confirm"]:
+                continue
             choice = card["blocked_default"]
             store.update_card(
                 card["id"], answer=choice, answer_by="default", answered_at=now, updated_at=now,
@@ -367,6 +374,7 @@ def submit(store: Store, card_id: str, actor: str, sha: str, pr: dict,
         gate.check_token(card, token)
         scope.check_changed(card["scope"], changed)
         state.require(card["state"], "submit")
+        prove(card["scope"], changed)
         store.update_card(
             card_id,
             state="submit",
@@ -485,17 +493,33 @@ def edit_card(store: Store, card_id: str, actor: str, body: str | None,
     return viewed
 
 
-def metrics(store: Store, legacy_path: str | None) -> dict:
+def metrics(store: Store, legacy_path: str | None, live: set[str], now: float) -> dict:
     cards = store.list_cards()
     by_state: dict[str, int] = {}
+    stuck: list[dict] = []
     for card in cards:
         name = str(card["state"])
         by_state[name] = by_state.get(name, 0) + 1
+        if card["state"] != "working":
+            continue
+        if card["id"] in live:
+            continue
+        session = card.get("session") or {}
+        reason = "handoff" if session.get("mode") == "handoff" else "no live handle"
+        age_s = int(now - parse_stamp(card["updated_at"]))
+        stuck.append({
+            "id": card["id"],
+            "title": card["title"],
+            "harness": card["harness"],
+            "age_s": age_s,
+            "reason": reason,
+        })
     out: dict[str, object] = {
         "cards": len(cards),
         "request_changes_repeat": sum(1 for card in cards if card["rc_count"] >= 2),
         "scope_complete": sum(1 for card in cards if card["scope"]["paths"] and card["scope"]["verify"]),
         "by_state": by_state,
+        "stuck": stuck,
     }
     if legacy_path:
         from . import legacy

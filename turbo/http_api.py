@@ -72,3 +72,6 @@ class HttpAPI:
     def pending(self, actor):
         found = self._req("GET", "/turbo/runner/pending?actor=" + urllib.parse.quote(actor))
         return found.get("cards") or []
+
+    def live(self, card_ids):
+        return self._req("POST", "/turbo/runner/live", {"actor": self.actor, "cards": list(card_ids)})

@@ -33,11 +33,21 @@ def parse_scope(raw: object) -> dict:
     timebox = raw.get("timebox_s")
     if timebox is not None and (isinstance(timebox, bool) or not isinstance(timebox, int) or timebox < 0):
         raise TurboError(422, "timebox_s must be a non-negative integer")
+    exempt = raw.get("exempt", False)
+    if exempt is not True and exempt is not False:
+        raise TurboError(422, "scope.exempt must be true or false")
+    scenario = raw.get("scenario")
+    if scenario is not None and not _text(scenario):
+        raise TurboError(422, "scope.scenario must be a path to a scenario JSON")
+    if exempt and scenario:
+        raise TurboError(422, "an exempt card does not carry a scenario")
     return {
         "paths": [p.strip() for p in paths],
         "forbidden": [p.strip() for p in forbidden if p.strip()],
         "verify": steps,
         "timebox_s": timebox,
+        "exempt": bool(exempt),
+        "scenario": scenario.strip() if isinstance(scenario, str) else "",
     }
 
 

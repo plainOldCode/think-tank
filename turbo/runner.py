@@ -12,7 +12,7 @@ import uuid
 
 from . import drivers, scope
 from .clock import parse_stamp
-from .constants import QUESTION_GRACE_S
+from .constants import KILL_WAIT_S, QUESTION_GRACE_S
 from .errors import TurboError
 
 
@@ -34,6 +34,8 @@ class Runner:
         self.handles: dict[str, dict] = {}
         self.logs: list[str] = []
         self.webhook_posts: list[dict] = []
+        raw_wait = os.environ.get("TURBO_KILL_WAIT_S", "")
+        self.kill_wait = float(raw_wait) if raw_wait else float(KILL_WAIT_S)
 
     def system_file(self) -> str:
         os.makedirs(self.state_dir, exist_ok=True)
@@ -108,16 +110,25 @@ class Runner:
     def reap(self, card_id: str) -> dict:
         ent = self.handles[card_id]
         code = self.proc.poll(ent["handle"])
-        card = self.api.get(card_id)
         now = self.clock()
+        if ent.get("phase") == "draining":
+            if code is not None or now >= ent["signaled_at"] + self.kill_wait:
+                if code is None:
+                    self.proc.kill(ent["handle"])
+                    self._log(f"kill {card_id}")
+                self.handles.pop(card_id, None)
+                return {"running": False, "killed": code is None}
+            return {"running": True, "draining": True}
+        card = self.api.get(card_id)
         if code is None:
             if card["state"] == "question" and card.get("question_at"):
                 if now >= parse_stamp(card["question_at"]) + QUESTION_GRACE_S:
                     self.proc.interrupt(ent["handle"])
                     self.api.turn_closed(card_id, self.actor)
-                    self.handles.pop(card_id, None)
+                    ent["phase"] = "draining"
+                    ent["signaled_at"] = now
                     self._log(f"interrupt {card_id}")
-                    return {"running": False, "interrupted": True}
+                    return {"running": True, "interrupted": True}
             return {"running": True}
         output = self.proc.output(ent["handle"])
         if ent["phase"] == "create-chat":
@@ -185,15 +196,17 @@ class Runner:
         self.api.apply_defaults(self.actor, now)
         for card_id in list(self.handles):
             self.reap(card_id)
-        if self.handles:
-            return
-        pending = self.api.pending(self.actor)
-        if pending:
-            self.start_resume(pending[0])
-            return
-        nxt = self.api.next_open(self.actor)
-        if nxt and self.agent:
-            self.start_card(nxt["id"])
+        if not self.handles:
+            pending = self.api.pending(self.actor)
+            if pending:
+                self.start_resume(pending[0])
+            else:
+                nxt = self.api.next_open(self.actor)
+                if nxt and self.agent:
+                    self.start_card(nxt["id"])
+        self.api.live([
+            cid for cid, ent in self.handles.items() if ent.get("phase") != "draining"
+        ])
 
 
 def _post_webhook(url: str, body: dict, headers: dict) -> int:

@@ -64,12 +64,17 @@ class DirectAPI:
     def pending(self, actor):
         return service.pending_work(self.store, actor)
 
+    def live(self, card_ids):
+        self.live_cards = list(card_ids)
+        return {"cards": list(card_ids)}
+
 BODY = "Implement the gate."
 CONTRACT = "The runner submits."
 SCOPE = {
     "paths": ["turbo/"],
     "forbidden": [],
     "verify": [{"cmd": "pytest -q", "kind": "unit"}],
+    "exempt": True,
 }
 
 

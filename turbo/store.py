@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS cards (
   blocked_question TEXT NOT NULL DEFAULT '',
   blocked_options TEXT NOT NULL DEFAULT '[]',
   blocked_default TEXT NOT NULL DEFAULT '',
+  confirm INTEGER NOT NULL DEFAULT 0,
   answer TEXT NOT NULL DEFAULT '',
   answer_by TEXT NOT NULL DEFAULT '',
   answered_at TEXT NOT NULL DEFAULT '',
@@ -84,6 +85,7 @@ def card_from_row(row: sqlite3.Row) -> dict:
     d["pr"] = json.loads(d.pop("pr_json")) if d.get("pr_json") else None
     d["ready"] = bool(d["ready"])
     d["nonce_used"] = bool(d["nonce_used"])
+    d["confirm"] = bool(d["confirm"])
     return d
 
 

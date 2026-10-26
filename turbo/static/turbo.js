@@ -32,6 +32,23 @@ async function getJson(url, opts) {
   return data;
 }
 
+function stuckHtml(items) {
+  const rows = items || [];
+  if (!rows.length) return "";
+  return `<p class="glabel">stuck ${rows.length}</p>` + rows.map((item) =>
+    `<article class="card" data-id="${esc(item.id)}" data-kind="turbo">
+      <div class="id">stuck · ${esc(item.reason)} · ${esc(item.age_s)}s</div>
+      <span class="ttl">${esc(item.title || item.id)}</span>
+    </article>`
+  ).join("");
+}
+
+function answerNote(card) {
+  if (card.confirm) return "confirm: 기본값은 자동으로 적용되지 않는다.";
+  if (card.answer) return "answer " + card.answer + " by " + card.answer_by;
+  return "답이 없으면 기본값으로 넘어간다.";
+}
+
 function cardHtml(item) {
   const q = item.blocked_question ? `<div class="sub">${esc(item.blocked_question)}</div>` : "";
   return `<article class="card" data-id="${esc(item.id)}" data-kind="${esc(item.kind)}">
@@ -67,6 +84,15 @@ async function load() {
     renderGroups(archive, issues, ["backlog", "todo", "in_progress", "review", "blocked", "done", "cancelled"]);
   } catch (err) {
     archive.innerHTML = `<p class="note">${esc(err.message)}</p>`;
+  }
+  const stuckRoot = document.getElementById("stuck");
+  if (stuckRoot) {
+    try {
+      const metrics = await getJson("/turbo/metrics");
+      stuckRoot.innerHTML = stuckHtml(metrics.stuck || []);
+    } catch (err) {
+      stuckRoot.innerHTML = `<p class="err">${esc(err.message)}</p>`;
+    }
   }
   try {
     const data = await getJson("/turbo/cards");
@@ -121,7 +147,7 @@ async function showTurbo(id) {
     <p class="meta">${esc(card.id)} · ${esc(card.state)} · verify ${esc(card.verify_level || "—")} · verdict ${esc(card.verdict || "—")}</p>
     <pre>${esc(card.body || "")}</pre>
     <p>${esc(card.blocked_question || "")}</p>
-    <p class="note">${card.answer ? "answer " + esc(card.answer) + " by " + esc(card.answer_by) : "답이 없으면 기본값으로 넘어간다."}</p>
+    <p class="note">${esc(answerNote(card))}</p>
     ${choiceButtons(card)}
     <h2>events</h2>${events || `<p class="note">없음</p>`}`;
   document.getElementById("detail").dataset.card = id;

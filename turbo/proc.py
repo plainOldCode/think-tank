@@ -50,6 +50,9 @@ class SubprocessProc:
     def interrupt(self, handle: int) -> None:
         self._procs[handle].send_signal(signal.SIGINT)
 
+    def kill(self, handle: int) -> None:
+        self._procs[handle].send_signal(signal.SIGKILL)
+
     def output(self, handle: int) -> str:
         try:
             with open(self._files[handle], encoding="utf-8", errors="replace") as fh:

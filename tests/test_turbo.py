@@ -17,6 +17,7 @@ SCOPE = {
     "paths": ["turbo/"],
     "forbidden": ["turbo/legacy_schema.py"],
     "verify": [{"cmd": "pytest -q", "kind": "unit"}],
+    "exempt": True,
 }
 
 
@@ -270,6 +271,7 @@ def test_typecheck_level(tmp_path):
     scope = {
         "paths": ["turbo/"],
         "verify": [{"cmd": "python -m compileall turbo", "kind": "type"}],
+        "exempt": True,
     }
     card = make_card(client, scope=scope)
     claimed = client.post(f"/turbo/cards/{card['id']}/claim", json={"actor": "run-1", "agent": "worker"}).json()

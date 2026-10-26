@@ -36,6 +36,9 @@ from turbo.runner import Runner
 
 _HARNESS_BINARIES = {"claude", "codex", "grok", "agent"}
 _PASS_SHA = "a" * 40
+_PROOF_CMD = (
+    'python3 -c "import os,sys; sys.exit(0 if os.environ.get(\'TURBO_REV\')==\'head\' else 1)"'
+)
 
 
 class Clock:
@@ -55,6 +58,7 @@ class FakeProc:
         self.live: dict[int, dict] = {}
         self.n = 0
         self.interrupts = 0
+        self.kills = 0
 
     def arm(self, spec: dict) -> None:
         self.queue.append(spec)
@@ -84,8 +88,16 @@ class FakeProc:
         self.live[handle]["alive"] = False
         self.live[handle]["code"] = -15
 
+    def kill(self, handle: int) -> None:
+        self.kills += 1
+        self.live[handle]["alive"] = False
+        self.live[handle]["code"] = -9
+
     def output(self, handle: int) -> str:
         return self.live[handle]["output"]
+
+    def close(self) -> None:
+        return
 
     def release(self, code: int, output: str | None) -> None:
         released = False
@@ -156,6 +168,9 @@ mode=${TURBO_STUB_MODE:-ok}
 if [ "$mode" = "sleep" ]; then
   exec python3 -c 'import time; time.sleep(60)'
 fi
+if [ "$mode" = "ignore-int" ]; then
+  exec python3 -c 'import signal,time; signal.signal(signal.SIGINT, signal.SIG_IGN); time.sleep(60)'
+fi
 if [ "$mode" = "unlink" ]; then
   exec python3 -c 'import os
 try:
@@ -182,6 +197,7 @@ class RecordingProc:
         self.inner = SubprocessProc()
         self.spawns: list[list[str]] = []
         self.interrupts = 0
+        self.kills = 0
         self.last_nonce = ""
 
     def arm(self, spec: dict) -> None:
@@ -194,7 +210,7 @@ class RecordingProc:
         self.spawns.append(list(argv))
         self._note_nonce(argv)
         handle = self.inner.spawn(argv)
-        if os.environ.get("TURBO_STUB_MODE") != "sleep":
+        if os.environ.get("TURBO_STUB_MODE") not in {"sleep", "ignore-int"}:
             deadline = time.time() + 5
             while time.time() < deadline and self.inner.poll(handle) is None:
                 time.sleep(0.01)
@@ -207,8 +223,21 @@ class RecordingProc:
         self.interrupts += 1
         self.inner.interrupt(handle)
 
+    def kill(self, handle: int) -> None:
+        self.kills += 1
+        self.inner.kill(handle)
+
     def output(self, handle: int) -> str:
         return self.inner.output(handle)
+
+    def close(self) -> None:
+        for proc in self.inner._procs.values():
+            if proc.poll() is None:
+                proc.kill()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    pass
 
     def release(self, code: int, output: str | None) -> None:
         del code, output
@@ -362,6 +391,10 @@ class Run:
         self.reason = ""
         self._call_mark = 0
         self._interrupt_mark = 0
+        self.proof_path = ""
+        self.proof_rule = ""
+        self.proof_used = False
+        self._migrated_path = ""
 
     def seed(self) -> None:
         human = ""
@@ -385,11 +418,37 @@ class Run:
                 "body": card["body"],
                 "contract": card["contract"],
                 "harness": card["harness"],
-                "scope": card["scope"],
+                "scope": self._inject_proof(card),
             })
             if status != 200:
                 raise RuntimeError(f"card {card.get('ref')}: {status} {payload}")
             self.cards[card.get("ref") or card["title"]] = payload["id"]
+
+    def _inject_proof(self, card: dict) -> dict:
+        scope = json.loads(json.dumps(card["scope"]))
+        if scope.get("exempt") is True or card.get("proof") is False:
+            return scope
+        if not scope.get("scenario"):
+            self._write_proof()
+            scope["scenario"] = self.proof_path
+        if self.proof_rule not in scope["paths"]:
+            scope["paths"].append(self.proof_rule)
+        self._track_proof(str(scope.get("scenario") or ""))
+        return scope
+
+    def _write_proof(self) -> None:
+        path = Path(self.proof_path)
+        if path.is_file():
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"cmd": _PROOF_CMD}), encoding="utf-8")
+
+    def _track_proof(self, scenario: str) -> None:
+        self.proof_used = True
+        if scenario and scenario not in self.git.changed:
+            self.git.changed.append(scenario)
+        if scenario and self.git.porcelain is not None and scenario not in self.git.porcelain:
+            self.git.porcelain += " M " + scenario + "\n"
 
     def card_id(self, step: dict) -> str:
         ref = step.get("card") or (self.scenario.get("cards") or [{}])[0].get("ref")
@@ -459,6 +518,10 @@ class Run:
         self._interrupt_mark = self.proc.interrupts
         if "git_changed" in spec:
             self.git.changed = list(spec["git_changed"])
+            if self.proof_used and not spec.get("omit_proof") and self.proof_path not in self.git.changed:
+                self.git.changed.append(self.proof_path)
+        if spec.get("include_proof") and self.proof_path and self.proof_path not in self.git.changed:
+            self.git.changed.append(self.proof_path)
         if "arm" in spec:
             self.proc.arm(spec["arm"])
         if "release" in spec:
@@ -485,12 +548,17 @@ class Run:
                 "note": spec.get("note") or "",
             })
         elif op == "ask":
-            self._http("POST", f"/turbo/cards/{self.card_id(spec)}/question", {
+            question = {
                 "actor": spec.get("actor") or "worker",
                 "blocked_question": spec["blocked_question"],
                 "blocked_options": spec["blocked_options"],
                 "blocked_default": spec["blocked_default"],
-            })
+            }
+            if "confirm" in spec:
+                question["confirm"] = spec["confirm"]
+            self._http("POST", f"/turbo/cards/{self.card_id(spec)}/question", question)
+        elif op == "proof-write":
+            self._proof_write(spec)
         elif op == "answer":
             self._http("POST", f"/turbo/cards/{self.card_id(spec)}/answer", {
                 "actor": spec.get("actor") or "ada",
@@ -550,6 +618,8 @@ class Run:
                 "actor": spec["actor"],
                 "agent": spec["agent"],
             })
+            if self.status == 200 and self.body.get("nonce"):
+                self.nonces[self.card_ref(spec)] = self.body["nonce"]
         elif op == "turn-closed":
             self._http("POST", f"/turbo/cards/{self.card_id(spec)}/turn-closed", {
                 "actor": spec.get("actor") or self.runner.actor,
@@ -609,6 +679,19 @@ class Run:
         else:
             raise RuntimeError("unknown op " + str(op))
         self._expect(spec.get("expect") or {})
+
+    def _proof_write(self, spec: dict) -> None:
+        path = Path(self.proof_path)
+        if spec.get("missing"):
+            if path.exists():
+                path.unlink()
+        else:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            text = spec.get("text") or ""
+            if text == "default":
+                text = json.dumps({"cmd": _PROOF_CMD})
+            path.write_text(text, encoding="utf-8")
+        self.status, self.error, self.body = None, "", {}
 
     def _tamper(self, spec: dict) -> None:
         allowed = {"body", "sha", "verify_level", "harness"}
@@ -735,6 +818,50 @@ class Run:
             server.shutdown()
             server.server_close()
 
+    def _migrate_args(self, work: str, args: list[str]) -> list[str]:
+        repl = {
+            "$legacy": self.legacy_path or "",
+            "$turbo": os.path.join(work, "migrated.db"),
+            "$empty": os.path.join(work, "empty.db"),
+            "$thin": os.path.join(work, "thin-issues.db"),
+            "$out2": os.path.join(work, "out-2.db"),
+        }
+        self._migrated_path = repl["$turbo"]
+        joined = "\n".join(args)
+        if "$empty" in joined and not os.path.exists(repl["$empty"]):
+            sqlite3.connect(repl["$empty"]).close()
+        if "$thin" in joined and not os.path.exists(repl["$thin"]):
+            self._write_thin(repl["$thin"])
+        out = []
+        for arg in args:
+            text = arg
+            for key, value in repl.items():
+                text = text.replace(key, value)
+            out.append(text)
+        return out
+
+    def _write_thin(self, path: str) -> None:
+        con = sqlite3.connect(path)
+        try:
+            con.execute(
+                "CREATE TABLE issues ("
+                "id TEXT, title TEXT, body TEXT, state TEXT, assignee, "
+                "blocked_question TEXT, blocked_options, blocked_default TEXT, "
+                "acceptance TEXT, updated_at TEXT)"
+            )
+            con.execute(
+                "INSERT INTO issues (id, title, body, state, assignee, blocked_question, "
+                "blocked_options, blocked_default, acceptance, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    "THIN1", "Thin title", "body", "blocked", 7, "Thin?", 1, "",
+                    "acceptance text", "2020-01-01T00:00:00+0000",
+                ),
+            )
+            con.commit()
+        finally:
+            con.close()
+
     def _module(self, spec: dict) -> None:
         import importlib
 
@@ -742,6 +869,9 @@ class Run:
 
         importlib.reload(entry)
         module = spec["module"]
+        if module == "turbo.migrate":
+            import turbo.migrate as migrate_mod
+            importlib.reload(migrate_mod)
         parent = os.path.dirname(self.db_path)
         work = parent or os.getcwd()
         env = os.environ.copy()
@@ -758,6 +888,7 @@ class Run:
                 env.pop(key, None)
             else:
                 env[str(key)] = str(value)
+        args = self._migrate_args(work, [str(item) for item in (spec.get("args") or [])])
         holder: dict = {"posts": []}
         server = None
         if spec.get("webhook"):
@@ -785,8 +916,12 @@ class Run:
                 legacy_file = os.path.join(work, "entry-legacy.db")
                 sqlite3.connect(legacy_file).close()
                 env["TT_LEGACY_DB"] = legacy_file
-        args = [sys.executable, "-m", module, *(spec.get("args") or [])]
-        proc = subprocess.Popen(args, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        capture_out = not (module == "turbo" or spec.get("stop"))
+        stdout = subprocess.PIPE if capture_out else subprocess.DEVNULL
+        proc = subprocess.Popen(
+            [sys.executable, "-m", module, *args],
+            env=env, stdout=stdout, stderr=subprocess.PIPE,
+        )
         try:
             if module == "turbo":
                 port = env["TURBO_PORT"]
@@ -813,10 +948,16 @@ class Run:
                 self.body = {}
             else:
                 proc.wait(timeout=20)
+                out = proc.stdout.read().decode("utf-8", "replace") if proc.stdout else ""
                 err = proc.stderr.read().decode("utf-8", "replace")[-800:] if proc.stderr else ""
                 self.status = proc.returncode
                 self.error = err
-                self.body = {"error": err, "posts": len(holder["posts"])}
+                self.body = {
+                    "error": err,
+                    "text": out + err,
+                    "posts": len(holder["posts"]),
+                    "turbo_exists": os.path.isfile(self._migrated_path),
+                }
                 if holder["posts"]:
                     self.body["auth"] = holder["posts"][0]["auth"]
         finally:
@@ -849,14 +990,14 @@ class Run:
         card_keys = {
             "state", "verdict", "verify_level", "answer", "answer_by", "contract_version",
             "ready", "session_mode", "session_id", "resume_contains", "same_session", "sha",
-            "pr_number", "assignee", "agent", "rc_count",
+            "pr_number", "assignee", "agent", "rc_count", "confirm",
         }
         card = None
         if card_keys & set(expect) or expect.get("card"):
             if "state" in expect or card_keys & set(expect):
                 card = self._card(expect)
         if card is not None:
-            for key in ("state", "verdict", "verify_level", "answer", "answer_by", "assignee", "agent", "sha"):
+            for key in ("state", "verdict", "verify_level", "answer", "answer_by", "assignee", "agent", "sha", "confirm"):
                 if key in expect and card.get(key) != expect[key]:
                     problems.append(f"{key} {card.get(key)!r} != {expect[key]!r}")
             if "contract_version" in expect and card.get("contract_version") != expect["contract_version"]:
@@ -896,8 +1037,26 @@ class Run:
             problems.append(f"legacy cards {self.body.get('legacy_cards')}")
         if "legacy_brief_complete" in expect and self.body.get("legacy_brief_complete") != expect["legacy_brief_complete"]:
             problems.append(f"legacy briefs {self.body.get('legacy_brief_complete')}")
-        if "text_contains" in expect and expect["text_contains"] not in str(self.body.get("text") or ""):
-            problems.append(f"text missing {expect['text_contains']!r}")
+        if "text_contains" in expect:
+            text = str(self.body.get("text") or "")
+            wanted = expect["text_contains"]
+            items = wanted if isinstance(wanted, list) else [wanted]
+            missing = [item for item in items if item not in text]
+            if missing:
+                problems.append(f"text missing {missing!r}")
+        if "turbo_exists" in expect and bool(self.body.get("turbo_exists")) != bool(expect["turbo_exists"]):
+            problems.append(f"turbo file exists {self.body.get('turbo_exists')}")
+        if "kills" in expect and getattr(self.proc, "kills", 0) != expect["kills"]:
+            problems.append(f"kills {getattr(self.proc, 'kills', 0)} != {expect['kills']}")
+        if "stuck" in expect:
+            found = self.body.get("stuck") or []
+            wanted = []
+            for item in expect["stuck"]:
+                cid = self.cards[item["card"]] if item.get("card") else item.get("id")
+                wanted.append((cid, item.get("reason")))
+            got = sorted((item.get("id"), item.get("reason")) for item in found)
+            if got != sorted(wanted):
+                problems.append(f"stuck {got} != {sorted(wanted)}")
         if "bytes" in expect and self.body.get("bytes") != expect["bytes"]:
             problems.append(f"bytes {self.body.get('bytes')}")
         if "posts" in expect and self.body.get("posts") != expect["posts"]:
@@ -1080,8 +1239,10 @@ def run_one(file: Path, scenario: dict) -> dict:
     old_path = os.environ.get("PATH", "")
     old_mode = os.environ.pop("TURBO_STUB_MODE", None)
     old_out = os.environ.pop("TURBO_STUB_OUT", None)
+    old_kill = os.environ.pop("TURBO_KILL_WAIT_S", None)
     try:
         with tempfile.TemporaryDirectory(prefix="turbo-scenario-") as tmp:
+            proc_ref = None
             try:
                 clock = Clock()
                 if scenario.get("db") == "flat":
@@ -1098,10 +1259,15 @@ def run_one(file: Path, scenario: dict) -> dict:
                 else:
                     proc = FakeProc()
                 git = _git_of(scenario, tmp)
+                proc_ref = proc
+                if scenario.get("kill_wait_s") is not None:
+                    os.environ["TURBO_KILL_WAIT_S"] = str(scenario["kill_wait_s"])
                 with Server(app) as server:
                     runner = _runner_of(scenario, server.base, proc, git, clock, str(Path(tmp) / "state"))
                     run = Run(server.base, scenario, proc, git, runner, legacy_path)
                     run.db_path = db_path
+                    run.proof_path = str(Path(tmp) / "proofs" / "repro.json")
+                    run.proof_rule = str(Path(tmp) / "proofs") + "/"
                     run.seed()
                     for spec in scenario.get("steps") or []:
                         name = spec.get("name") or spec.get("op")
@@ -1130,12 +1296,18 @@ def run_one(file: Path, scenario: dict) -> dict:
                         else:
                             steps_out.append({"name": "legacy unchanged", "ok": True, "detail": ""})
             finally:
+                if proc_ref is not None:
+                    proc_ref.close()
                 os.chdir(old_cwd)
     except Exception as exc:
         ok = False
         error = f"{type(exc).__name__}: {exc}"
     finally:
         os.environ["PATH"] = old_path
+        if old_kill is None:
+            os.environ.pop("TURBO_KILL_WAIT_S", None)
+        else:
+            os.environ["TURBO_KILL_WAIT_S"] = old_kill
         if old_mode is None:
             os.environ.pop("TURBO_STUB_MODE", None)
         else:

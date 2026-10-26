@@ -1,0 +1,246 @@
+{
+  "name": "scenario-proof",
+  "description": "Submit runs the card's scenario on base and head. It rejects a scenario that already passes on base, one that fails on head, and a bug card with no scenario. scope.exempt is the only skip.",
+  "actors": [
+    {"name": "ada", "role": "human"},
+    {"name": "run-1", "role": "runner", "harnesses": ["claude"]},
+    {"name": "run-2", "role": "runner", "harnesses": ["claude"]},
+    {"name": "run-3", "role": "runner", "harnesses": ["claude"]},
+    {"name": "worker", "role": "agent"},
+    {"name": "probe", "role": "probe"}
+  ],
+  "git": {"changed": ["turbo/app.py"], "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "pr_number": 4},
+  "cards": [
+    {
+      "ref": "bare",
+      "title": "No scenario",
+      "body": "Implement the gate.",
+      "contract": "The runner submits. The agent does not.",
+      "harness": "claude",
+      "proof": false,
+      "scope": {
+        "paths": ["turbo/"],
+        "forbidden": [],
+        "verify": [{"cmd": "python3 -c \"import sys; raise SystemExit(0)\"", "kind": "unit"}]
+      }
+    },
+    {
+      "ref": "exempt",
+      "title": "Docs only",
+      "body": "Implement the gate.",
+      "contract": "The runner submits. The agent does not.",
+      "harness": "claude",
+      "scope": {
+        "paths": ["turbo/"],
+        "forbidden": [],
+        "verify": [{"cmd": "python3 -c \"import sys; raise SystemExit(0)\"", "kind": "unit"}],
+        "exempt": true
+      }
+    },
+    {
+      "ref": "proof",
+      "title": "Prove the failure",
+      "body": "Implement the gate.",
+      "contract": "The runner submits. The agent does not.",
+      "harness": "claude",
+      "scope": {
+        "paths": ["turbo/"],
+        "forbidden": [],
+        "verify": [{"cmd": "python3 -c \"import sys; raise SystemExit(0)\"", "kind": "unit"}]
+      }
+    }
+  ],
+  "steps": [
+    {
+      "name": "exempt must be boolean",
+      "op": "create-card",
+      "ref": "bad-exempt",
+      "title": "Bad exempt",
+      "scope": {
+        "paths": ["turbo/"],
+        "forbidden": [],
+        "verify": [{"cmd": "python3 -c \"import sys; raise SystemExit(0)\"", "kind": "unit"}],
+        "exempt": "yes"
+      },
+      "expect": {"status": 422, "error": "scope.exempt must be true or false"}
+    },
+    {
+      "name": "scenario must be a path",
+      "op": "create-card",
+      "ref": "bad-scenario",
+      "title": "Bad scenario",
+      "scope": {
+        "paths": ["turbo/"],
+        "forbidden": [],
+        "verify": [{"cmd": "python3 -c \"import sys; raise SystemExit(0)\"", "kind": "unit"}],
+        "scenario": ""
+      },
+      "expect": {"status": 422, "error": "scope.scenario must be a path"}
+    },
+    {
+      "name": "an exempt card does not carry a scenario",
+      "op": "create-card",
+      "ref": "both",
+      "title": "Both",
+      "scope": {
+        "paths": ["turbo/"],
+        "forbidden": [],
+        "verify": [{"cmd": "python3 -c \"import sys; raise SystemExit(0)\"", "kind": "unit"}],
+        "exempt": true,
+        "scenario": "x.json"
+      },
+      "expect": {"status": 422, "error": "an exempt card does not carry a scenario"}
+    },
+    {
+      "name": "claim the card with no scenario",
+      "op": "claim",
+      "card": "bare",
+      "actor": "run-1",
+      "agent": "worker",
+      "expect": {"status": 200, "state": "working"}
+    },
+    {"name": "ack the bare card", "op": "ack", "card": "bare", "expect": {"status": 200}},
+    {"name": "bare card is ready", "op": "ready", "card": "bare", "expect": {"status": 200}},
+    {
+      "name": "submit without a scenario is rejected",
+      "op": "submit-raw",
+      "card": "bare",
+      "actor": "run-1",
+      "work_token": "$token",
+      "changed_paths": ["turbo/app.py"],
+      "expect": {
+        "status": 422,
+        "error": "scope.scenario is required unless scope.exempt is true",
+        "state": "working",
+        "card": "bare"
+      }
+    },
+    {
+      "name": "claim the exempt card",
+      "op": "claim",
+      "card": "exempt",
+      "actor": "run-2",
+      "agent": "worker",
+      "expect": {"status": 200}
+    },
+    {"name": "ack the exempt card", "op": "ack", "card": "exempt", "expect": {"status": 200}},
+    {"name": "exempt card is ready", "op": "ready", "card": "exempt", "expect": {"status": 200}},
+    {
+      "name": "an exempt card submits without a scenario",
+      "op": "submit-raw",
+      "card": "exempt",
+      "actor": "run-2",
+      "work_token": "$token",
+      "changed_paths": ["turbo/app.py"],
+      "expect": {"status": 200, "state": "review", "verify_level": "unit-test-verified", "card": "exempt"}
+    },
+    {
+      "name": "claim the proof card",
+      "op": "claim",
+      "card": "proof",
+      "actor": "run-3",
+      "agent": "worker",
+      "expect": {"status": 200, "state": "working", "card": "proof"}
+    },
+    {"name": "ack the proof card", "op": "ack", "card": "proof", "expect": {"status": 200}},
+    {"name": "proof card is ready", "op": "ready", "card": "proof", "expect": {"status": 200}},
+    {
+      "name": "missing scenario file",
+      "op": "proof-write",
+      "missing": true,
+      "expect": {"status": null}
+    },
+    {
+      "name": "unreadable scenario is rejected",
+      "op": "submit-raw",
+      "card": "proof",
+      "actor": "run-3",
+      "work_token": "$token",
+      "expect": {"status": 422, "error": "scenario JSON could not be read", "state": "working", "card": "proof"}
+    },
+    {"name": "write broken json", "op": "proof-write", "text": "{", "expect": {"status": null}},
+    {
+      "name": "broken json is rejected",
+      "op": "submit-raw",
+      "card": "proof",
+      "actor": "run-3",
+      "work_token": "$token",
+      "expect": {"status": 422, "error": "scenario JSON could not be read", "state": "working", "card": "proof"}
+    },
+    {"name": "write a list", "op": "proof-write", "text": "[1]", "expect": {"status": null}},
+    {
+      "name": "a list has no cmd",
+      "op": "submit-raw",
+      "card": "proof",
+      "actor": "run-3",
+      "work_token": "$token",
+      "expect": {"status": 422, "error": "scenario JSON needs a cmd", "state": "working", "card": "proof"}
+    },
+    {"name": "write a non-string cmd", "op": "proof-write", "text": "{\"cmd\": 1}", "expect": {"status": null}},
+    {
+      "name": "a non-string cmd is rejected",
+      "op": "submit-raw",
+      "card": "proof",
+      "actor": "run-3",
+      "work_token": "$token",
+      "expect": {"status": 422, "error": "scenario JSON needs a cmd", "state": "working"}
+    },
+    {"name": "write a blank cmd", "op": "proof-write", "text": "{\"cmd\": \"   \"}", "expect": {"status": null}},
+    {
+      "name": "a blank cmd is rejected",
+      "op": "submit-raw",
+      "card": "proof",
+      "actor": "run-3",
+      "work_token": "$token",
+      "expect": {"status": 422, "error": "scenario JSON needs a cmd", "state": "working", "card": "proof"}
+    },
+    {
+      "name": "write a cmd that passes on base",
+      "op": "proof-write",
+      "text": "{\"cmd\": \"python3 -c \\\"import sys; sys.exit(0)\\\"\"}",
+      "expect": {"status": null}
+    },
+    {
+      "name": "a scenario that passes on base is rejected",
+      "op": "submit-raw",
+      "card": "proof",
+      "actor": "run-3",
+      "work_token": "$token",
+      "expect": {"status": 409, "error": "scenario passed on base", "state": "working", "card": "proof"}
+    },
+    {
+      "name": "write a cmd that fails on head",
+      "op": "proof-write",
+      "text": "{\"cmd\": \"python3 -c \\\"import sys; sys.exit(1)\\\"\"}",
+      "expect": {"status": null}
+    },
+    {
+      "name": "a scenario that fails on head is rejected",
+      "op": "submit-raw",
+      "card": "proof",
+      "actor": "run-3",
+      "work_token": "$token",
+      "expect": {"status": 409, "error": "scenario failed on head", "state": "working", "card": "proof"}
+    },
+    {
+      "name": "the scenario file must be in the commit",
+      "op": "submit-raw",
+      "card": "proof",
+      "actor": "run-3",
+      "work_token": "$token",
+      "omit_proof": true,
+      "git_changed": ["turbo/app.py"],
+      "expect": {"status": 409, "error": "the scenario must be part of the submit", "state": "working", "card": "proof"}
+    },
+    {"name": "restore a failing-then-passing scenario", "op": "proof-write", "text": "default", "expect": {"status": null}},
+    {
+      "name": "base fails and head passes",
+      "op": "submit-raw",
+      "card": "proof",
+      "actor": "run-3",
+      "work_token": "$token",
+      "include_proof": true,
+      "expect": {"status": 200, "state": "review", "verify_level": "unit-test-verified", "card": "proof"}
+    }
+  ]
+}

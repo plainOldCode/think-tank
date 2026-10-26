@@ -3,8 +3,10 @@
 Confirmed commands (Claude, Codex) follow the resume notes. Cursor is
 partial: the flags parse, and a real continued turn was not confirmed.
 Grok CLI resume is confirmed; ``-s`` is used only to name a new session.
-OpenCode and Hermes have no confirmed resume, so they take the handoff
-path. This module does not invent a TUI port or a keystroke injection.
+OpenCode and Hermes are handoff-only. They have no resume CLI here, and
+this module does not invent one. A handoff records the card and does not
+spawn a process. This module does not invent a TUI port or a keystroke
+injection.
 """
 
 import json
@@ -18,8 +20,8 @@ STATUS = {
     "grok": "confirmed",
     "cursor": "partial",
     "grok-bot": "context-unconfirmed",
-    "opencode": "uninvestigated",
-    "hermes": "uninvestigated",
+    "opencode": "handoff-only",
+    "hermes": "handoff-only",
 }
 
 FORKABLE = {"claude", "codex", "grok"}

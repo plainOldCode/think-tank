@@ -15,7 +15,7 @@ _STATIC = Path(__file__).resolve().parent / "static"
 _FONTS = _STATIC / "fonts"
 
 
-def subprocess_verify(cmd: str, cwd, timeout: float | None = None) -> tuple[int, str]:
+def subprocess_verify(cmd: str, cwd, timeout: float | None = None, env: dict | None = None) -> tuple[int, str]:
     """Run one verify command. No shell. The scope author chose the command.
 
     ``timeout`` is the scope step's ``timeout_s``. Omitted, the command gets
@@ -28,7 +28,7 @@ def subprocess_verify(cmd: str, cwd, timeout: float | None = None) -> tuple[int,
     limit = 120 if timeout is None else timeout
     try:
         proc = subprocess.run(
-            argv, cwd=cwd, capture_output=True, text=True, timeout=limit, check=False,
+            argv, cwd=cwd, capture_output=True, text=True, timeout=limit, check=False, env=env,
         )
     except subprocess.TimeoutExpired as exc:
         stdout = exc.stdout if isinstance(exc.stdout, str) else ""
@@ -63,6 +63,7 @@ def create_app(db_path: str, legacy_path: str | None = None, verify=None, clock=
     app.state.legacy_path = legacy_path
     app.state.verify = verify or subprocess_verify
     app.state.clock = clock or __import__("time").time
+    app.state.live = set()
 
     @app.exception_handler(TurboError)
     async def turbo_error(_request: Request, exc: TurboError):
@@ -77,7 +78,7 @@ def create_app(db_path: str, legacy_path: str | None = None, verify=None, clock=
 
     @app.get("/turbo/metrics")
     def metrics():
-        return service.metrics(store, app.state.legacy_path)
+        return service.metrics(store, app.state.legacy_path, app.state.live, now())
 
     @app.post("/turbo/actors")
     def post_actor(body: dict):
@@ -115,6 +116,7 @@ def create_app(db_path: str, legacy_path: str | None = None, verify=None, clock=
         return service.ask(
             store, card_id, _s(body, "actor"), _s(body, "blocked_question"),
             _items(body, "blocked_options"), _s(body, "blocked_default"), now,
+            body.get("confirm", False),
         )
 
     @app.post("/turbo/cards/{card_id}/turn-closed")
@@ -172,6 +174,14 @@ def create_app(db_path: str, legacy_path: str | None = None, verify=None, clock=
     @app.post("/turbo/runner/defaults")
     def post_defaults(body: dict):
         return service.apply_defaults(store, _s(body, "actor"), now)
+
+    @app.post("/turbo/runner/live")
+    def post_live(body: dict):
+        raw = body.get("cards")
+        if not isinstance(raw, list):
+            raise TurboError(422, "cards must be a list of ids")
+        app.state.live = {item for item in raw if isinstance(item, str)}
+        return {"cards": sorted(app.state.live)}
 
     @app.get("/turbo/runner/next")
     def get_next(actor: str):
