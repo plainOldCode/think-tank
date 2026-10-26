@@ -9,6 +9,7 @@ runner, so no remote is contacted.
 import argparse
 import json
 import os
+import select
 import signal
 import socket
 import sqlite3
@@ -169,7 +170,16 @@ if [ "$mode" = "sleep" ]; then
   exec python3 -c 'import time; time.sleep(60)'
 fi
 if [ "$mode" = "ignore-int" ]; then
-  exec python3 -c 'import signal,time; signal.signal(signal.SIGINT, signal.SIG_IGN); time.sleep(60)'
+  # Ignore SIGINT before Python starts. The parent blocks on the pipe
+  # until this process has the disposition, so a later SIGINT cannot land
+  # in the startup window and exit the child before SIGKILL.
+  trap '' INT
+  exec python3 -c 'import os,signal,time
+signal.signal(signal.SIGINT, signal.SIG_IGN)
+fd = int(os.environ["TURBO_STUB_READY_FD"])
+os.write(fd, b"\\n")
+os.close(fd)
+time.sleep(60)'
 fi
 if [ "$mode" = "unlink" ]; then
   exec python3 -c 'import os
@@ -209,11 +219,55 @@ class RecordingProc:
             raise RuntimeError("refusing to spawn " + " ".join(argv[:3]))
         self.spawns.append(list(argv))
         self._note_nonce(argv)
+        mode = os.environ.get("TURBO_STUB_MODE")
+        if mode == "ignore-int":
+            return self._spawn_ignore_int(argv)
         handle = self.inner.spawn(argv)
-        if os.environ.get("TURBO_STUB_MODE") not in {"sleep", "ignore-int"}:
+        if mode != "sleep":
             deadline = time.time() + 5
             while time.time() < deadline and self.inner.poll(handle) is None:
                 time.sleep(0.01)
+        return handle
+
+    def _spawn_ignore_int(self, argv: list[str]) -> int:
+        """Spawn a child that ignores SIGINT, and return only once it does.
+
+        ``Popen`` returns as soon as the process exists. The old stub set
+        ``SIG_IGN`` after Python startup, so SIGINT on a slow runner killed
+        the child and the later SIGKILL never happened.
+        """
+        read_fd, write_fd = os.pipe()
+        os.set_inheritable(write_fd, True)
+        env = os.environ.copy()
+        env["TURBO_STUB_READY_FD"] = str(write_fd)
+        inner = self.inner
+        inner._n += 1
+        handle = inner._n
+        out_fd, name = tempfile.mkstemp(prefix="turbo-out-")
+        os.close(out_fd)
+        stream = open(name, "w", encoding="utf-8")
+        try:
+            proc = subprocess.Popen(
+                argv,
+                stdout=stream,
+                stderr=subprocess.STDOUT,
+                env=env,
+                pass_fds=(write_fd,),
+            )
+        finally:
+            stream.close()
+            os.close(write_fd)
+        inner._procs[handle] = proc
+        inner._files[handle] = name
+        try:
+            ready, _, _ = select.select([read_fd], [], [], 5)
+            if not ready:
+                raise RuntimeError("stub did not ignore SIGINT")
+            got = os.read(read_fd, 1)
+            if got != b"\n":
+                raise RuntimeError("stub exited before ignoring SIGINT")
+        finally:
+            os.close(read_fd)
         return handle
 
     def poll(self, handle: int) -> int | None:
