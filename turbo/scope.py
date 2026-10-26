@@ -26,7 +26,10 @@ def parse_scope(raw: object) -> dict:
         kind = step.get("kind") or "unit"
         if kind not in VERIFY_KINDS:
             raise TurboError(422, "verify kind must be unit, type, live, or planned")
-        steps.append({"cmd": step["cmd"].strip(), "kind": kind})
+        timeout = step.get("timeout_s", 120)
+        if isinstance(timeout, bool) or not isinstance(timeout, int) or not 1 <= timeout <= 120:
+            raise TurboError(422, "timeout_s must be an integer from 1 to 120")
+        steps.append({"cmd": step["cmd"].strip(), "kind": kind, "timeout_s": timeout})
     timebox = raw.get("timebox_s")
     if timebox is not None and (isinstance(timebox, bool) or not isinstance(timebox, int) or timebox < 0):
         raise TurboError(422, "timebox_s must be a non-negative integer")

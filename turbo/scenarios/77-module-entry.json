@@ -1,0 +1,119 @@
+{
+  "name": "module-entry",
+  "description": "python -m turbo and python -m turbo.runner run the real entry points. The runner posts a Grok Bot webhook over HTTP.",
+  "actors": [
+    {
+      "name": "ada",
+      "role": "human"
+    },
+    {
+      "name": "run-1",
+      "role": "runner",
+      "harnesses": [
+        "grok-bot"
+      ]
+    },
+    {
+      "name": "worker",
+      "role": "agent"
+    },
+    {
+      "name": "probe",
+      "role": "probe"
+    }
+  ],
+  "git": {
+    "changed": [
+      "turbo/app.py"
+    ],
+    "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "pr_number": 4
+  },
+  "cards": [
+    {
+      "ref": "gate",
+      "title": "Gate the submit",
+      "body": "Implement the gate.",
+      "contract": "The runner submits. The agent does not.",
+      "harness": "grok-bot",
+      "scope": {
+        "paths": [
+          "turbo/"
+        ],
+        "forbidden": [],
+        "verify": [
+          {
+            "cmd": "python3 -c \"import sys; raise SystemExit(0)\"",
+            "kind": "unit"
+          }
+        ]
+      }
+    }
+  ],
+  "steps": [
+    {
+      "name": "import and serve",
+      "op": "module",
+      "module": "turbo",
+      "expect": {
+        "status": 200
+      }
+    },
+    {
+      "name": "serve with a legacy path",
+      "op": "module",
+      "module": "turbo",
+      "legacy": true,
+      "expect": {
+        "status": 200
+      }
+    },
+    {
+      "name": "runner once",
+      "op": "module",
+      "module": "turbo.runner",
+      "args": [
+        "--once"
+      ],
+      "env": {
+        "TURBO_HARNESSES": "claude,"
+      },
+      "expect": {
+        "status": 0
+      }
+    },
+    {
+      "name": "runner loop",
+      "op": "module",
+      "module": "turbo.runner",
+      "args": [
+        "--interval",
+        "0.5"
+      ],
+      "stop": true,
+      "expect": {
+        "status": -2
+      }
+    },
+    {
+      "name": "runner webhook",
+      "op": "module",
+      "module": "turbo.runner",
+      "args": [
+        "--once"
+      ],
+      "webhook": true,
+      "bearer": "hook-secret",
+      "env": {
+        "TURBO_AGENT": "worker",
+        "TURBO_HARNESSES": "grok-bot"
+      },
+      "expect": {
+        "status": 0,
+        "posts": 1,
+        "auth": "Bearer hook-secret",
+        "session_mode": "webhook"
+      }
+    }
+  ]
+}

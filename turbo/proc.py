@@ -14,11 +14,9 @@ def parse_porcelain(text: str) -> list[str]:
     paths = []
     for line in text.splitlines():
         if len(line) < 4:
-            # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
             continue
         path = line[3:]
         if " -> " in path:
-            # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
             path = path.split(" -> ", 1)[1]
         paths.append(path.strip().strip('"'))
     return paths
@@ -28,13 +26,11 @@ class SubprocessProc:
     """One headless child per spawn. No terminal session and no keystroke injection."""
 
     def __init__(self):
-        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
         self._procs: dict[int, subprocess.Popen] = {}
         self._files: dict[int, str] = {}
         self._n = 0
 
     def spawn(self, argv: list[str]) -> int:
-        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
         self._n += 1
         handle = self._n
         fd, name = tempfile.mkstemp(prefix="turbo-out-")
@@ -49,22 +45,16 @@ class SubprocessProc:
         return handle
 
     def poll(self, handle: int) -> int | None:
-        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
         return self._procs[handle].poll()
 
     def interrupt(self, handle: int) -> None:
-        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
-        proc = self._procs[handle]
-        if proc.poll() is None:
-            proc.send_signal(signal.SIGINT)
+        self._procs[handle].send_signal(signal.SIGINT)
 
     def output(self, handle: int) -> str:
-        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
         try:
             with open(self._files[handle], encoding="utf-8", errors="replace") as fh:
                 return fh.read()
         except OSError:
-            # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
             return ""
 
 
@@ -93,7 +83,6 @@ class GitCli:
             "gh", "pr", "create", "--title", title, "--body", body, "--base", base,
         ])
         url = ""
-        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; untaken branch, only unit-tested)
         if created.stdout:
             lines = [line.strip() for line in created.stdout.splitlines() if line.strip()]
             url = lines[-1] if lines else ""

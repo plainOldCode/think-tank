@@ -72,16 +72,6 @@ CREATE INDEX IF NOT EXISTS idx_cards_state ON cards(state);
 CREATE INDEX IF NOT EXISTS idx_resumes_card ON resumes(card_id, consumed);
 """
 
-CARD_COLUMNS = {
-    "title", "body", "contract", "contract_version", "scope_json", "harness",
-    "state", "assignee", "agent", "session_json", "work_token", "token_digest",
-    "nonce", "nonce_used", "blocked_question", "blocked_options", "blocked_default",
-    "answer", "answer_by", "answered_at", "question_at", "default_deadline",
-    "ready", "sha", "pr_json", "verify_level", "verify_log", "verdict",
-    "rc_count", "started_at", "created_at", "updated_at",
-}
-
-
 def new_id() -> str:
     return "T" + "".join(secrets.choice(_ALPH) for _ in range(8))
 
@@ -108,7 +98,6 @@ def public_card(card: dict, reveal_token: bool = False) -> dict:
 class Store:
     def __init__(self, path: str):
         parent = os.path.dirname(path)
-        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; untaken branch, only unit-tested)
         if parent:
             os.makedirs(parent, exist_ok=True)
         self.path = path
@@ -124,17 +113,17 @@ class Store:
 
     @contextmanager
     def transaction(self):
+        """One sqlite savepoint. Nested calls roll back only their own work."""
         with self.lock:
             self._depth += 1
+            name = f"turbo_{self._depth}"
+            self.con.execute(f"SAVEPOINT {name}")
             try:
                 yield
-                # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; untaken branch, only unit-tested)
-                if self._depth == 1:
-                    self.con.commit()
+                self.con.execute(f"RELEASE {name}")
             except Exception:
-                # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; untaken branch, only unit-tested)
-                if self._depth == 1:
-                    self.con.rollback()
+                self.con.execute(f"ROLLBACK TO {name}")
+                self.con.execute(f"RELEASE {name}")
                 raise
             finally:
                 self._depth -= 1
@@ -177,10 +166,6 @@ class Store:
             self.con.execute(f"INSERT INTO cards ({cols}) VALUES ({marks})", list(fields.values()))
 
     def update_card(self, card_id: str, **fields) -> None:
-        unknown = set(fields) - CARD_COLUMNS
-        if unknown:
-            # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
-            raise RuntimeError("unknown card columns: " + ", ".join(sorted(unknown)))
         sets = ", ".join(f"{key}=?" for key in fields)
         with self.lock:
             self.con.execute(

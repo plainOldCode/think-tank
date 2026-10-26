@@ -26,7 +26,7 @@ Implemented in `turbo/`:
 - State machine: `open → working → question → awaiting-human → working → submit → review → merged`, plus `review → working` on request-changes.
 - Board question. The agent posts the three blocked fields and ends the turn. The runner moves the card to `awaiting-human` when the process exits, or after 120 seconds by interrupting the child. A person answers on the board. If nobody answers for 24 hours, `blocked_default` is applied. The resume prompt is `[tt resume] wait_token=… kind=answer|verdict`.
 - Token gate. Claim returns the body, contract, scope, version, and a one-time nonce. Ack must send `sha256` of the canonical JSON of those fields. Submit without the work token is rejected. An edit bumps `contract_version`, clears the token, and requires a new ack.
-- Machine-readable `scope`: `paths`, `forbidden`, `verify[{cmd, kind}]`, optional `timebox_s`. The server reruns verify. `failed` and `planned-only` become request-changes. Approve is rejected unless the level is `live-verified`, `unit-test-verified`, or `type-check-only`.
+- Machine-readable `scope`: `paths`, `forbidden`, `verify[{cmd, kind, timeout_s?}]`, optional `timebox_s`. The server reruns verify. Each command is killed after its `timeout_s` (1–120, default 120). `failed` and `planned-only` become request-changes. Approve is rejected unless the level is `live-verified`, `unit-test-verified`, or `type-check-only`.
 - Merge is allowed only for a probe actor or the assignee runner, after approve, a passed verify, and a stored sha.
 - Runner-owned submit. The runner commits, pushes, opens the PR, then calls submit. An agent submit is rejected.
 - Headless drivers. Claude and Codex use the confirmed resume commands. Grok CLI uses `grok -r`. Cursor does `agent create-chat` then `agent -p --resume --trust` (flags only). Grok Bot is a webhook whose 200 means the call was accepted. OpenCode and Hermes record a handoff and do not spawn a process. Resume failure falls back to fork, then handoff.
@@ -104,16 +104,21 @@ A scenario object:
 | `runner` | Optional `{actor, agent, harnesses}`. Defaults to the first runner and the first agent. |
 | `webhook` | Optional URL. The runner posts Grok Bot launches here through an in-process stub. Nothing is sent on the network. |
 | `bearer` | Optional. Redacted from runner logs. Sent as `Authorization` when `webhook` is set. |
-| `cards` | `{ref, title, body, contract, harness, scope}`. `scope` is `{paths, forbidden, verify: [{cmd, kind}]}`. |
-| `git` | Optional `{changed, sha, pr_number}` for the stub. `sha` is 40 hex characters. |
+| `cards` | `{ref, title, body, contract, harness, scope}`. `scope` is `{paths, forbidden, verify: [{cmd, kind, timeout_s?}]}`. |
+| `git` | Optional `{changed, sha, pr_number, porcelain, pr_stdout}` for the stub. `sha` is 40 hex characters. `porcelain` is raw `git status` text. `pr_stdout` replaces the fake pull-request URL. |
 | `legacy` | Optional `{issues, comments}` inserted into a throwaway copy of the issues and comments tables. The runner checks the file is unchanged at the end. |
+| `legacy_kind` | Optional `empty` or `thin`, instead of the full throwaway schema. |
+| `legacy_unconfigured` | No legacy path is passed to the server. |
+| `legacy_chmod` | Mode applied to the legacy file before the steps, such as `0`. |
+| `db` | `flat` opens the turbo database as a file in the working directory, with no parent. |
+| `proc` | `subprocess` runs harness argv through `SubprocessProc`. The binary is a stub on `PATH`, not the real CLI. |
 | `steps` | Ordered. Each step is one line in the report. |
 
-A step has `name`, `op`, optional `card` (a ref), optional `arm` (`{exit, output, alive}` for the next captured harness spawn), optional `release` (`{exit, output}` to finish the live harness), optional `git_changed` (paths the stub reports), and optional `expect`.
+A step has `name`, `op`, optional `card` (a ref), optional `arm` (`{exit, output, alive}` for a captured harness, or `{mode, output}` for a `subprocess` stub: `ok`, `sleep`, `unlink`), optional `release` (`{exit, output}` to finish the live harness), optional `git_changed` (paths the stub reports), and optional `expect`.
 
-Ops: `tick` (one runner loop), `advance` (`seconds`), `ack` (`actor`, `digest: "bad"`, `nonce: "wrong"` or `"short"`), `ready`, `ask` (`blocked_question`, `blocked_options`, `blocked_default`), `answer` (`choice`), `edit`, `verdict` (`result`), `submit` (runner commit, stubbed `gh pr create`, server verify), `submit-raw` (`work_token` `$token` or `$old`, explicit `changed_paths` including `[]`, `sha`, `pr`), `merge` (`via`: `runner` or `http`), `claim`, `claim-race` (`claims`, one winner), `create-card`, `register` (`actor_name`, `role`, `harnesses`, `by`), `turn-closed`, `session`, `resume` (`token`, including `$resume`), `get` (`actor`), `http` (`method`, `path`, `body`), `tamper` (`set` of `body`, `sha`, or `verify_level`), `git-merge` (`number`, `sha`), `legacy-get`, `legacy-write`, `noop`.
+Ops: `tick` (one runner loop; a `TurboError` is the step status when `expect.status` is set), `advance` (`seconds`), `ack` (`actor`, `digest: "bad"`, `nonce: "wrong"` or `"short"`), `ready`, `ask` (`blocked_question`, `blocked_options`, `blocked_default`), `answer` (`choice`), `edit`, `verdict` (`result`), `submit` (runner commit, stubbed `gh pr create`, server verify), `submit-raw` (`work_token` `$token` or `$old`, explicit `changed_paths` including `[]`, `sha`, `pr`), `merge` (`via`: `runner` or `http`), `claim`, `claim-race` (`claims`, one winner), `create-card`, `register` (`actor_name`, `role`, `harnesses`, `by`), `turn-closed`, `session`, `resume` (`token`, including `$resume`), `get` (`actor`), `http` (`method`, `path`, `body`), `tamper` (`set` of `body`, `sha`, `verify_level`, or `harness`), `git-merge` (`number`, `sha`), `legacy-get`, `legacy-write`, `legacy-recreate`, `plain-http`, `module` (`module` `turbo` or `turbo.runner`, `args`, `env`, `stop`, `webhook`), `noop`.
 
-`expect` also checks `has_nonce`, `card_count`, `metric_cards`, `legacy_cards`, `log_contains`, `log_excludes`, `legacy_labels`, `legacy_report`, `webhook_posts`, `webhook_contains`, and `webhook_auth`. A scenario may set `bearer` (redacted from runner logs) or `legacy_missing` (the archive path is configured and the file is absent). `actors` may be empty when the steps register the first actor themselves.
+`expect` also checks `has_nonce`, `card_count`, `metric_cards`, `legacy_cards`, `legacy_brief_complete`, `log_contains`, `log_excludes`, `legacy_labels`, `legacy_report`, `webhook_posts`, `webhook_contains`, `webhook_auth`, `verify_contains`, `text_contains`, `bytes`, `posts`, and `auth`. A scenario may set `bearer` (redacted from runner logs) or `legacy_missing` (the archive path is configured and the file is absent). `actors` may be empty when the steps register the first actor themselves.
 
 `expect` can check `status`, `error` (substring), card `state`, `verdict`, `verify_level`, `answer`, `answer_by`, `ready`, `contract_version`, `session_mode`, `session_id`, `resume_contains`, `same_session`, `sha`, `pr_number`, `spawns`, `argv0`, `argv_contains`, `git_calls`, `no_commit`, `no_merge`, `interrupted`, `wins`, and the legacy body, children, comment, and report. `expect.card` selects which card those fields read when a scenario has more than one.
 
@@ -131,7 +136,7 @@ python3 -m compileall -q turbo tests
 bash scripts/secret-scan.sh .
 ```
 
-`mypy` is not part of CI. The scenario command starts a real server per scenario. The concurrent-claim scenario was also repeated on its own. `turbo/COVERAGE.md` lists what that scenario set does not execute. Those lines are marked in the source and were not removed.
+`mypy` is not part of CI. CI runs `scripts/scenario-coverage.sh`, which fails if scenario-only statement or branch coverage drops below 100%. The scenario command starts a real server per scenario. Harness CLIs and `gh` are not executed.
 
 - Scenario set, including the archive read and the rejected legacy write, against temporary sqlite files: live-verified. Harness binaries and `gh` were not executed.
 - Token gate, state machine, and driver argv in the smaller unit tests: unit-test-verified.

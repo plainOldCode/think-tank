@@ -126,14 +126,11 @@ def resume_plan(harness: str, session_id: str | None, prompt: str,
                 "-c", "developer_instructions=" + _toml_string(rules),
             ]
             return Plan("fork", argv, prompt, None, status)
-        if harness == "grok":
-            argv = [
-                "grok", "-r", session_id or "", "-p", prompt, "--fork-session",
-                "--output-format", "json", "--rules", rules,
-            ]
-            return Plan("fork", argv, prompt, None, status)
-        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
-        return Plan("handoff", None, prompt, None, status)
+        argv = [
+            "grok", "-r", session_id or "", "-p", prompt, "--fork-session",
+            "--output-format", "json", "--rules", rules,
+        ]
+        return Plan("fork", argv, prompt, None, status)
     if harness == "claude":
         argv = [
             "claude", "-p", prompt, "--resume", session_id or "",
@@ -152,10 +149,7 @@ def resume_plan(harness: str, session_id: str | None, prompt: str,
             "--output-format", "json", "--rules", rules,
         ]
         return Plan("resume", argv, prompt, session_id, status)
-    if harness == "cursor":
-        return Plan("resume", cursor_resume_argv(session_id or "", prompt), prompt, session_id, status)
-    # TURBO-UNCOVERED: removal candidate (not exercised by scenarios)
-    return Plan("handoff", None, prompt, None, status)
+    return Plan("resume", cursor_resume_argv(session_id or "", prompt), prompt, session_id, status)
 
 
 def can_fork(harness: str) -> bool:
@@ -183,20 +177,14 @@ def parse_session(harness: str, output: str, preassigned: str | None = None) -> 
     try:
         data = json.loads(output or "")
     except json.JSONDecodeError:
-        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
         return None
     if not isinstance(data, dict):
-        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
         return None
     if harness == "claude":
-        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
         value = data.get("session_id")
         return str(value) if value else None
-    if harness == "grok":
-        value = data.get("sessionId")
-        return str(value) if value else None
-    # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
-    return None
+    value = data.get("sessionId")
+    return str(value) if value else None
 
 
 def webhook_body(card_id: str, prompt: str) -> dict:

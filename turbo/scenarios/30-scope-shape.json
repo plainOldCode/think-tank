@@ -190,6 +190,29 @@
       }
     },
     {
+      "name": "timeout must be 1 to 120 seconds",
+      "op": "create-card",
+      "ref": "bad-timeout",
+      "title": "Bad",
+      "scope": {
+        "paths": [
+          "turbo/"
+        ],
+        "forbidden": [],
+        "verify": [
+          {
+            "cmd": "python3 -c \"import sys; raise SystemExit(0)\"",
+            "kind": "unit",
+            "timeout_s": 0
+          }
+        ]
+      },
+      "expect": {
+        "status": 422,
+        "error": "timeout_s"
+      }
+    },
+    {
       "name": "empty title",
       "op": "create-card",
       "ref": "bad-title",

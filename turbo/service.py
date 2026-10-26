@@ -52,11 +52,7 @@ def register_actor(store: Store, name: str, role: str, harnesses: list | None,
         else:
             store.require_role(by or "", "human")
         store.insert_actor(name, role, [item for item in harnesses if isinstance(item, str)])
-    created = store.actor(name)
-    if created is None:
-        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios)
-        raise TurboError(500, "actor was not stored")
-    return created
+    return store.require_actor(name)
 
 
 def create_card(store: Store, actor: str, title: str, body: str, contract: str,
@@ -242,8 +238,7 @@ def _queue_resume(store: Store, card: dict, kind: str, now: str, extra: str = ""
     if kind == "answer":
         lines.append(f"choice={card['answer']}")
         lines.append("next=continue")
-    # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; untaken branch)
-    elif kind == "verdict":
+    else:
         lines.append(f"result={card['verdict'] or 'request-changes'}")
         lines.append(f"sha={card['sha']}")
         lines.append("next=fix")
@@ -359,7 +354,6 @@ def submit(store: Store, card_id: str, actor: str, sha: str, pr: dict,
     if not isinstance(sha, str) or len(sha) != 40 or any(ch not in "0123456789abcdef" for ch in sha):
         raise TurboError(422, "sha must be the full 40-character commit")
     if not isinstance(pr, dict):
-        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
         raise TurboError(422, "pr must be an object")
     now = _now(clock)
     with store.transaction():
@@ -384,7 +378,7 @@ def submit(store: Store, card_id: str, actor: str, sha: str, pr: dict,
         results = []
         logs = []
         for step in card["scope"]["verify"]:
-            code, output = verify(step["cmd"], None)
+            code, output = verify(step["cmd"], None, step.get("timeout_s"))
             results.append({"cmd": step["cmd"], "kind": step["kind"], "code": int(code)})
             logs.append(f"$ {step['cmd']}\nexit {int(code)}\n{output}")
         level = scope.level_of(card["scope"]["verify"], results)

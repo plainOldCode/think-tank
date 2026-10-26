@@ -15,7 +15,8 @@ jobs:
         with:
           node-version: "22"
       - run: uv venv --python 3.12 .venv
-      - run: uv pip install -p .venv/bin/python fastapi uvicorn httpx pytest
+      - run: uv pip install -p .venv/bin/python fastapi uvicorn httpx pytest coverage
       - run: bash scripts/secret-scan.sh .
       - run: .venv/bin/python -m pytest tests/ -q
       - run: node tests/smoke_turbo_ui.mjs
+      - run: PATH="$PWD/.venv/bin:$PATH" bash scripts/scenario-coverage.sh

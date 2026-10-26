@@ -1,0 +1,116 @@
+{
+  "name": "verify-timeout",
+  "description": "A scope timeout_s bounds the verify command. Stdout, stderr, and a silent timeout are all kept.",
+  "actors": [
+    {
+      "name": "ada",
+      "role": "human"
+    },
+    {
+      "name": "run-1",
+      "role": "runner",
+      "harnesses": [
+        "claude"
+      ]
+    },
+    {
+      "name": "worker",
+      "role": "agent"
+    },
+    {
+      "name": "probe",
+      "role": "probe"
+    }
+  ],
+  "git": {
+    "changed": [
+      "turbo/app.py"
+    ],
+    "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "pr_number": 4
+  },
+  "cards": [
+    {
+      "ref": "gate",
+      "title": "Gate the submit",
+      "body": "Implement the gate.",
+      "contract": "The runner submits. The agent does not.",
+      "harness": "claude",
+      "scope": {
+        "paths": [
+          "turbo/"
+        ],
+        "forbidden": [],
+        "verify": [
+          {
+            "cmd": "python3 -c \"import sys,time; sys.stdout.write('out-marker'); sys.stdout.flush(); time.sleep(30)\"",
+            "kind": "unit",
+            "timeout_s": 1
+          },
+          {
+            "cmd": "python3 -c \"import sys,time; sys.stderr.write('err-marker'); sys.stderr.flush(); time.sleep(30)\"",
+            "kind": "unit",
+            "timeout_s": 1
+          },
+          {
+            "cmd": "python3 -c \"import time; time.sleep(30)\"",
+            "kind": "live",
+            "timeout_s": 1
+          }
+        ]
+      }
+    }
+  ],
+  "steps": [
+    {
+      "name": "runner claims",
+      "op": "tick",
+      "arm": {
+        "alive": true,
+        "exit": 0
+      },
+      "expect": {
+        "state": "working"
+      }
+    },
+    {
+      "name": "agent acks",
+      "op": "ack",
+      "expect": {
+        "status": 200
+      }
+    },
+    {
+      "name": "agent marks ready",
+      "op": "ready",
+      "expect": {
+        "status": 200,
+        "ready": true
+      }
+    },
+    {
+      "name": "harness exits",
+      "op": "tick",
+      "release": {
+        "exit": 0
+      },
+      "expect": {
+        "state": "working"
+      }
+    },
+    {
+      "name": "verify times out",
+      "op": "submit",
+      "expect": {
+        "status": 200,
+        "verify_level": "failed",
+        "verdict": "request-changes",
+        "verify_contains": [
+          "out-marker",
+          "err-marker",
+          "exit 124"
+        ]
+      }
+    }
+  ]
+}

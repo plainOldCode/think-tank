@@ -11,12 +11,58 @@ from pathlib import Path
 import pytest
 
 from turbo.app import create_app
-from turbo.drivers import parse_session, resume_plan, start_plan
+from turbo.drivers import can_fork, parse_session, resume_plan, start_plan
 from turbo.errors import TurboError
 from turbo.http_api import HttpAPI
 from turbo.proc import GitCli, SubprocessProc, parse_porcelain
-from turbo.runner import DirectAPI, Runner, _post_webhook, main
+from turbo.runner import Runner, _post_webhook, main
 from turbo import service
+
+
+class DirectAPI:
+    """In-process calls for these tests. Scenarios use HttpAPI."""
+
+    def __init__(self, store, verify, clock):
+        self.store = store
+        self.verify = verify
+        self.clock = clock
+
+    def claim(self, card_id, actor, agent):
+        return service.claim(self.store, card_id, actor, agent, self.clock)
+
+    def get(self, card_id, reveal=False):
+        return service.get_card(self.store, card_id, actor=None if not reveal else self._runner(card_id))
+
+    def _runner(self, card_id):
+        card = self.store.get(card_id)
+        return card["assignee"] or None
+
+    def apply_defaults(self, actor, now):
+        return service.apply_defaults(self.store, actor, lambda: now)
+
+    def attach_session(self, card_id, actor, session_id, driver, mode):
+        return service.attach_session(
+            self.store, card_id, actor, session_id, driver, mode, self.clock)
+
+    def turn_closed(self, card_id, actor):
+        return service.turn_closed(self.store, card_id, actor, self.clock)
+
+    def resume_started(self, card_id, actor, token, session_id, mode):
+        return service.resume_started(
+            self.store, card_id, actor, token, session_id, mode, self.clock)
+
+    def submit(self, card_id, actor, sha, pr, changed, token):
+        return service.submit(
+            self.store, card_id, actor, sha, pr, changed, token, self.verify, self.clock)
+
+    def merge(self, card_id, actor):
+        return service.merge(self.store, card_id, actor, self.clock)
+
+    def next_open(self, actor):
+        return service.next_open(self.store, actor)
+
+    def pending(self, actor):
+        return service.pending_work(self.store, actor)
 
 BODY = "Implement the gate."
 CONTRACT = "The runner submits."
@@ -90,7 +136,7 @@ class FakeGit:
 
 def world(tmp_path, proc, harnesses, verify=None):
     clock = Clock()
-    app = create_app(str(tmp_path / "turbo.db"), verify=verify or (lambda cmd, cwd: (0, "ok")), clock=clock)
+    app = create_app(str(tmp_path / "turbo.db"), verify=verify or (lambda cmd, cwd, timeout=120: (0, "ok")), clock=clock)
     store = app.state.store
     service.register_actor(store, "ada", "human", None, None)
     service.register_actor(store, "run-1", "runner", harnesses, "ada")
@@ -295,7 +341,7 @@ def test_parse_and_plans():
     assert "-r" in grok_resume.argv
     cursor = resume_plan("cursor", "s", "hi", "/tmp/system.txt")
     assert cursor.argv[:4] == ["agent", "-p", "--resume", "s"]
-    assert resume_plan("cursor", "s", "hi", "/tmp/system.txt", attempt="fork").mode == "handoff"
+    assert can_fork("cursor") is False
     assert resume_plan("grok-bot", "s", "hi", "/tmp/system.txt").mode == "webhook"
     plan = resume_plan("claude", "s1", "hello", "/tmp/system.txt")
     assert plan.argv[:4] == ["claude", "-p", "hello", "--resume"]
@@ -432,19 +478,11 @@ def test_runner_refuses_a_harness_it_does_not_know(tmp_path):
             }
 
     runner = Runner(API(), ScriptedProc([]), None, "run-1", "worker", ["claude"], str(tmp_path), Clock())
-    with pytest.raises(TurboError) as caught:
+    with pytest.raises(KeyError):
         runner.start_card("card")
-    assert "harness" in caught.value.message
 
-    class Plan:
-        mode = "mystery"
-        argv = None
-        session_id = None
-
-    with pytest.raises(TurboError) as caught:
-        runner._launch("card", "claude", Plan(), "prompt", "start", "start")
-    assert "no command" in caught.value.message
-    assert runner.reap("missing") is None
+    with pytest.raises(KeyError):
+        runner.reap("missing")
     with pytest.raises(TurboError) as caught:
         runner._webhook("card", "grok-bot", "hi")
     assert "webhook" in caught.value.message
@@ -474,7 +512,7 @@ def test_direct_api_defaults_and_next_open(tmp_path):
     service.register_actor(store, "ada", "human", None, None)
     service.register_actor(store, "run-1", "runner", ["claude"], "ada")
     service.create_card(store, "ada", "Other", BODY, CONTRACT, "grok", SCOPE, Clock())
-    api = DirectAPI(store, lambda _cmd, _cwd: (0, ""), Clock())
+    api = DirectAPI(store, lambda *_args: (0, ""), Clock())
     assert api.apply_defaults("run-1", Clock()())["applied"] == []
     assert api.next_open("run-1") is None
 

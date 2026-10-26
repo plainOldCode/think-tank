@@ -1,0 +1,43 @@
+{
+  "name": "plain-http-error",
+  "description": "HttpAPI keeps a non-JSON error body as the message.",
+  "actors": [
+    {
+      "name": "ada",
+      "role": "human"
+    },
+    {
+      "name": "run-1",
+      "role": "runner",
+      "harnesses": [
+        "claude"
+      ]
+    },
+    {
+      "name": "worker",
+      "role": "agent"
+    },
+    {
+      "name": "probe",
+      "role": "probe"
+    }
+  ],
+  "git": {
+    "changed": [
+      "turbo/app.py"
+    ],
+    "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "pr_number": 4
+  },
+  "cards": [],
+  "steps": [
+    {
+      "name": "plain 500",
+      "op": "plain-http",
+      "expect": {
+        "status": 500,
+        "error": "plain failure"
+      }
+    }
+  ]
+}

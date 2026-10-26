@@ -70,7 +70,6 @@ def create_throwaway(path: str) -> None:
     """Create a new empty issues/comments file. Refuses an existing path."""
     file = Path(path)
     if file.exists():
-        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
         raise FileExistsError(path)
     con = sqlite3.connect(path)
     try:

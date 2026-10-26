@@ -126,6 +126,7 @@
         "exit": 0
       },
       "expect": {
+        "status": null,
         "state": "review",
         "verdict": "approve"
       }

@@ -10,68 +10,10 @@ import os
 import time
 import uuid
 
-from . import drivers, scope, service
+from . import drivers, scope
 from .clock import parse_stamp
 from .constants import QUESTION_GRACE_S
 from .errors import TurboError
-
-
-class DirectAPI:
-    """In-process calls, used by tests and by a runner in the same program."""
-
-    def __init__(self, store, verify, clock):
-        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
-        self.store = store
-        self.verify = verify
-        self.clock = clock
-
-    def claim(self, card_id, actor, agent):
-        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
-        return service.claim(self.store, card_id, actor, agent, self.clock)
-
-    def get(self, card_id, reveal=False):
-        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
-        return service.get_card(self.store, card_id, actor=None if not reveal else self._runner(card_id))
-
-    def _runner(self, card_id):
-        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
-        card = self.store.get(card_id)
-        return card["assignee"] or None
-
-    def apply_defaults(self, actor, now):
-        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
-        return service.apply_defaults(self.store, actor, lambda: now)
-
-    def attach_session(self, card_id, actor, session_id, driver, mode):
-        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
-        return service.attach_session(
-            self.store, card_id, actor, session_id, driver, mode, self.clock)
-
-    def turn_closed(self, card_id, actor):
-        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
-        return service.turn_closed(self.store, card_id, actor, self.clock)
-
-    def resume_started(self, card_id, actor, token, session_id, mode):
-        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
-        return service.resume_started(
-            self.store, card_id, actor, token, session_id, mode, self.clock)
-
-    def submit(self, card_id, actor, sha, pr, changed, token):
-        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
-        return service.submit(
-            self.store, card_id, actor, sha, pr, changed, token, self.verify, self.clock)
-
-    def merge(self, card_id, actor):
-        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
-        return service.merge(self.store, card_id, actor, self.clock)
-
-    def next_open(self, actor):
-        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
-        return service.next_open(self.store, actor)
-
-    def pending(self, actor):
-        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
-        return service.pending_work(self.store, actor)
 
 
 class Runner:
@@ -108,9 +50,6 @@ class Runner:
 
     def start_card(self, card_id: str, agent: str | None = None) -> dict:
         claimed = self.api.claim(card_id, self.actor, agent or self.agent)
-        if claimed["harness"] not in self.harnesses and claimed["harness"] not in drivers.HARNESSES:
-            # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
-            raise TurboError(409, "runner cannot start this harness")
         session_id = str(uuid.uuid4()) if claimed["harness"] in {"claude", "grok"} else None
         prompt = drivers.initial_prompt(claimed)
         plan = drivers.start_plan(claimed["harness"], session_id, prompt, self.system_file())
@@ -139,9 +78,6 @@ class Runner:
         if plan.mode == "webhook":
             self._webhook(card_id, harness, prompt)
             return
-        if plan.argv is None:
-            # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
-            raise TurboError(409, "no command for " + plan.mode)
         if plan.mode == "create-chat":
             phase = "create-chat"
         handle = self.proc.spawn(plan.argv)
@@ -158,13 +94,10 @@ class Runner:
             self.api.attach_session(card_id, self.actor, plan.session_id, harness, plan.mode)
 
     def _webhook(self, card_id, harness, prompt) -> None:
-        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; untaken branch, only unit-tested)
-        if not self.webhook_url or self.webhook_post is None:
-            # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
+        if not self.webhook_url:
             raise TurboError(409, "grok-bot needs a webhook URL")
         body = drivers.webhook_body(card_id, prompt)
         headers = {"content-type": "application/json"}
-        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; untaken branch, only unit-tested)
         if self.bearer:
             headers["authorization"] = "Bearer " + self.bearer
         status = self.webhook_post(self.webhook_url, body, headers)
@@ -172,11 +105,8 @@ class Runner:
         self.api.attach_session(card_id, self.actor, "", harness, "webhook")
         self.handles.pop(card_id, None)
 
-    def reap(self, card_id: str) -> dict | None:
-        ent = self.handles.get(card_id)
-        if not ent:
-            # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
-            return None
+    def reap(self, card_id: str) -> dict:
+        ent = self.handles[card_id]
         code = self.proc.poll(ent["handle"])
         card = self.api.get(card_id)
         now = self.clock()
@@ -267,7 +197,6 @@ class Runner:
 
 
 def _post_webhook(url: str, body: dict, headers: dict) -> int:
-    # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
     import json
     import urllib.request
 
@@ -280,7 +209,6 @@ def _post_webhook(url: str, body: dict, headers: dict) -> int:
 
 def main(argv: list[str] | None = None) -> None:
     """One runner process. It ticks on its own clock. Agents do not poll."""
-    # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
     import argparse
 
     from .http_api import HttpAPI

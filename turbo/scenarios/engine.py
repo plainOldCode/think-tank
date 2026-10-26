@@ -8,14 +8,18 @@ runner, so no remote is contacted.
 
 import argparse
 import json
+import os
+import signal
 import socket
 import sqlite3
 import subprocess
+import sys
 import tempfile
 import threading
 import time
 import urllib.error
 import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import uvicorn
@@ -27,7 +31,7 @@ from turbo.gate import digest
 from turbo.http_api import HttpAPI
 from turbo.legacy import open_ro
 from turbo.legacy_schema import create_throwaway
-from turbo.proc import GitCli
+from turbo.proc import GitCli, SubprocessProc
 from turbo.runner import Runner
 
 _HARNESS_BINARIES = {"claude", "codex", "grok", "agent"}
@@ -108,10 +112,13 @@ class FakeProc:
 class GitStub:
     """GitCli with a local run() so push, commit, and gh stay in-process."""
 
-    def __init__(self, cwd: str, changed: list[str], sha: str, pr_number: int):
+    def __init__(self, cwd: str, changed: list[str], sha: str, pr_number: int,
+                 porcelain: str | None = None, pr_stdout: str | None = None):
         self.changed = list(changed)
         self.sha = sha
         self.pr_number = pr_number
+        self.porcelain = porcelain
+        self.pr_stdout = pr_stdout
         self.calls: list[list[str]] = []
         self.cli = GitCli(cwd, run=self.run)
 
@@ -122,11 +129,17 @@ class GitStub:
             raise RuntimeError("refusing to run " + " ".join(argv[:3]))
         stdout = ""
         if argv[:2] == ["git", "status"]:
-            stdout = "".join(f" M {path}\n" for path in self.changed)
+            if self.porcelain is not None:
+                stdout = self.porcelain
+            else:
+                stdout = "".join(f" M {path}\n" for path in self.changed)
         elif argv[:2] == ["git", "rev-parse"]:
             stdout = self.sha + "\n"
         elif argv[:3] == ["gh", "pr", "create"]:
-            stdout = f"https://example.invalid/think-tank/pull/{self.pr_number}\n"
+            if self.pr_stdout is not None:
+                stdout = self.pr_stdout
+            else:
+                stdout = f"https://example.invalid/think-tank/pull/{self.pr_number}\n"
         elif argv[:3] == ["gh", "pr", "merge"]:
             stdout = ""
         elif argv[0] == "git" and argv[1] in {"add", "commit", "push"}:
@@ -134,6 +147,87 @@ class GitStub:
         else:
             raise RuntimeError("unexpected git command: " + " ".join(argv))
         return subprocess.CompletedProcess(argv, 0, stdout, "")
+
+
+_STUB_SH = """#!/bin/sh
+unset COVERAGE_PROCESS_START
+unset COVERAGE_FILE
+mode=${TURBO_STUB_MODE:-ok}
+if [ "$mode" = "sleep" ]; then
+  exec python3 -c 'import time; time.sleep(60)'
+fi
+if [ "$mode" = "unlink" ]; then
+  exec python3 -c 'import os
+try:
+    os.remove(os.readlink("/proc/self/fd/1"))
+except OSError:
+    pass'
+fi
+exec python3 -c 'import os,sys; sys.stdout.write(os.environ.get("TURBO_STUB_OUT",""))'
+"""
+
+
+def _install_stubs(directory: Path) -> None:
+    directory.mkdir(parents=True, exist_ok=True)
+    for name in ("claude", "codex", "grok", "agent"):
+        path = directory / name
+        path.write_text(_STUB_SH, encoding="utf-8")
+        path.chmod(0o755)
+
+
+class RecordingProc:
+    """Real SubprocessProc. Harness names resolve to the stub scripts on PATH."""
+
+    def __init__(self):
+        self.inner = SubprocessProc()
+        self.spawns: list[list[str]] = []
+        self.interrupts = 0
+        self.last_nonce = ""
+
+    def arm(self, spec: dict) -> None:
+        os.environ["TURBO_STUB_MODE"] = str(spec.get("mode") or "ok")
+        os.environ["TURBO_STUB_OUT"] = spec.get("output") or ""
+
+    def spawn(self, argv: list[str]) -> int:
+        if not argv or argv[0] not in _HARNESS_BINARIES:
+            raise RuntimeError("refusing to spawn " + " ".join(argv[:3]))
+        self.spawns.append(list(argv))
+        self._note_nonce(argv)
+        handle = self.inner.spawn(argv)
+        if os.environ.get("TURBO_STUB_MODE") != "sleep":
+            deadline = time.time() + 5
+            while time.time() < deadline and self.inner.poll(handle) is None:
+                time.sleep(0.01)
+        return handle
+
+    def poll(self, handle: int) -> int | None:
+        return self.inner.poll(handle)
+
+    def interrupt(self, handle: int) -> None:
+        self.interrupts += 1
+        self.inner.interrupt(handle)
+
+    def output(self, handle: int) -> str:
+        return self.inner.output(handle)
+
+    def release(self, code: int, output: str | None) -> None:
+        del code, output
+        raise RuntimeError("a real process is not scripted")
+
+    def _note_nonce(self, argv: list[str]) -> None:
+        for arg in argv:
+            for line in str(arg).splitlines():
+                if line.startswith("nonce: "):
+                    self.last_nonce = line.split(" ", 1)[1].strip()
+                    return
+
+
+def _http_server(handler: type[BaseHTTPRequestHandler]) -> tuple[ThreadingHTTPServer, str]:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    host = str(server.server_address[0])
+    port = int(server.server_address[1])
+    return server, "http://" + host + ":" + str(port)
 
 
 def _free_port() -> int:
@@ -176,8 +270,15 @@ def _request(base: str, method: str, path: str, body: dict | None = None) -> tup
         req.add_header("content-type", "application/json")
     try:
         with urllib.request.urlopen(req, timeout=30) as res:
-            raw = res.read().decode("utf-8")
-            parsed = json.loads(raw) if raw else {}
+            raw_bytes = res.read()
+            try:
+                raw = raw_bytes.decode("utf-8")
+            except UnicodeDecodeError:
+                return res.status, {"bytes": len(raw_bytes)}
+            try:
+                parsed = json.loads(raw) if raw else {}
+            except json.JSONDecodeError:
+                parsed = {"text": raw}
             return res.status, parsed if isinstance(parsed, dict) else {"value": parsed}
     except urllib.error.HTTPError as exc:
         raw = exc.read().decode("utf-8", "replace")
@@ -193,10 +294,11 @@ def _request(base: str, method: str, path: str, body: dict | None = None) -> tup
 def _snapshot(path: str) -> tuple:
     con = sqlite3.connect(path)
     try:
-        issues = [tuple(row) for row in con.execute("SELECT * FROM issues ORDER BY id")]
-        comments = [tuple(row) for row in con.execute("SELECT * FROM comments ORDER BY id")]
         schema = [tuple(row) for row in con.execute(
             "SELECT type, name, sql FROM sqlite_master ORDER BY type, name")]
+        tables = {row[1] for row in schema if row[0] == "table"}
+        issues = [tuple(row) for row in con.execute("SELECT * FROM issues ORDER BY id")] if "issues" in tables else []
+        comments = [tuple(row) for row in con.execute("SELECT * FROM comments ORDER BY id")] if "comments" in tables else []
         return issues, comments, schema
     finally:
         con.close()
@@ -242,7 +344,7 @@ def load_scenarios(paths: list[Path]) -> list[tuple[Path, dict]]:
 
 
 class Run:
-    def __init__(self, base: str, scenario: dict, proc: FakeProc, git: GitStub, runner: Runner, legacy_path: str | None):
+    def __init__(self, base: str, scenario: dict, proc: FakeProc | RecordingProc, git: GitStub, runner: Runner, legacy_path: str | None):
         self.base = base
         self.scenario = scenario
         self.proc = proc
@@ -364,8 +466,14 @@ class Run:
             self.proc.release(int(rel.get("exit", 0)), rel.get("output"))
         op = spec.get("op")
         if op == "tick":
-            self.runner.tick()
-            self.status, self.error = None, ""
+            try:
+                self.runner.tick()
+            except TurboError as exc:
+                self.status = exc.status
+                self.error = exc.message
+                self.body = {"error": exc.message}
+            else:
+                self.status, self.error = None, ""
         elif op == "advance":
             self.runner.clock.t += float(spec["seconds"])
             self.status = None
@@ -490,6 +598,12 @@ class Run:
             self._legacy_write()
         elif op == "legacy-get":
             self._http("GET", "/legacy/issues/" + spec.get("issue", "PARENT01"))
+        elif op == "legacy-recreate":
+            self._legacy_recreate()
+        elif op == "plain-http":
+            self._plain_http()
+        elif op == "module":
+            self._module(spec)
         elif op == "noop":
             self.status = None
         else:
@@ -497,10 +611,10 @@ class Run:
         self._expect(spec.get("expect") or {})
 
     def _tamper(self, spec: dict) -> None:
-        allowed = {"body", "sha", "verify_level"}
+        allowed = {"body", "sha", "verify_level", "harness"}
         fields = {key: value for key, value in (spec.get("set") or {}).items() if key in allowed}
         if not fields:
-            raise RuntimeError("tamper needs a set of body, sha, or verify_level")
+            raise RuntimeError("tamper needs body, sha, verify_level, or harness")
         con = sqlite3.connect(self.db_path)
         try:
             sets = ", ".join(f"{key}=?" for key in fields)
@@ -586,6 +700,136 @@ class Run:
             raise RuntimeError(f"GET card {ref}: {status} {body}")
         return body
 
+    def _legacy_recreate(self) -> None:
+        if not self.legacy_path:
+            raise RuntimeError("scenario has no legacy fixture")
+        try:
+            create_throwaway(self.legacy_path)
+            self.status, self.error, self.body = 200, "", {}
+        except FileExistsError as exc:
+            self.status, self.error, self.body = 409, str(exc), {"error": str(exc)}
+
+    def _plain_http(self) -> None:
+        class Plain(BaseHTTPRequestHandler):
+            def do_GET(self):
+                body = b"plain failure"
+                self.send_response(500)
+                self.send_header("content-type", "text/plain")
+                self.send_header("content-length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *_args):
+                return
+
+        server, base = _http_server(Plain)
+        try:
+            try:
+                HttpAPI(base, "ada").get("x")
+                self.status, self.error, self.body = 200, "", {}
+            except TurboError as exc:
+                self.status = exc.status
+                self.error = exc.message
+                self.body = {"error": exc.message}
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def _module(self, spec: dict) -> None:
+        import importlib
+
+        import turbo.__main__ as entry
+
+        importlib.reload(entry)
+        module = spec["module"]
+        parent = os.path.dirname(self.db_path)
+        work = parent or os.getcwd()
+        env = os.environ.copy()
+        for key in ("TT_LEGACY_DB", "TURBO_GROK_BOT_WEBHOOK_URL", "TURBO_GROK_BOT_BEARER", "TURBO_DB"):
+            env.pop(key, None)
+        env["TURBO_URL"] = self.base
+        env["TURBO_ACTOR"] = spec.get("actor") or "run-1"
+        env["TURBO_AGENT"] = ""
+        env["TURBO_HARNESSES"] = "claude"
+        env["TURBO_WORKSPACE"] = work
+        env["TURBO_STATE"] = os.path.join(work, "module-state")
+        for key, value in (spec.get("env") or {}).items():
+            if value is None:
+                env.pop(key, None)
+            else:
+                env[str(key)] = str(value)
+        holder: dict = {"posts": []}
+        server = None
+        if spec.get("webhook"):
+            class Hook(BaseHTTPRequestHandler):
+                def do_POST(self):
+                    length = int(self.headers.get("content-length") or 0)
+                    raw = self.rfile.read(length)
+                    holder["posts"].append({
+                        "body": raw,
+                        "auth": self.headers.get("authorization") or "",
+                    })
+                    self.send_response(202)
+                    self.end_headers()
+
+                def log_message(self, *_args):
+                    return
+
+            server, url = _http_server(Hook)
+            env["TURBO_GROK_BOT_WEBHOOK_URL"] = url + "/hook"
+            env["TURBO_GROK_BOT_BEARER"] = str(spec.get("bearer") or "hook-secret")
+        if module == "turbo":
+            env["TURBO_PORT"] = str(_free_port())
+            env["TURBO_DB"] = os.path.join(work, "entry.db")
+            if spec.get("legacy"):
+                legacy_file = os.path.join(work, "entry-legacy.db")
+                sqlite3.connect(legacy_file).close()
+                env["TT_LEGACY_DB"] = legacy_file
+        args = [sys.executable, "-m", module, *(spec.get("args") or [])]
+        proc = subprocess.Popen(args, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        try:
+            if module == "turbo":
+                port = env["TURBO_PORT"]
+                deadline = time.time() + 10
+                ok = False
+                while time.time() < deadline:
+                    try:
+                        with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=0.2) as res:
+                            ok = res.status == 200
+                            break
+                    except OSError:
+                        time.sleep(0.05)
+                self.status = 200 if ok else 500
+                self.error = "" if ok else "module did not start"
+                self.body = {"error": self.error}
+                proc.send_signal(signal.SIGINT)
+                proc.wait(timeout=10)
+            elif spec.get("stop"):
+                time.sleep(1.0)
+                proc.send_signal(signal.SIGINT)
+                proc.wait(timeout=5)
+                self.status = proc.returncode
+                self.error = ""
+                self.body = {}
+            else:
+                proc.wait(timeout=20)
+                err = proc.stderr.read().decode("utf-8", "replace")[-800:] if proc.stderr else ""
+                self.status = proc.returncode
+                self.error = err
+                self.body = {"error": err, "posts": len(holder["posts"])}
+                if holder["posts"]:
+                    self.body["auth"] = holder["posts"][0]["auth"]
+        finally:
+            if proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+            if server is not None:
+                server.shutdown()
+                server.server_close()
+
     def _expect(self, expect: dict) -> None:
         if not expect:
             return
@@ -650,6 +894,25 @@ class Run:
             problems.append(f"metric cards {self.body.get('cards')}")
         if "legacy_cards" in expect and self.body.get("legacy_cards") != expect["legacy_cards"]:
             problems.append(f"legacy cards {self.body.get('legacy_cards')}")
+        if "legacy_brief_complete" in expect and self.body.get("legacy_brief_complete") != expect["legacy_brief_complete"]:
+            problems.append(f"legacy briefs {self.body.get('legacy_brief_complete')}")
+        if "text_contains" in expect and expect["text_contains"] not in str(self.body.get("text") or ""):
+            problems.append(f"text missing {expect['text_contains']!r}")
+        if "bytes" in expect and self.body.get("bytes") != expect["bytes"]:
+            problems.append(f"bytes {self.body.get('bytes')}")
+        if "posts" in expect and self.body.get("posts") != expect["posts"]:
+            problems.append(f"posts {self.body.get('posts')}")
+        if "auth" in expect and self.body.get("auth") != expect["auth"]:
+            problems.append(f"auth {self.body.get('auth')!r}")
+        if "verify_contains" in expect:
+            if card is None:
+                card = self._card(expect)
+            log = (card or {}).get("verify_log") or ""
+            wanted = expect["verify_contains"]
+            items = wanted if isinstance(wanted, list) else [wanted]
+            missing = [item for item in items if item not in log]
+            if missing:
+                problems.append(f"verify log missing {missing!r}")
         if "log_contains" in expect and expect["log_contains"] not in "\n".join(self.runner.logs):
             problems.append(f"logs missing {expect['log_contains']!r}")
         if "log_excludes" in expect and expect["log_excludes"] in "\n".join(self.runner.logs):
@@ -732,10 +995,12 @@ def _git_of(scenario: dict, cwd: str) -> GitStub:
         list(git.get("changed") or ["turbo/app.py"]),
         git.get("sha") or _PASS_SHA,
         int(git.get("pr_number") or 4),
+        porcelain=git.get("porcelain"),
+        pr_stdout=git.get("pr_stdout"),
     )
 
 
-def _runner_of(scenario: dict, base: str, proc: FakeProc, git: GitStub, clock: Clock, state_dir: str) -> Runner:
+def _runner_of(scenario: dict, base: str, proc: FakeProc | RecordingProc, git: GitStub, clock: Clock, state_dir: str) -> Runner:
     actors = scenario.get("actors") or []
     runners = [item for item in actors if item.get("role") == "runner"]
     agents = [item for item in actors if item.get("role") == "agent"]
@@ -774,57 +1039,111 @@ def _runner_of(scenario: dict, base: str, proc: FakeProc, git: GitStub, clock: C
     return runner
 
 
+def _prepare_legacy(tmp: str, scenario: dict) -> tuple[str | None, tuple | None]:
+    kind = scenario.get("legacy_kind")
+    legacy_path = None
+    before = None
+    if scenario.get("legacy_unconfigured"):
+        return None, None
+    if scenario.get("legacy_missing"):
+        return str(Path(tmp) / "missing-legacy.db"), None
+    path = str(Path(tmp) / "legacy.db")
+    if kind == "empty":
+        sqlite3.connect(path).close()
+        legacy_path = path
+    elif kind == "thin":
+        con = sqlite3.connect(path)
+        try:
+            con.execute("CREATE TABLE issues (id TEXT, title TEXT, body TEXT)")
+            con.execute("INSERT INTO issues (id, title, body) VALUES ('T1', 't', 'body text')")
+            con.commit()
+        finally:
+            con.close()
+        legacy_path = path
+    elif scenario.get("legacy"):
+        before = _seed_legacy(path, scenario["legacy"])
+        legacy_path = path
+    if legacy_path and before is None and kind in {"empty", "thin"}:
+        before = _snapshot(legacy_path)
+    if legacy_path and scenario.get("legacy_chmod") is not None:
+        if before is None:
+            before = _snapshot(legacy_path)
+        os.chmod(legacy_path, int(scenario["legacy_chmod"]))
+    return legacy_path, before
+
+
 def run_one(file: Path, scenario: dict) -> dict:
     steps_out = []
     ok = True
     error = ""
+    old_cwd = os.getcwd()
+    old_path = os.environ.get("PATH", "")
+    old_mode = os.environ.pop("TURBO_STUB_MODE", None)
+    old_out = os.environ.pop("TURBO_STUB_OUT", None)
     try:
         with tempfile.TemporaryDirectory(prefix="turbo-scenario-") as tmp:
-            clock = Clock()
-            legacy_fixture = scenario.get("legacy")
-            legacy_path = None
-            before = None
-            db_path = str(Path(tmp) / "turbo.db")
-            if scenario.get("legacy_missing"):
-                legacy_path = str(Path(tmp) / "missing-legacy.db")
-            elif legacy_fixture:
-                legacy_path = str(Path(tmp) / "legacy.db")
-                before = _seed_legacy(legacy_path, legacy_fixture)
-            app = create_app(db_path, legacy_path=legacy_path, clock=clock)
-            proc = FakeProc()
-            git = _git_of(scenario, tmp)
-            with Server(app) as server:
-                runner = _runner_of(scenario, server.base, proc, git, clock, str(Path(tmp) / "state"))
-                run = Run(server.base, scenario, proc, git, runner, legacy_path)
-                run.db_path = db_path
-                run.seed()
-                for spec in scenario.get("steps") or []:
-                    name = spec.get("name") or spec.get("op")
-                    try:
-                        run.step(spec)
-                        step_ok = not run.reason
-                        detail = run.reason
-                    except Exception as exc:
-                        step_ok = False
-                        detail = f"{type(exc).__name__}: {exc}"
-                    steps_out.append({"name": name, "ok": step_ok, "detail": detail})
-                    if not step_ok:
-                        ok = False
-                        break
-                if ok and before is not None and legacy_path is not None:
-                    after = _snapshot(legacy_path)
-                    if after != before:
-                        ok = False
-                        steps_out.append({
-                            "name": "legacy unchanged",
-                            "ok": False,
-                            "detail": "legacy sqlite rows or schema changed",
-                        })
-                    else:
-                        steps_out.append({"name": "legacy unchanged", "ok": True, "detail": ""})
+            try:
+                clock = Clock()
+                if scenario.get("db") == "flat":
+                    os.chdir(tmp)
+                    db_path = "turbo.db"
+                else:
+                    db_path = str(Path(tmp) / "turbo.db")
+                legacy_path, before = _prepare_legacy(tmp, scenario)
+                app = create_app(db_path, legacy_path=legacy_path, clock=clock)
+                if scenario.get("proc") == "subprocess":
+                    _install_stubs(Path(tmp) / "bin")
+                    os.environ["PATH"] = str(Path(tmp) / "bin") + os.pathsep + old_path
+                    proc: FakeProc | RecordingProc = RecordingProc()
+                else:
+                    proc = FakeProc()
+                git = _git_of(scenario, tmp)
+                with Server(app) as server:
+                    runner = _runner_of(scenario, server.base, proc, git, clock, str(Path(tmp) / "state"))
+                    run = Run(server.base, scenario, proc, git, runner, legacy_path)
+                    run.db_path = db_path
+                    run.seed()
+                    for spec in scenario.get("steps") or []:
+                        name = spec.get("name") or spec.get("op")
+                        try:
+                            run.step(spec)
+                            step_ok = not run.reason
+                            detail = run.reason
+                        except Exception as exc:
+                            step_ok = False
+                            detail = f"{type(exc).__name__}: {exc}"
+                        steps_out.append({"name": name, "ok": step_ok, "detail": detail})
+                        if not step_ok:
+                            ok = False
+                            break
+                    if ok and before is not None and legacy_path is not None:
+                        if scenario.get("legacy_chmod") is not None:
+                            os.chmod(legacy_path, 0o600)
+                        after = _snapshot(legacy_path)
+                        if after != before:
+                            ok = False
+                            steps_out.append({
+                                "name": "legacy unchanged",
+                                "ok": False,
+                                "detail": "legacy sqlite rows or schema changed",
+                            })
+                        else:
+                            steps_out.append({"name": "legacy unchanged", "ok": True, "detail": ""})
+            finally:
+                os.chdir(old_cwd)
     except Exception as exc:
         ok = False
         error = f"{type(exc).__name__}: {exc}"
+    finally:
+        os.environ["PATH"] = old_path
+        if old_mode is None:
+            os.environ.pop("TURBO_STUB_MODE", None)
+        else:
+            os.environ["TURBO_STUB_MODE"] = old_mode
+        if old_out is None:
+            os.environ.pop("TURBO_STUB_OUT", None)
+        else:
+            os.environ["TURBO_STUB_OUT"] = old_out
     return {"file": str(file), "name": scenario["name"], "ok": ok, "error": error, "steps": steps_out}
 
 

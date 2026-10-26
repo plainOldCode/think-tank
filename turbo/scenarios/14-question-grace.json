@@ -76,6 +76,14 @@
       }
     },
     {
+      "name": "still inside the grace",
+      "op": "tick",
+      "expect": {
+        "state": "question",
+        "spawns": 1
+      }
+    },
+    {
       "name": "clock passes the grace",
       "op": "advance",
       "seconds": 121

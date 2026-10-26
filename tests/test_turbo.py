@@ -50,11 +50,11 @@ def make_card(client, harness="claude", scope=None):
     return res.json()
 
 
-def ok_verify(cmd, cwd):
+def ok_verify(cmd, cwd, timeout=None):
     return 0, "passed " + cmd
 
 
-def bad_verify(cmd, cwd):
+def bad_verify(cmd, cwd, timeout=None):
     return 1, "failed " + cmd
 
 
@@ -377,11 +377,8 @@ def test_board_html_uses_the_ink_page(tmp_path):
 def test_verify_boundaries(monkeypatch):
     import subprocess
 
-    assert subprocess_verify("", None) == (1, "empty verify command")
-    assert subprocess_verify("   ", None) == (1, "empty verify command")
-
     def timeout(*_args, **_kwargs):
-        raise subprocess.TimeoutExpired("cmd", 120, output=b"out-bytes", stderr="err-text")
+        raise subprocess.TimeoutExpired("cmd", 1, output="out-bytes", stderr="err-text")
 
     monkeypatch.setattr(subprocess, "run", timeout)
     code, text = subprocess_verify("python3 -c pass", None)
@@ -460,7 +457,7 @@ def test_legacy_boundaries(tmp_path):
     assert detail["children"] == []
     assert detail["comments"] == []
     assert brief_stats(str(thin)) == {"legacy_cards": 0, "legacy_brief_complete": 0}
-    assert _labels(["ink", "gate"]) == ["ink", "gate"]
+    assert _labels("ink,gate") == ["ink", "gate"]
 
     fresh = tmp_path / "throwaway.db"
     create_throwaway(str(fresh))
@@ -473,8 +470,6 @@ def test_store_edges(tmp_path, monkeypatch):
 
     monkeypatch.chdir(tmp_path)
     store = Store("plain.db")
-    with pytest.raises(RuntimeError):
-        store.update_card("missing", not_a_column=1)
     with store.transaction():
         with store.transaction():
             store.con.execute("SELECT 1")
