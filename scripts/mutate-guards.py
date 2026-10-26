@@ -76,9 +76,9 @@ CHECKS: list[tuple[str, str, str, str, int]] = [
     ("turbo/service.py", "choice must be one of the options", "pass", "37-question-shape.json", 0),
     ("turbo/service.py", "not waiting for a person", "pass", "37-question-shape.json", 0),
     ("turbo/service.py", "already has an answer", "pass", "37-question-shape.json", 0),
-    ("turbo/service.py", "only while working", "pass", "46-actor-ready-state.json", 0),
-    ("turbo/service.py", "a turn is already running", "pass", "46-actor-ready-state.json", 0),
-    ("turbo/service.py", "resume is not waiting on this card", "pass", "46-actor-ready-state.json", 0),
+    ("turbo/service.py", "only while working", "pass", "45-actor-ready-state.json", 0),
+    ("turbo/service.py", "a turn is already running", "pass", "45-actor-ready-state.json", 0),
+    ("turbo/service.py", "resume is not waiting on this card", "pass", "45-actor-ready-state.json", 0),
     ("turbo/service.py", 'state.require(card["state"], "merged")', "pass", "29-edit-locked.json", 0),
     ("turbo/service.py", 'state.require(card["state"], "submit")', "pass", "29-edit-locked.json", 0),
     ("turbo/service.py", "merge requires a passed server verify", "pass", "34-live-verified.json", 0),
@@ -86,14 +86,36 @@ CHECKS: list[tuple[str, str, str, str, int]] = [
     ("turbo/service.py", "contract is required", "pass", "30-scope-shape.json", 1),
     ("turbo/service.py", "merge requires an approve verdict", "pass", "26-review-without-changes.json", 0),
     ("turbo/service.py", "only the assignee runner can merge", "pass", "08-merge-authority.json", 0),
-    ("turbo/scope.py", 'return "type-check-only"', 'return "planned-only"', "47-type-check-only.json", 0),
+    ("turbo/scope.py", 'return "type-check-only"', 'return "planned-only"', "46-type-check-only.json", 0),
     (
         "turbo/service.py",
         'elif card["state"] == "review" and card["verdict"] == "request-changes":',
         'elif card["state"] == "review":',
-        "48-approved-not-resumed.json",
+        "47-approved-not-resumed.json",
         0,
     ),
+    ("turbo/drivers.py", 'if harness == "codex":', "if False:", "48-codex-resume-fork.json", 0),
+    ("turbo/drivers.py", 'if harness == "codex":', "if False:", "48-codex-resume-fork.json", 1),
+    ("turbo/drivers.py", 'if harness == "codex":', "if False:", "48-codex-resume-fork.json", 2),
+    ("turbo/drivers.py", "return '\"' + escaped + '\"'", "return text", "48-codex-resume-fork.json", 0),
+    ("turbo/drivers.py", "return str(data[\"thread_id\"])", "pass", "48-codex-resume-fork.json", 0),
+    ("turbo/drivers.py", "return None", 'return "forced"', "48-codex-resume-fork.json", 0),
+    # which=2 skips the word "continued" in the module docstring and the blank-line continue.
+    ("turbo/drivers.py", "continue", 'raise RuntimeError("bad json")', "48-codex-resume-fork.json", 2),
+    ("turbo/runner.py", 'self._fallback(card, ent, "fork")', "pass", "48-codex-resume-fork.json", 0),
+    ("turbo/drivers.py", 'if harness == "grok":', "if False:", "49-grok-resume-fork.json", 0),
+    ("turbo/drivers.py", 'if harness == "grok":', "if False:", "49-grok-resume-fork.json", 1),
+    ("turbo/drivers.py", 'if harness == "grok":', "if False:", "49-grok-resume-fork.json", 2),
+    ("turbo/drivers.py", "return str(value) if value else None", "return None", "49-grok-resume-fork.json", 1),
+    ("turbo/drivers.py", 'if harness == "cursor":', "if False:", "50-cursor-create-chat.json", 0),
+    ("turbo/drivers.py", 'if harness == "cursor":', "if False:", "50-cursor-create-chat.json", 1),
+    ("turbo/drivers.py", 'return ["agent", "-p", "--resume", session_id, "--trust", prompt]', 'return ["agent", "create-chat"]', "50-cursor-create-chat.json", 0),
+    ("turbo/runner.py", 'phase = "create-chat"', "pass", "50-cursor-create-chat.json", 0),
+    ("turbo/runner.py", "if code != 0:", "if False:", "51-cursor-create-chat-fails.json", 0),
+    ("turbo/drivers.py", 'return Plan("webhook", None, prompt, None, status)', 'return Plan("handoff", None, prompt, None, status)', "52-grok-bot-webhook.json", 0),
+    ("turbo/drivers.py", 'return Plan("webhook", None, prompt, session_id, status)', 'return Plan("handoff", None, prompt, None, status)', "52-grok-bot-webhook.json", 0),
+    ("turbo/runner.py", 'message = message.replace(secret, "[redacted]")', "pass", "52-grok-bot-webhook.json", 0),
+    ("turbo/drivers.py", 'return Plan("handoff", None, prompt, None, status)', 'return Plan("start", ["claude", "-p", prompt], prompt, None, "confirmed")', "53-hermes-handoff.json", 0),
 ]
 
 
@@ -119,6 +141,12 @@ def _apply(path: Path, needle: str, replacement: str, which: int) -> str:
 
 
 def _run(scenario: str) -> bool:
+    # A restored file can keep the previous mtime, so Python would run the last
+    # mutation's bytecode. Drop the cache before every check.
+    cache = ROOT / "turbo" / "__pycache__"
+    if cache.is_dir():
+        for item in cache.glob("*.pyc"):
+            item.unlink()
     result = subprocess.run(
         [sys.executable, "-m", "turbo.scenarios", "run", f"turbo/scenarios/{scenario}"],
         cwd=ROOT,

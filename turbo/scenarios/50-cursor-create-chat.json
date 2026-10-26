@@ -1,0 +1,155 @@
+{
+  "name": "cursor-create-chat",
+  "description": "Cursor creates a chat, then resumes that chat id. An empty resume transcript keeps the id.",
+  "actors": [
+    {
+      "name": "ada",
+      "role": "human"
+    },
+    {
+      "name": "run-1",
+      "role": "runner",
+      "harnesses": [
+        "cursor"
+      ]
+    },
+    {
+      "name": "worker",
+      "role": "agent"
+    },
+    {
+      "name": "probe",
+      "role": "probe"
+    }
+  ],
+  "git": {
+    "changed": [
+      "turbo/app.py"
+    ],
+    "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "pr_number": 4
+  },
+  "cards": [
+    {
+      "ref": "gate",
+      "title": "Cursor",
+      "body": "Implement the gate.",
+      "contract": "The runner submits. The agent does not.",
+      "harness": "cursor",
+      "scope": {
+        "paths": [
+          "turbo/"
+        ],
+        "forbidden": [],
+        "verify": [
+          {
+            "cmd": "python3 -c \"import sys; raise SystemExit(0)\"",
+            "kind": "unit"
+          }
+        ]
+      }
+    }
+  ],
+  "steps": [
+    {
+      "name": "create-chat",
+      "op": "tick",
+      "arm": {
+        "alive": false,
+        "exit": 0,
+        "output": "chat_123\n"
+      },
+      "expect": {
+        "state": "working",
+        "argv0": "agent",
+        "argv_contains": [
+          "create-chat"
+        ],
+        "spawns": 1
+      }
+    },
+    {
+      "name": "resume the new chat",
+      "op": "tick",
+      "arm": {
+        "alive": false,
+        "exit": 0,
+        "output": ""
+      },
+      "expect": {
+        "state": "working",
+        "session_mode": "resume",
+        "session_id": "chat_123",
+        "argv0": "agent",
+        "argv_contains": [
+          "-p",
+          "--resume",
+          "chat_123",
+          "--trust"
+        ],
+        "spawns": 2
+      }
+    },
+    {
+      "name": "empty resume output keeps the chat id",
+      "op": "tick",
+      "expect": {
+        "state": "working",
+        "session_id": "chat_123",
+        "spawns": 2
+      }
+    },
+    {
+      "name": "agent asks",
+      "op": "ask",
+      "blocked_question": "Continue?",
+      "blocked_options": [
+        "yes",
+        "no"
+      ],
+      "blocked_default": "yes",
+      "expect": {
+        "status": 200,
+        "state": "question"
+      }
+    },
+    {
+      "name": "turn ends",
+      "op": "turn-closed",
+      "expect": {
+        "status": 200,
+        "state": "awaiting-human"
+      }
+    },
+    {
+      "name": "human answers",
+      "op": "answer",
+      "choice": "yes",
+      "expect": {
+        "status": 200,
+        "answer": "yes"
+      }
+    },
+    {
+      "name": "later resume uses the chat id",
+      "op": "tick",
+      "arm": {
+        "alive": false,
+        "exit": 0,
+        "output": ""
+      },
+      "expect": {
+        "state": "working",
+        "session_mode": "resume",
+        "session_id": "chat_123",
+        "argv_contains": [
+          "--resume",
+          "chat_123",
+          "choice=yes"
+        ],
+        "same_session": true,
+        "spawns": 3
+      }
+    }
+  ]
+}

@@ -91,6 +91,7 @@ class Runner:
         self.webhook_post = webhook_post
         self.handles: dict[str, dict] = {}
         self.logs: list[str] = []
+        self.webhook_posts: list[dict] = []
 
     def system_file(self) -> str:
         os.makedirs(self.state_dir, exist_ok=True)
@@ -136,14 +137,12 @@ class Runner:
             self.handles.pop(card_id, None)
             return
         if plan.mode == "webhook":
-            # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
             self._webhook(card_id, harness, prompt)
             return
         if plan.argv is None:
             # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
             raise TurboError(409, "no command for " + plan.mode)
         if plan.mode == "create-chat":
-            # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
             phase = "create-chat"
         handle = self.proc.spawn(plan.argv)
         self._log("spawn " + plan.argv[0] + " " + plan.mode)
@@ -159,15 +158,14 @@ class Runner:
             self.api.attach_session(card_id, self.actor, plan.session_id, harness, plan.mode)
 
     def _webhook(self, card_id, harness, prompt) -> None:
-        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
+        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; untaken branch, only unit-tested)
         if not self.webhook_url or self.webhook_post is None:
             # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
             raise TurboError(409, "grok-bot needs a webhook URL")
         body = drivers.webhook_body(card_id, prompt)
         headers = {"content-type": "application/json"}
-        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
+        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; untaken branch, only unit-tested)
         if self.bearer:
-            # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
             headers["authorization"] = "Bearer " + self.bearer
         status = self.webhook_post(self.webhook_url, body, headers)
         self._log(f"webhook status={status}")
@@ -193,7 +191,6 @@ class Runner:
             return {"running": True}
         output = self.proc.output(ent["handle"])
         if ent["phase"] == "create-chat":
-            # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
             return self._after_create_chat(card_id, ent, code, output)
         if (code != 0 and card["state"] == "working" and ent["phase"] == "resume"
                 and ent["attempt"] == "resume" and drivers.can_fork(ent["harness"])):
@@ -203,7 +200,6 @@ class Runner:
             self._fallback(card, ent, "handoff")
             return {"running": False, "fallback": "handoff"}
         sid = drivers.parse_session(ent["harness"], output, ent.get("session_id"))
-        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; untaken branch, only unit-tested)
         if sid:
             self.api.attach_session(card_id, self.actor, sid, ent["harness"], ent["attempt"])
         if card["state"] == "question":
@@ -212,9 +208,7 @@ class Runner:
         return {"running": False, "code": code, "session_id": sid}
 
     def _after_create_chat(self, card_id, ent, code, output) -> dict:
-        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
         if code != 0:
-            # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
             self.api.attach_session(card_id, self.actor, "", ent["harness"], "handoff")
             self.handles.pop(card_id, None)
             return {"running": False, "fallback": "handoff"}

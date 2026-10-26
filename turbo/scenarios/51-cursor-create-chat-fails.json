@@ -1,0 +1,81 @@
+{
+  "name": "cursor-create-chat-fails",
+  "description": "A failed Cursor create-chat records a handoff and does not resume.",
+  "actors": [
+    {
+      "name": "ada",
+      "role": "human"
+    },
+    {
+      "name": "run-1",
+      "role": "runner",
+      "harnesses": [
+        "cursor"
+      ]
+    },
+    {
+      "name": "worker",
+      "role": "agent"
+    },
+    {
+      "name": "probe",
+      "role": "probe"
+    }
+  ],
+  "git": {
+    "changed": [
+      "turbo/app.py"
+    ],
+    "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "pr_number": 4
+  },
+  "cards": [
+    {
+      "ref": "gate",
+      "title": "Cursor",
+      "body": "Implement the gate.",
+      "contract": "The runner submits. The agent does not.",
+      "harness": "cursor",
+      "scope": {
+        "paths": [
+          "turbo/"
+        ],
+        "forbidden": [],
+        "verify": [
+          {
+            "cmd": "python3 -c \"import sys; raise SystemExit(0)\"",
+            "kind": "unit"
+          }
+        ]
+      }
+    }
+  ],
+  "steps": [
+    {
+      "name": "create-chat fails",
+      "op": "tick",
+      "arm": {
+        "alive": false,
+        "exit": 1,
+        "output": "no chat"
+      },
+      "expect": {
+        "state": "working",
+        "argv0": "agent",
+        "argv_contains": [
+          "create-chat"
+        ],
+        "spawns": 1
+      }
+    },
+    {
+      "name": "failure is a handoff",
+      "op": "tick",
+      "expect": {
+        "state": "working",
+        "session_mode": "handoff",
+        "spawns": 1
+      }
+    }
+  ]
+}

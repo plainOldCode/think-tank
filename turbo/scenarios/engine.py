@@ -604,8 +604,8 @@ class Run:
             problems.append(f"post status {self.body.get('post_status')}")
         card_keys = {
             "state", "verdict", "verify_level", "answer", "answer_by", "contract_version",
-            "ready", "session_mode", "resume_contains", "same_session", "sha", "pr_number",
-            "assignee", "agent", "rc_count",
+            "ready", "session_mode", "session_id", "resume_contains", "same_session", "sha",
+            "pr_number", "assignee", "agent", "rc_count",
         }
         card = None
         if card_keys & set(expect) or expect.get("card"):
@@ -625,6 +625,10 @@ class Run:
                 mode = (card.get("session") or {}).get("mode")
                 if mode != expect["session_mode"]:
                     problems.append(f"session mode {mode!r} != {expect['session_mode']!r}")
+            if "session_id" in expect:
+                sid = (card.get("session") or {}).get("session_id") or ""
+                if sid != expect["session_id"]:
+                    problems.append(f"session id {sid!r} != {expect['session_id']!r}")
             if "resume_contains" in expect:
                 prompt = (card.get("resume") or {}).get("prompt") or ""
                 if expect["resume_contains"] not in prompt:
@@ -650,6 +654,17 @@ class Run:
             problems.append(f"logs missing {expect['log_contains']!r}")
         if "log_excludes" in expect and expect["log_excludes"] in "\n".join(self.runner.logs):
             problems.append(f"logs contain {expect['log_excludes']!r}")
+        posts = getattr(self.runner, "webhook_posts", [])
+        if "webhook_posts" in expect and len(posts) != expect["webhook_posts"]:
+            problems.append(f"webhook posts {len(posts)} != {expect['webhook_posts']}")
+        if "webhook_contains" in expect:
+            event = str((posts[-1].get("body") or {}).get("event") or "") if posts else ""
+            if expect["webhook_contains"] not in event:
+                problems.append(f"webhook body missing {expect['webhook_contains']!r}")
+        if "webhook_auth" in expect:
+            auth = str((posts[-1].get("headers") or {}).get("authorization") or "") if posts else ""
+            if auth != expect["webhook_auth"]:
+                problems.append(f"webhook auth {auth!r} != {expect['webhook_auth']!r}")
         if "spawns" in expect and len(self.proc.spawns) != expect["spawns"]:
             problems.append(f"spawns {len(self.proc.spawns)} != {expect['spawns']}")
         if "argv_contains" in expect:
@@ -735,7 +750,14 @@ def _runner_of(scenario: dict, base: str, proc: FakeProc, git: GitStub, clock: C
     unknown = [item for item in harnesses if item not in HARNESSES]
     if unknown:
         raise RuntimeError("unknown harness " + ", ".join(unknown))
-    return Runner(
+    posts: list[dict] = []
+
+    def webhook_post(url, body, headers):
+        posts.append({"url": url, "body": body, "headers": dict(headers)})
+        return 202
+
+    webhook = scenario.get("webhook") or ""
+    runner = Runner(
         HttpAPI(base, spec.get("actor") or runner_actor["name"]),
         proc,
         git.cli,
@@ -744,8 +766,12 @@ def _runner_of(scenario: dict, base: str, proc: FakeProc, git: GitStub, clock: C
         harnesses,
         state_dir,
         clock,
+        webhook_url=webhook,
         bearer=scenario.get("bearer") or "",
+        webhook_post=webhook_post if webhook else None,
     )
+    runner.webhook_posts = posts
+    return runner
 
 
 def run_one(file: Path, scenario: dict) -> dict:

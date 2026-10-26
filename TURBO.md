@@ -102,6 +102,8 @@ A scenario object:
 | `description` | What the scenario is checking. |
 | `actors` | `{name, role, harnesses?}`. The first actor is a human. Roles: `human`, `runner`, `agent`, `probe`. |
 | `runner` | Optional `{actor, agent, harnesses}`. Defaults to the first runner and the first agent. |
+| `webhook` | Optional URL. The runner posts Grok Bot launches here through an in-process stub. Nothing is sent on the network. |
+| `bearer` | Optional. Redacted from runner logs. Sent as `Authorization` when `webhook` is set. |
 | `cards` | `{ref, title, body, contract, harness, scope}`. `scope` is `{paths, forbidden, verify: [{cmd, kind}]}`. |
 | `git` | Optional `{changed, sha, pr_number}` for the stub. `sha` is 40 hex characters. |
 | `legacy` | Optional `{issues, comments}` inserted into a throwaway copy of the issues and comments tables. The runner checks the file is unchanged at the end. |
@@ -111,9 +113,9 @@ A step has `name`, `op`, optional `card` (a ref), optional `arm` (`{exit, output
 
 Ops: `tick` (one runner loop), `advance` (`seconds`), `ack` (`actor`, `digest: "bad"`, `nonce: "wrong"` or `"short"`), `ready`, `ask` (`blocked_question`, `blocked_options`, `blocked_default`), `answer` (`choice`), `edit`, `verdict` (`result`), `submit` (runner commit, stubbed `gh pr create`, server verify), `submit-raw` (`work_token` `$token` or `$old`, explicit `changed_paths` including `[]`, `sha`, `pr`), `merge` (`via`: `runner` or `http`), `claim`, `claim-race` (`claims`, one winner), `create-card`, `register` (`actor_name`, `role`, `harnesses`, `by`), `turn-closed`, `session`, `resume` (`token`, including `$resume`), `get` (`actor`), `http` (`method`, `path`, `body`), `tamper` (`set` of `body`, `sha`, or `verify_level`), `git-merge` (`number`, `sha`), `legacy-get`, `legacy-write`, `noop`.
 
-`expect` also checks `has_nonce`, `card_count`, `metric_cards`, `legacy_cards`, `log_contains`, `log_excludes`, `legacy_labels`, and `legacy_report`. A scenario may set `bearer` (redacted from runner logs) or `legacy_missing` (the archive path is configured and the file is absent). `actors` may be empty when the steps register the first actor themselves.
+`expect` also checks `has_nonce`, `card_count`, `metric_cards`, `legacy_cards`, `log_contains`, `log_excludes`, `legacy_labels`, `legacy_report`, `webhook_posts`, `webhook_contains`, and `webhook_auth`. A scenario may set `bearer` (redacted from runner logs) or `legacy_missing` (the archive path is configured and the file is absent). `actors` may be empty when the steps register the first actor themselves.
 
-`expect` can check `status`, `error` (substring), card `state`, `verdict`, `verify_level`, `answer`, `answer_by`, `ready`, `contract_version`, `session_mode`, `resume_contains`, `same_session`, `sha`, `pr_number`, `spawns`, `argv0`, `argv_contains`, `git_calls`, `no_commit`, `no_merge`, `interrupted`, `wins`, and the legacy body, children, comment, and report.
+`expect` can check `status`, `error` (substring), card `state`, `verdict`, `verify_level`, `answer`, `answer_by`, `ready`, `contract_version`, `session_mode`, `session_id`, `resume_contains`, `same_session`, `sha`, `pr_number`, `spawns`, `argv0`, `argv_contains`, `git_calls`, `no_commit`, `no_merge`, `interrupted`, `wins`, and the legacy body, children, comment, and report. `expect.card` selects which card those fields read when a scenario has more than one.
 
 ## Verification level
 

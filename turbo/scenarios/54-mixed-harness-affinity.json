@@ -1,0 +1,113 @@
+{
+  "name": "mixed-harness-affinity",
+  "description": "A runner that can start Codex and Grok leaves a Cursor card open and starts the Grok card.",
+  "actors": [
+    {
+      "name": "ada",
+      "role": "human"
+    },
+    {
+      "name": "run-1",
+      "role": "runner",
+      "harnesses": [
+        "codex",
+        "grok"
+      ]
+    },
+    {
+      "name": "worker",
+      "role": "agent"
+    },
+    {
+      "name": "probe",
+      "role": "probe"
+    }
+  ],
+  "git": {
+    "changed": [
+      "turbo/app.py"
+    ],
+    "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "pr_number": 4
+  },
+  "cards": [
+    {
+      "ref": "cursor",
+      "title": "Cursor card",
+      "body": "Implement the gate.",
+      "contract": "The runner submits. The agent does not.",
+      "harness": "cursor",
+      "scope": {
+        "paths": [
+          "turbo/"
+        ],
+        "forbidden": [],
+        "verify": [
+          {
+            "cmd": "python3 -c \"import sys; raise SystemExit(0)\"",
+            "kind": "unit"
+          }
+        ]
+      }
+    },
+    {
+      "ref": "grok",
+      "title": "Grok card",
+      "body": "Implement the gate.",
+      "contract": "The runner submits. The agent does not.",
+      "harness": "grok",
+      "scope": {
+        "paths": [
+          "turbo/"
+        ],
+        "forbidden": [],
+        "verify": [
+          {
+            "cmd": "python3 -c \"import sys; raise SystemExit(0)\"",
+            "kind": "unit"
+          }
+        ]
+      }
+    }
+  ],
+  "steps": [
+    {
+      "name": "tick starts the grok card",
+      "op": "tick",
+      "arm": {
+        "alive": true,
+        "exit": 0
+      },
+      "expect": {
+        "card": "grok",
+        "state": "working",
+        "argv0": "grok",
+        "spawns": 1,
+        "assignee": "run-1"
+      }
+    },
+    {
+      "name": "cursor card stays open",
+      "op": "get",
+      "card": "cursor",
+      "expect": {
+        "card": "cursor",
+        "status": 200,
+        "state": "open"
+      }
+    },
+    {
+      "name": "runner cannot claim the cursor card",
+      "op": "claim",
+      "card": "cursor",
+      "actor": "run-1",
+      "agent": "worker",
+      "expect": {
+        "card": "cursor",
+        "status": 409,
+        "error": "affinity",
+        "state": "open"
+      }
+    }
+  ]
+}
