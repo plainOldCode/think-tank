@@ -14,7 +14,7 @@ def parse_porcelain(text: str) -> list[str]:
     paths = []
     for line in text.splitlines():
         if len(line) < 4:
-            # TURBO-UNCOVERED: removal candidate (not exercised by scenarios)
+            # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
             continue
         path = line[3:]
         if " -> " in path:
@@ -53,7 +53,7 @@ class SubprocessProc:
         return self._procs[handle].poll()
 
     def interrupt(self, handle: int) -> None:
-        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios)
+        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
         proc = self._procs[handle]
         if proc.poll() is None:
             proc.send_signal(signal.SIGINT)
@@ -64,7 +64,7 @@ class SubprocessProc:
             with open(self._files[handle], encoding="utf-8", errors="replace") as fh:
                 return fh.read()
         except OSError:
-            # TURBO-UNCOVERED: removal candidate (not exercised by scenarios)
+            # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
             return ""
 
 
@@ -93,7 +93,7 @@ class GitCli:
             "gh", "pr", "create", "--title", title, "--body", body, "--base", base,
         ])
         url = ""
-        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; untaken branch)
+        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; untaken branch, only unit-tested)
         if created.stdout:
             lines = [line.strip() for line in created.stdout.splitlines() if line.strip()]
             url = lines[-1] if lines else ""
@@ -110,6 +110,5 @@ class GitCli:
     def merge_pr(self, number: int, sha: str) -> None:
         # The server checks the sha before this runs. gh merges that pull request.
         if not sha:
-            # TURBO-UNCOVERED: removal candidate (not exercised by scenarios)
             raise RuntimeError("merge requires the submitted sha")
         self._run(["gh", "pr", "merge", str(number), "--merge"])

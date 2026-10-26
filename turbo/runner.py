@@ -39,7 +39,7 @@ class DirectAPI:
         return card["assignee"] or None
 
     def apply_defaults(self, actor, now):
-        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios)
+        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
         return service.apply_defaults(self.store, actor, lambda: now)
 
     def attach_session(self, card_id, actor, session_id, driver, mode):
@@ -66,7 +66,7 @@ class DirectAPI:
         return service.merge(self.store, card_id, actor, self.clock)
 
     def next_open(self, actor):
-        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios)
+        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
         return service.next_open(self.store, actor)
 
     def pending(self, actor):
@@ -102,14 +102,13 @@ class Runner:
     def _log(self, message: str) -> None:
         secret = self.bearer
         if secret and secret in message:
-            # TURBO-UNCOVERED: removal candidate (not exercised by scenarios)
             message = message.replace(secret, "[redacted]")
         self.logs.append(message)
 
     def start_card(self, card_id: str, agent: str | None = None) -> dict:
         claimed = self.api.claim(card_id, self.actor, agent or self.agent)
         if claimed["harness"] not in self.harnesses and claimed["harness"] not in drivers.HARNESSES:
-            # TURBO-UNCOVERED: removal candidate (not exercised by scenarios)
+            # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
             raise TurboError(409, "runner cannot start this harness")
         session_id = str(uuid.uuid4()) if claimed["harness"] in {"claude", "grok"} else None
         prompt = drivers.initial_prompt(claimed)
@@ -141,7 +140,7 @@ class Runner:
             self._webhook(card_id, harness, prompt)
             return
         if plan.argv is None:
-            # TURBO-UNCOVERED: removal candidate (not exercised by scenarios)
+            # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
             raise TurboError(409, "no command for " + plan.mode)
         if plan.mode == "create-chat":
             # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
@@ -162,11 +161,11 @@ class Runner:
     def _webhook(self, card_id, harness, prompt) -> None:
         # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
         if not self.webhook_url or self.webhook_post is None:
-            # TURBO-UNCOVERED: removal candidate (not exercised by scenarios)
+            # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
             raise TurboError(409, "grok-bot needs a webhook URL")
         body = drivers.webhook_body(card_id, prompt)
         headers = {"content-type": "application/json"}
-        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; untaken branch)
+        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
         if self.bearer:
             # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
             headers["authorization"] = "Bearer " + self.bearer
@@ -178,7 +177,7 @@ class Runner:
     def reap(self, card_id: str) -> dict | None:
         ent = self.handles.get(card_id)
         if not ent:
-            # TURBO-UNCOVERED: removal candidate (not exercised by scenarios)
+            # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
             return None
         code = self.proc.poll(ent["handle"])
         card = self.api.get(card_id)
@@ -191,7 +190,6 @@ class Runner:
                     self.handles.pop(card_id, None)
                     self._log(f"interrupt {card_id}")
                     return {"running": False, "interrupted": True}
-            # TURBO-UNCOVERED: removal candidate (not exercised by scenarios)
             return {"running": True}
         output = self.proc.output(ent["handle"])
         if ent["phase"] == "create-chat":
@@ -205,7 +203,7 @@ class Runner:
             self._fallback(card, ent, "handoff")
             return {"running": False, "fallback": "handoff"}
         sid = drivers.parse_session(ent["harness"], output, ent.get("session_id"))
-        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; untaken branch)
+        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; untaken branch, only unit-tested)
         if sid:
             self.api.attach_session(card_id, self.actor, sid, ent["harness"], ent["attempt"])
         if card["state"] == "question":
@@ -216,7 +214,7 @@ class Runner:
     def _after_create_chat(self, card_id, ent, code, output) -> dict:
         # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
         if code != 0:
-            # TURBO-UNCOVERED: removal candidate (not exercised by scenarios)
+            # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
             self.api.attach_session(card_id, self.actor, "", ent["harness"], "handoff")
             self.handles.pop(card_id, None)
             return {"running": False, "fallback": "handoff"}
@@ -254,7 +252,6 @@ class Runner:
         number = (card.get("pr") or {}).get("number")
         # The server is the authority. A rejected merge must not reach gh.
         result = self.api.merge(card_id, self.actor)
-        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; untaken branch)
         if number:
             self.git.merge_pr(int(number), card.get("sha") or "")
         return result
@@ -276,7 +273,7 @@ class Runner:
 
 
 def _post_webhook(url: str, body: dict, headers: dict) -> int:
-    # TURBO-UNCOVERED: removal candidate (not exercised by scenarios)
+    # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
     import json
     import urllib.request
 
@@ -289,7 +286,7 @@ def _post_webhook(url: str, body: dict, headers: dict) -> int:
 
 def main(argv: list[str] | None = None) -> None:
     """One runner process. It ticks on its own clock. Agents do not poll."""
-    # TURBO-UNCOVERED: removal candidate (not exercised by scenarios)
+    # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
     import argparse
 
     from .http_api import HttpAPI

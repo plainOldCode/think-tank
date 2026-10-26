@@ -1,0 +1,119 @@
+{
+  "name": "claimed-agent-only",
+  "description": "Only the agent named on the claim may ack, ask, or mark the tree ready.",
+  "actors": [
+    {
+      "name": "ada",
+      "role": "human"
+    },
+    {
+      "name": "run-1",
+      "role": "runner",
+      "harnesses": [
+        "claude"
+      ]
+    },
+    {
+      "name": "worker",
+      "role": "agent"
+    },
+    {
+      "name": "probe",
+      "role": "probe"
+    },
+    {
+      "name": "other-agent",
+      "role": "agent"
+    },
+    {
+      "name": "other-runner",
+      "role": "runner",
+      "harnesses": [
+        "claude"
+      ]
+    }
+  ],
+  "git": {
+    "changed": [
+      "turbo/app.py"
+    ],
+    "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "pr_number": 4
+  },
+  "cards": [
+    {
+      "ref": "gate",
+      "title": "Gate the submit",
+      "body": "Implement the gate.",
+      "contract": "The runner submits. The agent does not.",
+      "harness": "claude",
+      "scope": {
+        "paths": [
+          "turbo/"
+        ],
+        "forbidden": [],
+        "verify": [
+          {
+            "cmd": "python3 -c \"import sys; raise SystemExit(0)\"",
+            "kind": "unit"
+          }
+        ]
+      }
+    }
+  ],
+  "steps": [
+    {
+      "name": "runner claims",
+      "op": "tick",
+      "arm": {
+        "alive": true,
+        "exit": 0
+      },
+      "expect": {
+        "state": "working",
+        "assignee": "run-1"
+      }
+    },
+    {
+      "name": "other agent cannot ack",
+      "op": "ack",
+      "actor": "other-agent",
+      "expect": {
+        "status": 403,
+        "error": "only the claimed agent"
+      }
+    },
+    {
+      "name": "other agent cannot ask",
+      "op": "ask",
+      "actor": "other-agent",
+      "blocked_question": "Go?",
+      "blocked_options": [
+        "yes",
+        "no"
+      ],
+      "blocked_default": "yes",
+      "expect": {
+        "status": 403,
+        "error": "only the claimed agent"
+      }
+    },
+    {
+      "name": "other agent cannot mark ready",
+      "op": "ready",
+      "actor": "other-agent",
+      "expect": {
+        "status": 403,
+        "error": "only the claimed agent"
+      }
+    },
+    {
+      "name": "agent acks",
+      "op": "ack",
+      "actor": "worker",
+      "expect": {
+        "status": 200
+      }
+    }
+  ]
+}

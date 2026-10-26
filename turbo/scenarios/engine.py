@@ -249,6 +249,7 @@ class Run:
         self.git = git
         self.runner = runner
         self.legacy_path = legacy_path
+        self.db_path = ""
         self.cards: dict[str, str] = {}
         self.tokens: dict[str, str] = {}
         self.old_tokens: dict[str, str] = {}
@@ -332,10 +333,20 @@ class Run:
             given = "0" * 64
         else:
             given = digest(card["body"], card["contract"], card["contract_version"], card["scope"])
+        nonce_spec = step.get("nonce")
+        if nonce_spec == "wrong":
+            real = self.nonce_for(ref)
+            nonce = ("0" if not real.startswith("0") else "1") + real[1:]
+        elif nonce_spec == "short":
+            nonce = "ab"
+        elif isinstance(nonce_spec, str):
+            nonce = nonce_spec
+        else:
+            nonce = self.nonce_for(ref)
         self._http("POST", f"/turbo/cards/{cid}/ack", {
             "actor": step.get("actor") or "worker",
             "digest": given,
-            "nonce": self.nonce_for(ref),
+            "nonce": nonce,
         })
         if self.status == 200 and self.body.get("work_token"):
             self.tokens[ref] = self.body["work_token"]
@@ -404,11 +415,12 @@ class Run:
                 token = self.old_tokens.get(ref, "")
             elif token == "$token":
                 token = self.tokens.get(ref, "")
+            changed = spec["changed_paths"] if "changed_paths" in spec else list(self.git.changed)
             self._http("POST", f"/turbo/cards/{self.card_id(spec)}/submit", {
                 "actor": spec.get("actor") or self.runner.actor,
-                "sha": spec.get("sha") or self.git.sha,
-                "pr": spec.get("pr") or {},
-                "changed_paths": spec.get("changed_paths") or list(self.git.changed),
+                "sha": spec["sha"] if "sha" in spec else self.git.sha,
+                "pr": spec["pr"] if "pr" in spec else {},
+                "changed_paths": changed,
                 "work_token": token,
             })
         elif op == "merge":
@@ -430,6 +442,48 @@ class Run:
                 "actor": spec["actor"],
                 "agent": spec["agent"],
             })
+        elif op == "turn-closed":
+            self._http("POST", f"/turbo/cards/{self.card_id(spec)}/turn-closed", {
+                "actor": spec.get("actor") or self.runner.actor,
+            })
+        elif op == "session":
+            self._http("POST", f"/turbo/cards/{self.card_id(spec)}/session", {
+                "actor": spec.get("actor") or self.runner.actor,
+                "session_id": spec.get("session_id") or "",
+                "driver": spec.get("driver") or "claude",
+                "mode": spec.get("mode") or "start",
+            })
+        elif op == "resume":
+            token = spec.get("token") or ""
+            if token == "$resume":
+                token = str((self._card(spec).get("resume") or {}).get("token") or "")
+            self._http("POST", f"/turbo/cards/{self.card_id(spec)}/resume", {
+                "actor": spec.get("actor") or self.runner.actor,
+                "token": token,
+                "session_id": spec.get("session_id") or "",
+                "mode": spec.get("mode") or "resume",
+            })
+        elif op == "register":
+            body = {"name": spec.get("actor_name"), "role": spec.get("role")}
+            if "harnesses" in spec:
+                body["harnesses"] = spec["harnesses"]
+            if "by" in spec:
+                body["actor"] = spec["by"]
+            self._http("POST", "/turbo/actors", body)
+        elif op == "get":
+            path = f"/turbo/cards/{self.card_id(spec)}"
+            if spec.get("actor"):
+                path += "?actor=" + urllib.parse.quote(spec["actor"])
+            self._http("GET", path)
+        elif op == "http":
+            path = spec["path"]
+            if "$card" in path:
+                path = path.replace("$card", self.card_id(spec))
+            self._http(spec.get("method") or "GET", path, spec.get("body"))
+        elif op == "tamper":
+            self._tamper(spec)
+        elif op == "git-merge":
+            self._git_merge(spec)
         elif op == "claim-race":
             self._race(spec)
         elif op == "legacy-write":
@@ -441,6 +495,30 @@ class Run:
         else:
             raise RuntimeError("unknown op " + str(op))
         self._expect(spec.get("expect") or {})
+
+    def _tamper(self, spec: dict) -> None:
+        allowed = {"body", "sha", "verify_level"}
+        fields = {key: value for key, value in (spec.get("set") or {}).items() if key in allowed}
+        if not fields:
+            raise RuntimeError("tamper needs a set of body, sha, or verify_level")
+        con = sqlite3.connect(self.db_path)
+        try:
+            sets = ", ".join(f"{key}=?" for key in fields)
+            con.execute(
+                f"UPDATE cards SET {sets} WHERE id=?",
+                [*fields.values(), self.card_id(spec)],
+            )
+            con.commit()
+        finally:
+            con.close()
+        self.status, self.error, self.body = 200, "", {}
+
+    def _git_merge(self, spec: dict) -> None:
+        try:
+            self.git.cli.merge_pr(int(spec.get("number") or 1), spec.get("sha") or "")
+            self.status, self.error, self.body = 200, "", {}
+        except RuntimeError as exc:
+            self.status, self.error, self.body = 409, str(exc), {"error": str(exc)}
 
     def _merge(self, spec: dict) -> None:
         actor = spec.get("actor") or self.runner.actor
@@ -560,6 +638,18 @@ class Run:
                 argv = self.proc.spawns[-1] if self.proc.spawns else []
                 if not sid or sid not in argv:
                     problems.append(f"resume argv does not repeat session {sid!r}")
+        if "has_nonce" in expect and bool(self.body.get("nonce")) != bool(expect["has_nonce"]):
+            problems.append(f"nonce present {bool(self.body.get('nonce'))}")
+        if "card_count" in expect and len(self.body.get("cards") or []) != expect["card_count"]:
+            problems.append(f"card count {len(self.body.get('cards') or [])}")
+        if "metric_cards" in expect and self.body.get("cards") != expect["metric_cards"]:
+            problems.append(f"metric cards {self.body.get('cards')}")
+        if "legacy_cards" in expect and self.body.get("legacy_cards") != expect["legacy_cards"]:
+            problems.append(f"legacy cards {self.body.get('legacy_cards')}")
+        if "log_contains" in expect and expect["log_contains"] not in "\n".join(self.runner.logs):
+            problems.append(f"logs missing {expect['log_contains']!r}")
+        if "log_excludes" in expect and expect["log_excludes"] in "\n".join(self.runner.logs):
+            problems.append(f"logs contain {expect['log_excludes']!r}")
         if "spawns" in expect and len(self.proc.spawns) != expect["spawns"]:
             problems.append(f"spawns {len(self.proc.spawns)} != {expect['spawns']}")
         if "argv_contains" in expect:
@@ -601,6 +691,10 @@ class Run:
         children = [child.get("id") for child in payload.get("children") or []]
         if "legacy_children" in expect and children != expect["legacy_children"]:
             problems.append(f"children {children}")
+        if "legacy_labels" in expect and issue.get("labels") != expect["legacy_labels"]:
+            problems.append(f"labels {issue.get('labels')}")
+        if "legacy_report" in expect and issue.get("report") != expect["legacy_report"]:
+            problems.append(f"report {issue.get('report')!r}")
         if "legacy_comment" in expect:
             texts = [item.get("body") for item in payload.get("comments") or []]
             if expect["legacy_comment"] not in texts:
@@ -628,8 +722,14 @@ def _git_of(scenario: dict, cwd: str) -> GitStub:
 
 def _runner_of(scenario: dict, base: str, proc: FakeProc, git: GitStub, clock: Clock, state_dir: str) -> Runner:
     actors = scenario.get("actors") or []
-    runner_actor = next(item for item in actors if item["role"] == "runner")
-    agent = next(item for item in actors if item["role"] == "agent")
+    runners = [item for item in actors if item.get("role") == "runner"]
+    agents = [item for item in actors if item.get("role") == "agent"]
+    if not runners or not agents:
+        return Runner(
+            HttpAPI(base, "ada"), proc, git.cli, "ada", "ada", ["claude"], state_dir, clock,
+        )
+    runner_actor = runners[0]
+    agent = agents[0]
     spec = scenario.get("runner") or {}
     harnesses = spec.get("harnesses") or runner_actor.get("harnesses") or ["claude"]
     unknown = [item for item in harnesses if item not in HARNESSES]
@@ -644,6 +744,7 @@ def _runner_of(scenario: dict, base: str, proc: FakeProc, git: GitStub, clock: C
         harnesses,
         state_dir,
         clock,
+        bearer=scenario.get("bearer") or "",
     )
 
 
@@ -657,15 +758,19 @@ def run_one(file: Path, scenario: dict) -> dict:
             legacy_fixture = scenario.get("legacy")
             legacy_path = None
             before = None
-            if legacy_fixture:
+            db_path = str(Path(tmp) / "turbo.db")
+            if scenario.get("legacy_missing"):
+                legacy_path = str(Path(tmp) / "missing-legacy.db")
+            elif legacy_fixture:
                 legacy_path = str(Path(tmp) / "legacy.db")
                 before = _seed_legacy(legacy_path, legacy_fixture)
-            app = create_app(str(Path(tmp) / "turbo.db"), legacy_path=legacy_path, clock=clock)
+            app = create_app(db_path, legacy_path=legacy_path, clock=clock)
             proc = FakeProc()
             git = _git_of(scenario, tmp)
             with Server(app) as server:
                 runner = _runner_of(scenario, server.base, proc, git, clock, str(Path(tmp) / "state"))
                 run = Run(server.base, scenario, proc, git, runner, legacy_path)
+                run.db_path = db_path
                 run.seed()
                 for spec in scenario.get("steps") or []:
                     name = spec.get("name") or spec.get("op")

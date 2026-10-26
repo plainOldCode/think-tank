@@ -1,0 +1,28 @@
+{
+  "name": "first-actor-must-be-human",
+  "description": "The first actor stored in an empty database must be a human.",
+  "actors": [],
+  "git": {
+    "changed": [
+      "turbo/app.py"
+    ],
+    "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "pr_number": 4
+  },
+  "cards": [],
+  "steps": [
+    {
+      "name": "runner cannot be first",
+      "op": "register",
+      "actor_name": "run-1",
+      "role": "runner",
+      "harnesses": [
+        "claude"
+      ],
+      "expect": {
+        "status": 403,
+        "error": "first actor"
+      }
+    }
+  ]
+}

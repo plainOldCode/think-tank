@@ -1,0 +1,134 @@
+{
+  "name": "approved-not-resumed",
+  "description": "A leftover resume token does not restart a card once the verdict is approve.",
+  "actors": [
+    {
+      "name": "ada",
+      "role": "human"
+    },
+    {
+      "name": "run-1",
+      "role": "runner",
+      "harnesses": [
+        "claude"
+      ]
+    },
+    {
+      "name": "worker",
+      "role": "agent"
+    },
+    {
+      "name": "probe",
+      "role": "probe"
+    }
+  ],
+  "git": {
+    "changed": [
+      "turbo/app.py"
+    ],
+    "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "pr_number": 4
+  },
+  "cards": [
+    {
+      "ref": "gate",
+      "title": "Gate the submit",
+      "body": "Implement the gate.",
+      "contract": "The runner submits. The agent does not.",
+      "harness": "claude",
+      "scope": {
+        "paths": [
+          "turbo/"
+        ],
+        "forbidden": [],
+        "verify": [
+          {
+            "cmd": "python3 -c \"import sys; raise SystemExit(0)\"",
+            "kind": "unit"
+          }
+        ]
+      }
+    }
+  ],
+  "steps": [
+    {
+      "name": "runner claims",
+      "op": "tick",
+      "arm": {
+        "alive": true,
+        "exit": 0
+      },
+      "expect": {
+        "state": "working",
+        "assignee": "run-1"
+      }
+    },
+    {
+      "name": "agent acks",
+      "op": "ack",
+      "actor": "worker",
+      "expect": {
+        "status": 200
+      }
+    },
+    {
+      "name": "agent marks ready",
+      "op": "ready",
+      "expect": {
+        "status": 200,
+        "ready": true
+      }
+    },
+    {
+      "name": "harness exits",
+      "op": "tick",
+      "release": {
+        "exit": 0
+      },
+      "expect": {
+        "state": "working"
+      }
+    },
+    {
+      "name": "runner submits",
+      "op": "submit",
+      "expect": {
+        "status": 200,
+        "state": "review",
+        "verify_level": "unit-test-verified"
+      }
+    },
+    {
+      "name": "probe requests changes",
+      "op": "verdict",
+      "result": "request-changes",
+      "expect": {
+        "status": 200,
+        "verdict": "request-changes",
+        "resume_contains": "next=fix"
+      }
+    },
+    {
+      "name": "probe then approves",
+      "op": "verdict",
+      "result": "approve",
+      "expect": {
+        "status": 200,
+        "verdict": "approve",
+        "state": "review"
+      }
+    },
+    {
+      "name": "tick does not resume an approval",
+      "op": "tick",
+      "arm": {
+        "alive": true,
+        "exit": 0
+      },
+      "expect": {
+        "state": "review",
+        "verdict": "approve"
+      }
+    }
+  ]
+}

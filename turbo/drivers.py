@@ -72,11 +72,6 @@ def initial_prompt(card: dict) -> str:
     )
 
 
-def handoff_prompt(card: dict, event: str) -> str:
-    # TURBO-UNCOVERED: removal candidate (not exercised by scenarios)
-    return initial_prompt(card) + "\nevent:\n" + event + "\n"
-
-
 def start_plan(harness: str, session_id: str | None, prompt: str, system_file: str) -> Plan:
     status = STATUS[harness]
     rules = _one_line(SYSTEM)
@@ -122,7 +117,7 @@ def resume_plan(harness: str, session_id: str | None, prompt: str,
     if harness in ("opencode", "hermes") or attempt == "handoff" or harness == "grok-bot" and attempt != "resume":
         return Plan("handoff", None, prompt, None, status)
     if harness == "grok-bot":
-        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios)
+        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
         return Plan("webhook", None, prompt, session_id, status)
     if attempt == "fork":
         if harness == "claude":
@@ -140,13 +135,13 @@ def resume_plan(harness: str, session_id: str | None, prompt: str,
             ]
             return Plan("fork", argv, prompt, None, status)
         if harness == "grok":
-            # TURBO-UNCOVERED: removal candidate (not exercised by scenarios)
+            # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
             argv = [
                 "grok", "-r", session_id or "", "-p", prompt, "--fork-session",
                 "--output-format", "json", "--rules", rules,
             ]
             return Plan("fork", argv, prompt, None, status)
-        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios)
+        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
         return Plan("handoff", None, prompt, None, status)
     if harness == "claude":
         argv = [
@@ -162,14 +157,14 @@ def resume_plan(harness: str, session_id: str | None, prompt: str,
         ]
         return Plan("resume", argv, prompt, session_id, status)
     if harness == "grok":
-        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios)
+        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
         argv = [
             "grok", "-r", session_id or "", "-p", prompt,
             "--output-format", "json", "--rules", rules,
         ]
         return Plan("resume", argv, prompt, session_id, status)
     if harness == "cursor":
-        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios)
+        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
         return Plan("resume", cursor_resume_argv(session_id or "", prompt), prompt, session_id, status)
     # TURBO-UNCOVERED: removal candidate (not exercised by scenarios)
     return Plan("handoff", None, prompt, None, status)
@@ -191,37 +186,36 @@ def parse_session(harness: str, output: str, preassigned: str | None = None) -> 
         for line in (output or "").splitlines():
             line = line.strip()
             if not line:
-                # TURBO-UNCOVERED: removal candidate (not exercised by scenarios)
+                # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
                 continue
             try:
                 data = json.loads(line)
             except json.JSONDecodeError:
-                # TURBO-UNCOVERED: removal candidate (not exercised by scenarios)
+                # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
                 continue
             if isinstance(data, dict) and data.get("type") == "thread.started" and data.get("thread_id"):
                 # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
                 return str(data["thread_id"])
-            # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; untaken branch)
-        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios)
+        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
         return None
     try:
         # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
         data = json.loads(output or "")
     except json.JSONDecodeError:
-        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios)
+        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
         return None
     if not isinstance(data, dict):
-        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios)
+        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
         return None
     if harness == "claude":
-        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios)
+        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
         value = data.get("session_id")
         return str(value) if value else None
     if harness == "grok":
         # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
         value = data.get("sessionId")
         return str(value) if value else None
-    # TURBO-UNCOVERED: removal candidate (not exercised by scenarios)
+    # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
     return None
 
 

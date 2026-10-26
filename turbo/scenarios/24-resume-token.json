@@ -1,0 +1,120 @@
+{
+  "name": "resume-token",
+  "description": "Resume rejects a token that was not queued. A real token with no new session id is accepted.",
+  "actors": [
+    {
+      "name": "ada",
+      "role": "human"
+    },
+    {
+      "name": "run-1",
+      "role": "runner",
+      "harnesses": [
+        "claude"
+      ]
+    },
+    {
+      "name": "worker",
+      "role": "agent"
+    },
+    {
+      "name": "probe",
+      "role": "probe"
+    }
+  ],
+  "git": {
+    "changed": [
+      "turbo/app.py"
+    ],
+    "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "pr_number": 4
+  },
+  "cards": [
+    {
+      "ref": "gate",
+      "title": "Gate the submit",
+      "body": "Implement the gate.",
+      "contract": "The runner submits. The agent does not.",
+      "harness": "claude",
+      "scope": {
+        "paths": [
+          "turbo/"
+        ],
+        "forbidden": [],
+        "verify": [
+          {
+            "cmd": "python3 -c \"import sys; raise SystemExit(0)\"",
+            "kind": "unit"
+          }
+        ]
+      }
+    }
+  ],
+  "steps": [
+    {
+      "name": "runner claims",
+      "op": "tick",
+      "arm": {
+        "alive": true,
+        "exit": 0
+      },
+      "expect": {
+        "state": "working",
+        "assignee": "run-1"
+      }
+    },
+    {
+      "name": "agent asks",
+      "op": "ask",
+      "blocked_question": "Ship it?",
+      "blocked_options": [
+        "yes",
+        "no"
+      ],
+      "blocked_default": "yes",
+      "expect": {
+        "status": 200,
+        "state": "question"
+      }
+    },
+    {
+      "name": "turn ends",
+      "op": "tick",
+      "release": {
+        "exit": 0,
+        "output": ""
+      },
+      "expect": {
+        "state": "awaiting-human"
+      }
+    },
+    {
+      "name": "human answers",
+      "op": "answer",
+      "choice": "yes",
+      "expect": {
+        "status": 200,
+        "answer": "yes"
+      }
+    },
+    {
+      "name": "wrong resume token",
+      "op": "resume",
+      "token": "r-not-the-token",
+      "expect": {
+        "status": 409,
+        "error": "resume token"
+      }
+    },
+    {
+      "name": "real token with no session id",
+      "op": "resume",
+      "token": "$resume",
+      "session_id": "",
+      "expect": {
+        "status": 200,
+        "state": "working"
+      }
+    }
+  ]
+}

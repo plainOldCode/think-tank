@@ -113,6 +113,7 @@
       "via": "runner",
       "expect": {
         "status": 409,
+        "error": "approve",
         "state": "review",
         "no_merge": true
       }

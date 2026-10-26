@@ -1,0 +1,94 @@
+{
+  "name": "empty-changed-paths",
+  "description": "Submit rejects an empty changed_paths list.",
+  "actors": [
+    {
+      "name": "ada",
+      "role": "human"
+    },
+    {
+      "name": "run-1",
+      "role": "runner",
+      "harnesses": [
+        "claude"
+      ]
+    },
+    {
+      "name": "worker",
+      "role": "agent"
+    },
+    {
+      "name": "probe",
+      "role": "probe"
+    }
+  ],
+  "git": {
+    "changed": [
+      "turbo/app.py"
+    ],
+    "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "pr_number": 4
+  },
+  "cards": [
+    {
+      "ref": "gate",
+      "title": "Gate the submit",
+      "body": "Implement the gate.",
+      "contract": "The runner submits. The agent does not.",
+      "harness": "claude",
+      "scope": {
+        "paths": [
+          "turbo/"
+        ],
+        "forbidden": [],
+        "verify": [
+          {
+            "cmd": "python3 -c \"import sys; raise SystemExit(0)\"",
+            "kind": "unit"
+          }
+        ]
+      }
+    }
+  ],
+  "steps": [
+    {
+      "name": "runner claims",
+      "op": "tick",
+      "arm": {
+        "alive": true,
+        "exit": 0
+      },
+      "expect": {
+        "state": "working",
+        "assignee": "run-1"
+      }
+    },
+    {
+      "name": "agent acks",
+      "op": "ack",
+      "actor": "worker",
+      "expect": {
+        "status": 200
+      }
+    },
+    {
+      "name": "agent marks ready",
+      "op": "ready",
+      "expect": {
+        "status": 200,
+        "ready": true
+      }
+    },
+    {
+      "name": "empty changed_paths",
+      "op": "submit-raw",
+      "work_token": "$token",
+      "changed_paths": [],
+      "expect": {
+        "status": 422,
+        "error": "changed_paths",
+        "state": "working"
+      }
+    }
+  ]
+}

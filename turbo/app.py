@@ -16,7 +16,7 @@ _FONTS = _STATIC / "fonts"
 
 
 def _text(value: object) -> str:
-    # TURBO-UNCOVERED: removal candidate (not exercised by scenarios)
+    # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
     if isinstance(value, bytes):
         return value.decode("utf-8", "replace")
     if isinstance(value, str):
@@ -31,17 +31,17 @@ def subprocess_verify(cmd: str, cwd) -> tuple[int, str]:
 
     argv = shlex.split(cmd)
     if not argv:
-        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios)
+        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
         return 1, "empty verify command"
     try:
         proc = subprocess.run(
             argv, cwd=cwd, capture_output=True, text=True, timeout=120, check=False,
         )
     except subprocess.TimeoutExpired as exc:
-        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios)
+        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
         return 124, (_text(exc.stdout) + _text(exc.stderr))[-2000:]
     except OSError as exc:
-        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios)
+        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
         return 127, str(exc)
     return proc.returncode, ((proc.stdout or "") + (proc.stderr or ""))[-2000:]
 
@@ -89,7 +89,6 @@ def create_app(db_path: str, legacy_path: str | None = None, verify=None, clock=
 
     @app.get("/turbo/metrics")
     def metrics():
-        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
         return service.metrics(store, app.state.legacy_path)
 
     @app.post("/turbo/actors")
@@ -109,7 +108,6 @@ def create_app(db_path: str, legacy_path: str | None = None, verify=None, clock=
 
     @app.get("/turbo/cards")
     def get_cards(state: str | None = None, harness: str | None = None):
-        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios)
         return service.list_cards(store, state, harness)
 
     @app.get("/turbo/cards/{card_id}")
@@ -205,7 +203,7 @@ def create_app(db_path: str, legacy_path: str | None = None, verify=None, clock=
     @app.get("/legacy/issues/{issue_id}")
     def legacy_one(issue_id: str):
         if not app.state.legacy_path:
-            # TURBO-UNCOVERED: removal candidate (not exercised by scenarios)
+            # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
             raise TurboError(404, "no legacy database configured")
         return legacy.issue_detail(app.state.legacy_path, issue_id)
 
@@ -225,7 +223,7 @@ def create_app(db_path: str, legacy_path: str | None = None, verify=None, clock=
 
 
 def main() -> None:
-    # TURBO-UNCOVERED: removal candidate (not exercised by scenarios)
+    # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
     import uvicorn
 
     db_path = os.environ.get("TURBO_DB", os.path.join("data", "turbo.db"))

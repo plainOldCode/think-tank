@@ -1,16 +1,21 @@
 """Headless runner: command lines, fallback, git, and the question grace."""
 
 import json
+import os
 import subprocess
 import sys
 import time
+import urllib.error
 from pathlib import Path
+
+import pytest
 
 from turbo.app import create_app
 from turbo.drivers import parse_session, resume_plan, start_plan
+from turbo.errors import TurboError
 from turbo.http_api import HttpAPI
 from turbo.proc import GitCli, SubprocessProc, parse_porcelain
-from turbo.runner import DirectAPI, Runner
+from turbo.runner import DirectAPI, Runner, _post_webhook, main
 from turbo import service
 
 BODY = "Implement the gate."
@@ -206,6 +211,26 @@ def test_cursor_create_chat_then_resume_and_uninvestigated_handoff(tmp_path):
     assert len(proc.spawns) == 2
 
 
+def test_cursor_create_chat_failure_hands_off(tmp_path):
+    proc = ScriptedProc([{"code": 1, "output": "no chat"}])
+    _app, api, runner, _clock = world(tmp_path, proc, ["cursor"])
+    cursor = new_card(api.store, "cursor")
+    runner.start_card(cursor["id"])
+    assert runner.reap(cursor["id"]) == {"running": False, "fallback": "handoff"}
+    assert api.get(cursor["id"])["session"]["mode"] == "handoff"
+    assert cursor["id"] not in runner.handles
+
+
+def test_reap_without_a_session_id(tmp_path):
+    proc = ScriptedProc([{"code": 0, "output": ""}])
+    _app, api, runner, _clock = world(tmp_path, proc, ["codex"])
+    card = new_card(api.store, "codex")
+    runner.start_card(card["id"])
+    result = runner.reap(card["id"])
+    assert result["session_id"] is None
+    assert not (api.get(card["id"]).get("session") or {}).get("session_id")
+
+
 def test_grok_bot_webhook_does_not_log_the_bearer(tmp_path):
     proc = ScriptedProc([])
     _app, api, runner, _clock = world(tmp_path, proc, ["grok-bot"])
@@ -259,6 +284,19 @@ def test_parse_and_plans():
     assert parse_session("claude", '{"session_id":"s1"}', "pre") == "pre"
     assert parse_session("grok", '{"sessionId":"g1"}') == "g1"
     assert parse_session("cursor", " chat \n") == "chat"
+    assert parse_session("codex", "\nnot-json\n{\"type\":\"other\"}\n") is None
+    assert parse_session("claude", "not json") is None
+    assert parse_session("claude", "[]") is None
+    assert parse_session("claude", '{"session_id":"s9"}') == "s9"
+    assert parse_session("hermes", "{}") is None
+    grok_fork = resume_plan("grok", "s", "hi", "/tmp/system.txt", attempt="fork")
+    assert grok_fork.argv[0] == "grok" and "--fork-session" in grok_fork.argv
+    grok_resume = resume_plan("grok", "s", "hi", "/tmp/system.txt")
+    assert "-r" in grok_resume.argv
+    cursor = resume_plan("cursor", "s", "hi", "/tmp/system.txt")
+    assert cursor.argv[:4] == ["agent", "-p", "--resume", "s"]
+    assert resume_plan("cursor", "s", "hi", "/tmp/system.txt", attempt="fork").mode == "handoff"
+    assert resume_plan("grok-bot", "s", "hi", "/tmp/system.txt").mode == "webhook"
     plan = resume_plan("claude", "s1", "hello", "/tmp/system.txt")
     assert plan.argv[:4] == ["claude", "-p", "hello", "--resume"]
     assert "--fork-session" not in plan.argv
@@ -296,6 +334,15 @@ def test_git_cli_command_sequence(tmp_path):
     assert ["git", "push", "-u", "origin", "HEAD"] in calls
     assert ["gh", "pr", "merge", "12", "--merge"] in calls
     assert parse_porcelain(' M a.py\n') == ["a.py"]
+    assert parse_porcelain("x\n M a.py\n") == ["a.py"]
+    def quiet_run(argv, cwd, capture_output, text, check):
+        del cwd, capture_output, text, check
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    quiet = GitCli(str(tmp_path), run=quiet_run)
+    assert quiet.open_pr("title", "body", "main")["number"] is None
+    with pytest.raises(RuntimeError):
+        quiet.merge_pr(1, "")
 
 
 def test_http_api_shapes_requests():
@@ -325,6 +372,23 @@ def test_http_api_shapes_requests():
     assert api.pending("run-1")[0]["id"] == "T2"
     assert seen[0][0] == "GET"
 
+    class Plain(urllib.error.HTTPError):
+        def __init__(self):
+            super().__init__("http://127.0.0.1:9/turbo/cards/nope", 500, "err", {}, None)
+
+        def read(self):
+            return b"plain text"
+
+    def plain_opener(_req, timeout=60):
+        del timeout
+        raise Plain()
+
+    plain = HttpAPI("http://127.0.0.1:9", "run-1", opener=plain_opener)
+    with pytest.raises(TurboError) as caught:
+        plain.get("nope")
+    assert caught.value.status == 500
+    assert caught.value.message == "plain text"
+
 
 def test_subprocess_proc_runs_a_local_command():
     proc = SubprocessProc()
@@ -335,6 +399,15 @@ def test_subprocess_proc_runs_a_local_command():
         time.sleep(0.02)
     assert proc.poll(handle) == 0
     assert "turbo-ok" in proc.output(handle)
+    sleeper = proc.spawn([sys.executable, "-c", "import time; time.sleep(30)"])
+    proc.interrupt(sleeper)
+    for _ in range(50):
+        if proc.poll(sleeper) is not None:
+            break
+        time.sleep(0.02)
+    assert proc.poll(sleeper) is not None
+    os.remove(proc._files[sleeper])
+    assert proc.output(sleeper) == ""
 
 
 def test_turbo_package_has_no_tmux_or_wake_relay():
@@ -347,3 +420,112 @@ def test_turbo_package_has_no_tmux_or_wake_relay():
     assert Path("deploy/com.tt.server.plist").is_file()
     assert Path("scripts/deploy.sh").is_file()
     assert Path("scripts/secret-scan.sh").is_file()
+
+
+def test_runner_refuses_a_harness_it_does_not_know(tmp_path):
+    class API:
+        def claim(self, card_id, actor, agent):
+            del actor, agent
+            return {
+                "id": card_id, "harness": "nope", "body": "b", "contract": "c",
+                "contract_version": 1, "scope": {}, "nonce": "n",
+            }
+
+    runner = Runner(API(), ScriptedProc([]), None, "run-1", "worker", ["claude"], str(tmp_path), Clock())
+    with pytest.raises(TurboError) as caught:
+        runner.start_card("card")
+    assert "harness" in caught.value.message
+
+    class Plan:
+        mode = "mystery"
+        argv = None
+        session_id = None
+
+    with pytest.raises(TurboError) as caught:
+        runner._launch("card", "claude", Plan(), "prompt", "start", "start")
+    assert "no command" in caught.value.message
+    assert runner.reap("missing") is None
+    with pytest.raises(TurboError) as caught:
+        runner._webhook("card", "grok-bot", "hi")
+    assert "webhook" in caught.value.message
+
+    posted = {}
+
+    def post(url, body, headers):
+        posted["url"] = url
+        posted["headers"] = dict(headers)
+        return 204
+
+    class Attach:
+        def attach_session(self, *_args):
+            return {}
+
+    runner.api = Attach()
+    runner.webhook_url = "http://example.invalid/hook"
+    runner.webhook_post = post
+    runner.bearer = ""
+    runner._webhook("card", "grok-bot", "hi")
+    assert "authorization" not in posted["headers"]
+
+
+def test_direct_api_defaults_and_next_open(tmp_path):
+    app = create_app(str(tmp_path / "turbo.db"))
+    store = app.state.store
+    service.register_actor(store, "ada", "human", None, None)
+    service.register_actor(store, "run-1", "runner", ["claude"], "ada")
+    service.create_card(store, "ada", "Other", BODY, CONTRACT, "grok", SCOPE, Clock())
+    api = DirectAPI(store, lambda _cmd, _cwd: (0, ""), Clock())
+    assert api.apply_defaults("run-1", Clock()())["applied"] == []
+    assert api.next_open("run-1") is None
+
+
+def test_runner_main_once_and_the_sleep_loop(monkeypatch, tmp_path):
+    monkeypatch.setenv("TURBO_ACTOR", "run-1")
+    monkeypatch.setenv("TURBO_AGENT", "worker")
+    monkeypatch.setenv("TURBO_HARNESSES", "claude")
+    monkeypatch.setenv("TURBO_WORKSPACE", str(tmp_path))
+    monkeypatch.setenv("TURBO_STATE", str(tmp_path / "state"))
+    monkeypatch.delenv("TURBO_GROK_BOT_WEBHOOK_URL", raising=False)
+    ticks = []
+    monkeypatch.setattr(Runner, "tick", lambda self: ticks.append(self.actor))
+    main(["--once"])
+    assert ticks == ["run-1"]
+
+    monkeypatch.setattr(Runner, "tick", lambda self: None)
+
+    def sleep(seconds):
+        raise SystemExit(seconds)
+
+    monkeypatch.setattr(time, "sleep", sleep)
+    with pytest.raises(SystemExit) as caught:
+        main(["--interval", "0.25"])
+    assert caught.value.code == 0.25
+
+
+def test_post_webhook_sends_the_body(monkeypatch):
+    seen = {}
+
+    class Res:
+        status = 202
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    def urlopen(req, timeout=30):
+        del timeout
+        seen["data"] = req.data
+        seen["auth"] = req.get_header("Authorization")
+        return Res()
+
+    monkeypatch.setattr("urllib.request.urlopen", urlopen)
+    status = _post_webhook(
+        "http://example.invalid/hook",
+        {"card_id": "c"},
+        {"authorization": "Bearer secret"},
+    )
+    assert status == 202
+    assert b"card_id" in seen["data"]
+    assert seen["auth"] == "Bearer secret"

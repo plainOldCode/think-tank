@@ -1,0 +1,223 @@
+{
+  "name": "question-shape",
+  "description": "A question needs 2 to 4 unique options and a default that is one of them. The answer must be one of those options, once.",
+  "actors": [
+    {
+      "name": "ada",
+      "role": "human"
+    },
+    {
+      "name": "run-1",
+      "role": "runner",
+      "harnesses": [
+        "claude"
+      ]
+    },
+    {
+      "name": "worker",
+      "role": "agent"
+    },
+    {
+      "name": "probe",
+      "role": "probe"
+    }
+  ],
+  "git": {
+    "changed": [
+      "turbo/app.py"
+    ],
+    "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "pr_number": 4
+  },
+  "cards": [
+    {
+      "ref": "gate",
+      "title": "Gate the submit",
+      "body": "Implement the gate.",
+      "contract": "The runner submits. The agent does not.",
+      "harness": "claude",
+      "scope": {
+        "paths": [
+          "turbo/"
+        ],
+        "forbidden": [],
+        "verify": [
+          {
+            "cmd": "python3 -c \"import sys; raise SystemExit(0)\"",
+            "kind": "unit"
+          }
+        ]
+      }
+    }
+  ],
+  "steps": [
+    {
+      "name": "runner claims",
+      "op": "tick",
+      "arm": {
+        "alive": true,
+        "exit": 0
+      },
+      "expect": {
+        "state": "working",
+        "assignee": "run-1"
+      }
+    },
+    {
+      "name": "empty question",
+      "op": "ask",
+      "blocked_question": " ",
+      "blocked_options": [
+        "yes",
+        "no"
+      ],
+      "blocked_default": "yes",
+      "expect": {
+        "status": 422,
+        "error": "blocked_question"
+      }
+    },
+    {
+      "name": "one option",
+      "op": "ask",
+      "blocked_question": "Go?",
+      "blocked_options": [
+        "only"
+      ],
+      "blocked_default": "only",
+      "expect": {
+        "status": 422,
+        "error": "2 to 4"
+      }
+    },
+    {
+      "name": "five options",
+      "op": "ask",
+      "blocked_question": "Go?",
+      "blocked_options": [
+        "a",
+        "b",
+        "c",
+        "d",
+        "e"
+      ],
+      "blocked_default": "a",
+      "expect": {
+        "status": 422,
+        "error": "2 to 4"
+      }
+    },
+    {
+      "name": "option is not a string",
+      "op": "ask",
+      "blocked_question": "Go?",
+      "blocked_options": [
+        "yes",
+        2
+      ],
+      "blocked_default": "yes",
+      "expect": {
+        "status": 422,
+        "error": "2 to 4"
+      }
+    },
+    {
+      "name": "duplicate options",
+      "op": "ask",
+      "blocked_question": "Go?",
+      "blocked_options": [
+        "yes",
+        "yes"
+      ],
+      "blocked_default": "yes",
+      "expect": {
+        "status": 422,
+        "error": "unique"
+      }
+    },
+    {
+      "name": "default is not an option",
+      "op": "ask",
+      "blocked_question": "Go?",
+      "blocked_options": [
+        "yes",
+        "no"
+      ],
+      "blocked_default": "maybe",
+      "expect": {
+        "status": 422,
+        "error": "blocked_default"
+      }
+    },
+    {
+      "name": "answer before a question",
+      "op": "answer",
+      "choice": "yes",
+      "expect": {
+        "status": 409,
+        "error": "not waiting"
+      }
+    },
+    {
+      "name": "agent asks",
+      "op": "ask",
+      "blocked_question": "Ship it?",
+      "blocked_options": [
+        "yes",
+        "no"
+      ],
+      "blocked_default": "yes",
+      "expect": {
+        "status": 200,
+        "state": "question"
+      }
+    },
+    {
+      "name": "turn ends",
+      "op": "tick",
+      "release": {
+        "exit": 0,
+        "output": ""
+      },
+      "expect": {
+        "state": "awaiting-human"
+      }
+    },
+    {
+      "name": "empty choice",
+      "op": "answer",
+      "choice": " ",
+      "expect": {
+        "status": 422,
+        "error": "choice is required"
+      }
+    },
+    {
+      "name": "choice outside the options",
+      "op": "answer",
+      "choice": "maybe",
+      "expect": {
+        "status": 422,
+        "error": "one of the options"
+      }
+    },
+    {
+      "name": "human answers",
+      "op": "answer",
+      "choice": "yes",
+      "expect": {
+        "status": 200,
+        "answer": "yes"
+      }
+    },
+    {
+      "name": "second answer",
+      "op": "answer",
+      "choice": "no",
+      "expect": {
+        "status": 409,
+        "error": "already has an answer"
+      }
+    }
+  ]
+}

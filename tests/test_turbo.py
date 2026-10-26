@@ -6,9 +6,10 @@ import sqlite3
 import pytest
 from fastapi.testclient import TestClient
 
-from turbo.app import create_app
+from turbo.app import create_app, main, subprocess_verify
 from turbo.errors import TurboError
 from turbo.gate import check_token, digest
+from turbo import service
 
 BODY = "Implement the gate."
 CONTRACT = "Submit is rejected without a work token."
@@ -354,6 +355,8 @@ def test_missing_legacy_is_404(tmp_path):
     client, _clock = boot(tmp_path)
     res = client.get("/legacy/issues")
     assert res.status_code == 404
+    detail = client.get("/legacy/issues/ANY")
+    assert detail.status_code == 404
 
 
 def test_board_html_uses_the_ink_page(tmp_path):
@@ -369,3 +372,113 @@ def test_board_html_uses_the_ink_page(tmp_path):
     assert "#f7f6f3" in css
     assert "#c23b22" in css
     assert "box-shadow" not in css
+
+
+def test_verify_boundaries(monkeypatch):
+    import subprocess
+
+    assert subprocess_verify("", None) == (1, "empty verify command")
+    assert subprocess_verify("   ", None) == (1, "empty verify command")
+
+    def timeout(*_args, **_kwargs):
+        raise subprocess.TimeoutExpired("cmd", 120, output=b"out-bytes", stderr="err-text")
+
+    monkeypatch.setattr(subprocess, "run", timeout)
+    code, text = subprocess_verify("python3 -c pass", None)
+    assert code == 124
+    assert "out-bytes" in text and "err-text" in text
+
+    def missing(*_args, **_kwargs):
+        raise OSError("no such binary")
+
+    monkeypatch.setattr(subprocess, "run", missing)
+    assert subprocess_verify("missing-bin", None) == (127, "no such binary")
+
+
+def test_main_reads_the_documented_env(monkeypatch, tmp_path):
+    seen = {}
+
+    def fake_run(app, host, port):
+        seen["host"] = host
+        seen["port"] = port
+        seen["title"] = app.title
+
+    monkeypatch.setenv("TURBO_DB", str(tmp_path / "sub" / "turbo.db"))
+    monkeypatch.setenv("TURBO_PORT", "7822")
+    monkeypatch.setenv("TT_LEGACY_DB", str(tmp_path / "legacy.db"))
+    monkeypatch.setattr("uvicorn.run", fake_run)
+    main()
+    assert seen == {"host": "127.0.0.1", "port": 7822, "title": "think-tank turbo"}
+
+
+def test_submit_rejects_a_non_object_pr(tmp_path):
+    client, clock = boot(tmp_path)
+    with pytest.raises(TurboError) as caught:
+        service.submit(
+            client.app.state.store, "missing", "run-1", "ab" * 20, "nope", [], "wt",
+            lambda _cmd, _cwd: (0, ""), clock,
+        )
+    assert caught.value.status == 422
+    assert "pr" in caught.value.message
+
+
+def test_legacy_boundaries(tmp_path):
+    from turbo.legacy import _labels, brief_stats, issue_detail, list_issues, open_ro
+    from turbo.legacy_schema import create_throwaway
+
+    missing = tmp_path / "missing.db"
+    with pytest.raises(TurboError) as caught:
+        open_ro(str(missing))
+    assert caught.value.status == 404
+
+    locked = tmp_path / "locked.db"
+    locked.write_bytes(b"not a database")
+    locked.chmod(0)
+    try:
+        with pytest.raises(TurboError) as caught:
+            open_ro(str(locked))
+        assert "read-only" in caught.value.message
+    finally:
+        locked.chmod(0o600)
+
+    empty = tmp_path / "empty.db"
+    sqlite3.connect(empty).close()
+    with pytest.raises(TurboError) as caught:
+        list_issues(str(empty))
+    assert caught.value.status == 404
+    with pytest.raises(TurboError) as caught:
+        issue_detail(str(empty), "T1")
+    assert caught.value.status == 404
+
+    thin = tmp_path / "thin.db"
+    con = sqlite3.connect(thin)
+    con.execute("CREATE TABLE issues (id TEXT, title TEXT, body TEXT)")
+    con.execute("INSERT INTO issues (id, title, body) VALUES ('T1', 't', 'b')")
+    con.commit()
+    con.close()
+    detail = issue_detail(str(thin), "T1")
+    assert detail["children"] == []
+    assert detail["comments"] == []
+    assert brief_stats(str(thin)) == {"legacy_cards": 0, "legacy_brief_complete": 0}
+    assert _labels(["ink", "gate"]) == ["ink", "gate"]
+
+    fresh = tmp_path / "throwaway.db"
+    create_throwaway(str(fresh))
+    with pytest.raises(FileExistsError):
+        create_throwaway(str(fresh))
+
+
+def test_store_edges(tmp_path, monkeypatch):
+    from turbo.store import Store
+
+    monkeypatch.chdir(tmp_path)
+    store = Store("plain.db")
+    with pytest.raises(RuntimeError):
+        store.update_card("missing", not_a_column=1)
+    with store.transaction():
+        with store.transaction():
+            store.con.execute("SELECT 1")
+    with pytest.raises(RuntimeError):
+        with store.transaction():
+            with store.transaction():
+                raise RuntimeError("inner")

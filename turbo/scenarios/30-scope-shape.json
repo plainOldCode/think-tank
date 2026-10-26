@@ -1,0 +1,279 @@
+{
+  "name": "scope-shape",
+  "description": "A card scope must be an object with paths, forbidden, verify steps, and an optional timebox.",
+  "actors": [
+    {
+      "name": "ada",
+      "role": "human"
+    },
+    {
+      "name": "run-1",
+      "role": "runner",
+      "harnesses": [
+        "claude"
+      ]
+    },
+    {
+      "name": "worker",
+      "role": "agent"
+    },
+    {
+      "name": "probe",
+      "role": "probe"
+    }
+  ],
+  "git": {
+    "changed": [
+      "turbo/app.py"
+    ],
+    "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "pr_number": 4
+  },
+  "cards": [
+    {
+      "ref": "gate",
+      "title": "Gate the submit",
+      "body": "Implement the gate.",
+      "contract": "The runner submits. The agent does not.",
+      "harness": "claude",
+      "scope": {
+        "paths": [
+          "turbo/"
+        ],
+        "forbidden": [],
+        "verify": [
+          {
+            "cmd": "python3 -c \"import sys; raise SystemExit(0)\"",
+            "kind": "unit"
+          }
+        ]
+      }
+    }
+  ],
+  "steps": [
+    {
+      "name": "scope must be an object",
+      "op": "create-card",
+      "ref": "bad-object",
+      "title": "Bad",
+      "scope": "nope",
+      "expect": {
+        "status": 422,
+        "error": "scope must be an object"
+      }
+    },
+    {
+      "name": "paths must be a non-empty list",
+      "op": "create-card",
+      "ref": "bad-paths",
+      "title": "Bad",
+      "scope": {
+        "paths": [],
+        "forbidden": [],
+        "verify": [
+          {
+            "cmd": "python3 -c \"import sys; raise SystemExit(0)\"",
+            "kind": "unit"
+          }
+        ]
+      },
+      "expect": {
+        "status": 422,
+        "error": "scope.paths"
+      }
+    },
+    {
+      "name": "forbidden must be strings",
+      "op": "create-card",
+      "ref": "bad-forbidden",
+      "title": "Bad",
+      "scope": {
+        "paths": [
+          "turbo/"
+        ],
+        "forbidden": [
+          1
+        ],
+        "verify": [
+          {
+            "cmd": "python3 -c \"import sys; raise SystemExit(0)\"",
+            "kind": "unit"
+          }
+        ]
+      },
+      "expect": {
+        "status": 422,
+        "error": "scope.forbidden"
+      }
+    },
+    {
+      "name": "verify must be non-empty",
+      "op": "create-card",
+      "ref": "bad-verify",
+      "title": "Bad",
+      "scope": {
+        "paths": [
+          "turbo/"
+        ],
+        "forbidden": [],
+        "verify": []
+      },
+      "expect": {
+        "status": 422,
+        "error": "scope.verify"
+      }
+    },
+    {
+      "name": "verify step needs a command",
+      "op": "create-card",
+      "ref": "bad-cmd",
+      "title": "Bad",
+      "scope": {
+        "paths": [
+          "turbo/"
+        ],
+        "forbidden": [],
+        "verify": [
+          {
+            "kind": "unit"
+          }
+        ]
+      },
+      "expect": {
+        "status": 422,
+        "error": "cmd"
+      }
+    },
+    {
+      "name": "verify kind must be known",
+      "op": "create-card",
+      "ref": "bad-kind",
+      "title": "Bad",
+      "scope": {
+        "paths": [
+          "turbo/"
+        ],
+        "forbidden": [],
+        "verify": [
+          {
+            "cmd": "pytest",
+            "kind": "nope"
+          }
+        ]
+      },
+      "expect": {
+        "status": 422,
+        "error": "verify kind"
+      }
+    },
+    {
+      "name": "timebox must be a non-negative integer",
+      "op": "create-card",
+      "ref": "bad-time",
+      "title": "Bad",
+      "scope": {
+        "paths": [
+          "turbo/"
+        ],
+        "forbidden": [],
+        "verify": [
+          {
+            "cmd": "python3 -c \"import sys; raise SystemExit(0)\"",
+            "kind": "unit"
+          }
+        ],
+        "timebox_s": -1
+      },
+      "expect": {
+        "status": 422,
+        "error": "timebox"
+      }
+    },
+    {
+      "name": "empty title",
+      "op": "create-card",
+      "ref": "bad-title",
+      "title": "  ",
+      "scope": {
+        "paths": [
+          "turbo/"
+        ],
+        "forbidden": [],
+        "verify": [
+          {
+            "cmd": "python3 -c \"import sys; raise SystemExit(0)\"",
+            "kind": "unit"
+          }
+        ]
+      },
+      "expect": {
+        "status": 422,
+        "error": "title"
+      }
+    },
+    {
+      "name": "empty body",
+      "op": "create-card",
+      "ref": "bad-body",
+      "title": "Body",
+      "body": " ",
+      "scope": {
+        "paths": [
+          "turbo/"
+        ],
+        "forbidden": [],
+        "verify": [
+          {
+            "cmd": "python3 -c \"import sys; raise SystemExit(0)\"",
+            "kind": "unit"
+          }
+        ]
+      },
+      "expect": {
+        "status": 422,
+        "error": "body"
+      }
+    },
+    {
+      "name": "empty contract",
+      "op": "create-card",
+      "ref": "bad-contract",
+      "title": "Contract",
+      "contract": " ",
+      "scope": {
+        "paths": [
+          "turbo/"
+        ],
+        "forbidden": [],
+        "verify": [
+          {
+            "cmd": "python3 -c \"import sys; raise SystemExit(0)\"",
+            "kind": "unit"
+          }
+        ]
+      },
+      "expect": {
+        "status": 422,
+        "error": "contract"
+      }
+    },
+    {
+      "name": "edit blank body",
+      "op": "edit",
+      "body": " ",
+      "expect": {
+        "status": 422,
+        "error": "body"
+      }
+    },
+    {
+      "name": "edit blank contract",
+      "op": "edit",
+      "contract": " ",
+      "expect": {
+        "status": 422,
+        "error": "contract"
+      }
+    }
+  ]
+}

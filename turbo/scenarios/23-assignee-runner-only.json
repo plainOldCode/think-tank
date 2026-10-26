@@ -1,0 +1,116 @@
+{
+  "name": "assignee-runner-only",
+  "description": "Only the assignee runner may close the turn, record the session, resume, or submit.",
+  "actors": [
+    {
+      "name": "ada",
+      "role": "human"
+    },
+    {
+      "name": "run-1",
+      "role": "runner",
+      "harnesses": [
+        "claude"
+      ]
+    },
+    {
+      "name": "worker",
+      "role": "agent"
+    },
+    {
+      "name": "probe",
+      "role": "probe"
+    },
+    {
+      "name": "other-agent",
+      "role": "agent"
+    },
+    {
+      "name": "other-runner",
+      "role": "runner",
+      "harnesses": [
+        "claude"
+      ]
+    }
+  ],
+  "git": {
+    "changed": [
+      "turbo/app.py"
+    ],
+    "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "pr_number": 4
+  },
+  "cards": [
+    {
+      "ref": "gate",
+      "title": "Gate the submit",
+      "body": "Implement the gate.",
+      "contract": "The runner submits. The agent does not.",
+      "harness": "claude",
+      "scope": {
+        "paths": [
+          "turbo/"
+        ],
+        "forbidden": [],
+        "verify": [
+          {
+            "cmd": "python3 -c \"import sys; raise SystemExit(0)\"",
+            "kind": "unit"
+          }
+        ]
+      }
+    }
+  ],
+  "steps": [
+    {
+      "name": "runner claims",
+      "op": "tick",
+      "arm": {
+        "alive": true,
+        "exit": 0
+      },
+      "expect": {
+        "state": "working",
+        "assignee": "run-1"
+      }
+    },
+    {
+      "name": "other runner cannot close the turn",
+      "op": "turn-closed",
+      "actor": "other-runner",
+      "expect": {
+        "status": 403,
+        "error": "assignee runner"
+      }
+    },
+    {
+      "name": "other runner cannot record the session",
+      "op": "session",
+      "actor": "other-runner",
+      "expect": {
+        "status": 403,
+        "error": "assignee runner"
+      }
+    },
+    {
+      "name": "other runner cannot resume",
+      "op": "resume",
+      "actor": "other-runner",
+      "token": "r-nope",
+      "expect": {
+        "status": 403,
+        "error": "assignee runner"
+      }
+    },
+    {
+      "name": "other runner cannot submit",
+      "op": "submit-raw",
+      "actor": "other-runner",
+      "work_token": "wt_nope",
+      "expect": {
+        "status": 403,
+        "error": "assignee runner"
+      }
+    }
+  ]
+}

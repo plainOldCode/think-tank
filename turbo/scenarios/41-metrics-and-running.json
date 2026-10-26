@@ -1,0 +1,94 @@
+{
+  "name": "metrics-and-running",
+  "description": "Metrics count a live card. A second tick leaves a still-running harness alone. The bearer is redacted from the log.",
+  "actors": [
+    {
+      "name": "ada",
+      "role": "human"
+    },
+    {
+      "name": "run-1",
+      "role": "runner",
+      "harnesses": [
+        "claude"
+      ]
+    },
+    {
+      "name": "worker",
+      "role": "agent"
+    },
+    {
+      "name": "probe",
+      "role": "probe"
+    }
+  ],
+  "git": {
+    "changed": [
+      "turbo/app.py"
+    ],
+    "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "pr_number": 4
+  },
+  "cards": [
+    {
+      "ref": "gate",
+      "title": "Gate the submit",
+      "body": "Implement the gate.",
+      "contract": "The runner submits. The agent does not.",
+      "harness": "claude",
+      "scope": {
+        "paths": [
+          "turbo/"
+        ],
+        "forbidden": [],
+        "verify": [
+          {
+            "cmd": "python3 -c \"import sys; raise SystemExit(0)\"",
+            "kind": "unit"
+          }
+        ]
+      }
+    }
+  ],
+  "steps": [
+    {
+      "name": "runner claims",
+      "op": "tick",
+      "arm": {
+        "alive": true,
+        "exit": 0
+      },
+      "expect": {
+        "state": "working",
+        "assignee": "run-1"
+      }
+    },
+    {
+      "name": "still running on the next tick",
+      "op": "tick",
+      "expect": {
+        "state": "working",
+        "spawns": 1
+      }
+    },
+    {
+      "name": "metrics count the card",
+      "op": "http",
+      "method": "GET",
+      "path": "/turbo/metrics",
+      "expect": {
+        "status": 200,
+        "metric_cards": 1
+      }
+    },
+    {
+      "name": "log redacts the bearer",
+      "op": "noop",
+      "expect": {
+        "log_contains": "[redacted]",
+        "log_excludes": "spawn claude"
+      }
+    }
+  ],
+  "bearer": "claude"
+}
