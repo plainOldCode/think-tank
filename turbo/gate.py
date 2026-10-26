@@ -45,14 +45,17 @@ def _eq(left: str, right: str) -> bool:
     a = left.encode("utf-8")
     b = right.encode("utf-8")
     if len(a) != len(b):
+        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios)
         return False
     return hmac.compare_digest(a, b)
 
 
 def check_ack(card: dict, given_digest: str, nonce: str) -> str:
     if card.get("nonce_used"):
+        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
         raise TurboError(409, "nonce already used; claim again")
     if not card.get("nonce") or not _eq(card["nonce"], nonce or ""):
+        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios)
         raise TurboError(409, "nonce does not match this claim")
     expect = digest(card["body"], card["contract"], card["contract_version"], card["scope"])
     if not given_digest or not _eq(expect, given_digest):
@@ -65,4 +68,5 @@ def check_token(card: dict, token: str) -> None:
         raise TurboError(403, "submit requires the work token from ack")
     expect = digest(card["body"], card["contract"], card["contract_version"], card["scope"])
     if not card.get("token_digest") or not _eq(card["token_digest"], expect):
+        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
         raise TurboError(409, "card changed after ack; re-ack required")

@@ -108,6 +108,7 @@ def public_card(card: dict, reveal_token: bool = False) -> dict:
 class Store:
     def __init__(self, path: str):
         parent = os.path.dirname(path)
+        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; untaken branch)
         if parent:
             os.makedirs(parent, exist_ok=True)
         self.path = path
@@ -122,6 +123,7 @@ class Store:
             self.con.commit()
 
     def close(self) -> None:
+        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios)
         self.con.close()
 
     @contextmanager
@@ -130,9 +132,11 @@ class Store:
             self._depth += 1
             try:
                 yield
+                # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; untaken branch)
                 if self._depth == 1:
                     self.con.commit()
             except Exception:
+                # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; untaken branch)
                 if self._depth == 1:
                     self.con.rollback()
                 raise
@@ -161,6 +165,7 @@ class Store:
     def require_actor(self, name: str) -> dict:
         found = self.actor(name)
         if not found:
+            # TURBO-UNCOVERED: removal candidate (not exercised by scenarios)
             raise TurboError(403, "unknown actor")
         return found
 
@@ -179,6 +184,7 @@ class Store:
     def update_card(self, card_id: str, **fields) -> None:
         unknown = set(fields) - CARD_COLUMNS
         if unknown:
+            # TURBO-UNCOVERED: removal candidate (not exercised by scenarios)
             raise RuntimeError("unknown card columns: " + ", ".join(sorted(unknown)))
         sets = ", ".join(f"{key}=?" for key in fields)
         with self.lock:
@@ -191,6 +197,7 @@ class Store:
         with self.lock:
             row = self.con.execute("SELECT * FROM cards WHERE id=?", (card_id,)).fetchone()
         if not row:
+            # TURBO-UNCOVERED: removal candidate (not exercised by scenarios)
             raise TurboError(404, "card not found")
         return card_from_row(row)
 
@@ -201,6 +208,7 @@ class Store:
             sql += " AND state=?"
             args.append(state)
         if harness:
+            # TURBO-UNCOVERED: removal candidate (not exercised by scenarios)
             sql += " AND harness=?"
             args.append(harness)
         sql += " ORDER BY created_at, id"

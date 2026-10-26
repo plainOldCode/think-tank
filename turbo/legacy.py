@@ -22,11 +22,13 @@ _ISSUE_FIELDS = (
 def open_ro(path: str) -> sqlite3.Connection:
     file = Path(path)
     if not file.is_file():
+        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios)
         raise TurboError(404, "legacy database not found")
     uri = file.resolve().as_uri() + "?mode=ro"
     try:
         con = sqlite3.connect(uri, uri=True)
     except sqlite3.OperationalError as exc:
+        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios)
         raise TurboError(404, "legacy database cannot be opened read-only") from exc
     con.row_factory = sqlite3.Row
     con.execute("PRAGMA query_only=ON")
@@ -44,14 +46,17 @@ def _parse_json(value: object):
     try:
         return json.loads(value)
     except json.JSONDecodeError:
+        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios)
         return value
 
 
 def _labels(value: object) -> list[str]:
     if isinstance(value, list):
+        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios)
         return value
     if not isinstance(value, str) or not value:
         return []
+    # TURBO-UNCOVERED: removal candidate (not exercised by scenarios)
     return [part for part in value.split(",") if part]
 
 
@@ -75,6 +80,7 @@ def list_issues(path: str, limit: int = 500) -> dict:
     try:
         cols = _columns(con, "issues")
         if "id" not in cols or "title" not in cols:
+            # TURBO-UNCOVERED: removal candidate (not exercised by scenarios)
             raise TurboError(404, "legacy database has no issues table")
         order = "updated_at DESC" if "updated_at" in cols else "rowid DESC"
         wanted = [name for name in (
@@ -102,12 +108,15 @@ def issue_detail(path: str, issue_id: str) -> dict:
     try:
         cols = _columns(con, "issues")
         if "id" not in cols:
+            # TURBO-UNCOVERED: removal candidate (not exercised by scenarios)
             raise TurboError(404, "legacy database has no issues table")
         row = con.execute("SELECT * FROM issues WHERE id=?", (issue_id,)).fetchone()
         if not row:
+            # TURBO-UNCOVERED: removal candidate (not exercised by scenarios)
             raise TurboError(404, "legacy issue not found")
         issue = _issue(row, cols)
         children = []
+        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; untaken branch)
         if "parent_id" in cols:
             child_rows = con.execute(
                 "SELECT * FROM issues WHERE parent_id=? ORDER BY created_at, id" if "created_at" in cols
@@ -116,6 +125,7 @@ def issue_detail(path: str, issue_id: str) -> dict:
             ).fetchall()
             children = [_issue(child, cols) for child in child_rows]
         comments = []
+        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; untaken branch)
         if _columns(con, "comments"):
             comment_rows = con.execute(
                 "SELECT id, issue_id, author, body, ts FROM comments WHERE issue_id=? ORDER BY id",
@@ -135,11 +145,13 @@ def issue_detail(path: str, issue_id: str) -> dict:
 
 def brief_stats(path: str) -> dict:
     """How many legacy cards have all four brief fields filled. Read-only."""
+    # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
     con = open_ro(path)
     try:
         cols = _columns(con, "issues")
         needed = {"brief_scope", "brief_verify", "brief_forbidden", "brief_timebox"}
         if not needed <= cols:
+            # TURBO-UNCOVERED: removal candidate (not exercised by scenarios)
             return {"legacy_cards": 0, "legacy_brief_complete": 0}
         total = int(con.execute("SELECT COUNT(*) FROM issues").fetchone()[0])
         complete = int(con.execute(

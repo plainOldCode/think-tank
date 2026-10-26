@@ -28,6 +28,7 @@ class HttpAPI:
             try:
                 message = json.loads(raw).get("error") or raw
             except json.JSONDecodeError:
+                # TURBO-UNCOVERED: removal candidate (not exercised by scenarios)
                 message = raw
             raise TurboError(exc.code, message) from None
 

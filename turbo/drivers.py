@@ -50,6 +50,7 @@ def _one_line(text: str) -> str:
 
 
 def _toml_string(text: str) -> str:
+    # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
     escaped = text.replace("\\", "\\\\").replace('"', '\\"')
     return '"' + escaped + '"'
 
@@ -72,6 +73,7 @@ def initial_prompt(card: dict) -> str:
 
 
 def handoff_prompt(card: dict, event: str) -> str:
+    # TURBO-UNCOVERED: removal candidate (not exercised by scenarios)
     return initial_prompt(card) + "\nevent:\n" + event + "\n"
 
 
@@ -85,6 +87,7 @@ def start_plan(harness: str, session_id: str | None, prompt: str, system_file: s
         ]
         return Plan("start", argv, prompt, session_id, status)
     if harness == "codex":
+        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
         argv = [
             "codex", "exec", "--json",
             "-c", "developer_instructions=" + _toml_string(rules),
@@ -92,19 +95,23 @@ def start_plan(harness: str, session_id: str | None, prompt: str, system_file: s
         ]
         return Plan("start", argv, prompt, None, status)
     if harness == "grok":
+        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
         argv = [
             "grok", "-p", prompt, "-s", session_id or "",
             "--output-format", "json", "--rules", rules,
         ]
         return Plan("start", argv, prompt, session_id, status)
     if harness == "cursor":
+        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
         return Plan("create-chat", ["agent", "create-chat"], prompt, None, status)
     if harness == "grok-bot":
+        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
         return Plan("webhook", None, prompt, None, status)
     return Plan("handoff", None, prompt, None, status)
 
 
 def cursor_resume_argv(session_id: str, prompt: str) -> list[str]:
+    # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
     return ["agent", "-p", "--resume", session_id, "--trust", prompt]
 
 
@@ -115,6 +122,7 @@ def resume_plan(harness: str, session_id: str | None, prompt: str,
     if harness in ("opencode", "hermes") or attempt == "handoff" or harness == "grok-bot" and attempt != "resume":
         return Plan("handoff", None, prompt, None, status)
     if harness == "grok-bot":
+        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios)
         return Plan("webhook", None, prompt, session_id, status)
     if attempt == "fork":
         if harness == "claude":
@@ -125,17 +133,20 @@ def resume_plan(harness: str, session_id: str | None, prompt: str,
             ]
             return Plan("fork", argv, prompt, None, status)
         if harness == "codex":
+            # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
             argv = [
                 "codex", "exec", "fork", session_id or "", prompt, "--json",
                 "-c", "developer_instructions=" + _toml_string(rules),
             ]
             return Plan("fork", argv, prompt, None, status)
         if harness == "grok":
+            # TURBO-UNCOVERED: removal candidate (not exercised by scenarios)
             argv = [
                 "grok", "-r", session_id or "", "-p", prompt, "--fork-session",
                 "--output-format", "json", "--rules", rules,
             ]
             return Plan("fork", argv, prompt, None, status)
+        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios)
         return Plan("handoff", None, prompt, None, status)
     if harness == "claude":
         argv = [
@@ -144,19 +155,23 @@ def resume_plan(harness: str, session_id: str | None, prompt: str,
         ]
         return Plan("resume", argv, prompt, session_id, status)
     if harness == "codex":
+        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
         argv = [
             "codex", "exec", "resume", session_id or "", prompt, "--json",
             "-c", "developer_instructions=" + _toml_string(rules),
         ]
         return Plan("resume", argv, prompt, session_id, status)
     if harness == "grok":
+        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios)
         argv = [
             "grok", "-r", session_id or "", "-p", prompt,
             "--output-format", "json", "--rules", rules,
         ]
         return Plan("resume", argv, prompt, session_id, status)
     if harness == "cursor":
+        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios)
         return Plan("resume", cursor_resume_argv(session_id or "", prompt), prompt, session_id, status)
+    # TURBO-UNCOVERED: removal candidate (not exercised by scenarios)
     return Plan("handoff", None, prompt, None, status)
 
 
@@ -166,36 +181,50 @@ def can_fork(harness: str) -> bool:
 
 def parse_session(harness: str, output: str, preassigned: str | None = None) -> str | None:
     if harness == "cursor":
+        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
         text = (output or "").strip()
         return text or preassigned or None
     if preassigned:
         return preassigned
     if harness == "codex":
+        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
         for line in (output or "").splitlines():
             line = line.strip()
             if not line:
+                # TURBO-UNCOVERED: removal candidate (not exercised by scenarios)
                 continue
             try:
                 data = json.loads(line)
             except json.JSONDecodeError:
+                # TURBO-UNCOVERED: removal candidate (not exercised by scenarios)
                 continue
             if isinstance(data, dict) and data.get("type") == "thread.started" and data.get("thread_id"):
+                # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
                 return str(data["thread_id"])
+            # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; untaken branch)
+        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios)
         return None
     try:
+        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
         data = json.loads(output or "")
     except json.JSONDecodeError:
+        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios)
         return None
     if not isinstance(data, dict):
+        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios)
         return None
     if harness == "claude":
+        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios)
         value = data.get("session_id")
         return str(value) if value else None
     if harness == "grok":
+        # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
         value = data.get("sessionId")
         return str(value) if value else None
+    # TURBO-UNCOVERED: removal candidate (not exercised by scenarios)
     return None
 
 
 def webhook_body(card_id: str, prompt: str) -> dict:
+    # TURBO-UNCOVERED: removal candidate (not exercised by scenarios; only unit-tested)
     return {"card_id": card_id, "event": prompt}

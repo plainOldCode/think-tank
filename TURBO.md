@@ -119,6 +119,7 @@ Commands run on this branch. Claude, Codex, Cursor, and Grok were not executed. 
 
 ```bash
 python3 -m turbo.scenarios run turbo/scenarios
+bash scripts/scenario-coverage.sh
 python3 -m pytest tests/ -q
 python3 -m mypy turbo --ignore-missing-imports
 node tests/smoke_turbo_ui.mjs
@@ -126,7 +127,7 @@ python3 -m compileall -q turbo tests
 bash scripts/secret-scan.sh .
 ```
 
-`mypy` is not part of CI. The scenario command starts a real server per scenario. The concurrent-claim scenario was also repeated on its own.
+`mypy` is not part of CI. The scenario command starts a real server per scenario. The concurrent-claim scenario was also repeated on its own. `turbo/COVERAGE.md` lists what that scenario set does not execute. Those lines are marked in the source and were not removed.
 
 - Scenario set, including the archive read and the rejected legacy write, against temporary sqlite files: live-verified. Harness binaries and `gh` were not executed.
 - Token gate, state machine, and driver argv in the smaller unit tests: unit-test-verified.
