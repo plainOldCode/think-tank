@@ -82,11 +82,43 @@ node tests/smoke_turbo_ui.mjs
 
 `httpx` is installed for the FastAPI test client. CI does not install a separate `pydantic` package; FastAPI pulls it in.
 
-## Verification level
+## Scenarios
 
-Commands run on this branch after the tree was cut down. Claude, Codex, Cursor, and Grok were not executed. No live tt server, production database, board card, or deploy target was contacted. `deploy/com.tt.server.plist` and `scripts/deploy.sh` were not edited.
+`turbo/scenarios/*.json` is a reusable set. Each file is one scenario (a file may also be a JSON list). `python -m turbo.scenarios run` starts a real turbo server on a throwaway port and temporary sqlite files, then drives the steps through HTTP and `turbo.runner.Runner`. Harness argv comes from `turbo.drivers` and is captured, not executed. `git` and `gh` are the real `GitCli` argument lists with a stubbed runner, so no remote is contacted. The clock is the server clock: `advance` moves it, and the runner does not sleep for the 24 hour default.
 
 ```bash
+python -m turbo.scenarios run                  # every json file next to the runner
+python -m turbo.scenarios run turbo/scenarios/01-happy-path.json
+python -m turbo.scenarios run turbo/scenarios --json /tmp/turbo-scenarios.json
+```
+
+Exit status is non-zero when a scenario or a step fails. `--json` writes `{ok, passed, failed, scenarios: [{name, ok, steps}]}`. `pytest tests/test_scenarios.py` runs the same set, and CI runs `pytest tests/`.
+
+A scenario object:
+
+| Field | Meaning |
+|---|---|
+| `name` | Required. Printed in the report. |
+| `description` | What the scenario is checking. |
+| `actors` | `{name, role, harnesses?}`. The first actor is a human. Roles: `human`, `runner`, `agent`, `probe`. |
+| `runner` | Optional `{actor, agent, harnesses}`. Defaults to the first runner and the first agent. |
+| `cards` | `{ref, title, body, contract, harness, scope}`. `scope` is `{paths, forbidden, verify: [{cmd, kind}]}`. |
+| `git` | Optional `{changed, sha, pr_number}` for the stub. `sha` is 40 hex characters. |
+| `legacy` | Optional `{issues, comments}` inserted into a throwaway copy of the issues and comments tables. The runner checks the file is unchanged at the end. |
+| `steps` | Ordered. Each step is one line in the report. |
+
+A step has `name`, `op`, optional `card` (a ref), optional `arm` (`{exit, output, alive}` for the next captured harness spawn), optional `release` (`{exit, output}` to finish the live harness), optional `git_changed` (paths the stub reports), and optional `expect`.
+
+Ops: `tick` (one runner loop), `advance` (`seconds`), `ack` (`actor`, or `digest: "bad"`), `ready`, `ask` (`blocked_question`, `blocked_options`, `blocked_default`), `answer` (`choice`), `edit`, `verdict` (`result`), `submit` (runner commit, stubbed `gh pr create`, server verify), `submit-raw` (`work_token`, including `$token` and `$old`), `merge` (`via`: `runner` or `http`), `claim`, `claim-race` (`claims`, one winner), `create-card`, `legacy-get`, `legacy-write`, `noop`.
+
+`expect` can check `status`, `error` (substring), card `state`, `verdict`, `verify_level`, `answer`, `answer_by`, `ready`, `contract_version`, `session_mode`, `resume_contains`, `same_session`, `sha`, `pr_number`, `spawns`, `argv0`, `argv_contains`, `git_calls`, `no_commit`, `no_merge`, `interrupted`, `wins`, and the legacy body, children, comment, and report.
+
+## Verification level
+
+Commands run on this branch. Claude, Codex, Cursor, and Grok were not executed. No live tt server, production database, board card, or deploy target was contacted. `deploy/com.tt.server.plist` and `scripts/deploy.sh` were not edited.
+
+```bash
+python3 -m turbo.scenarios run turbo/scenarios
 python3 -m pytest tests/ -q
 python3 -m mypy turbo --ignore-missing-imports
 node tests/smoke_turbo_ui.mjs
@@ -94,10 +126,8 @@ python3 -m compileall -q turbo tests
 bash scripts/secret-scan.sh .
 ```
 
-`mypy` is not part of CI.
+`mypy` is not part of CI. The scenario command starts a real server per scenario. The concurrent-claim scenario was also repeated on its own.
 
-A throwaway `python -m turbo` on port 7810, with `TURBO_DB` and `TT_LEGACY_DB` under `/tmp`, served `/`, the ink CSS, the board script, and the Galmuri font. `TT_LEGACY_DB` was created with `turbo/legacy_schema.py` and then only read. The same process listed a parent issue, its child, a comment, and `completion_report`. A direct insert on that file failed because the connection was read-only, and the issue rows were unchanged afterward.
-
-- Board page and the HTTP archive path, against that temporary database: live-verified.
-- Token gate, state machine, scope checks, driver argv, and the read-only assertions: unit-test-verified.
-- Live harness resume, webhook delivery, and `gh pr create` against a real repository: planned-only.
+- Scenario set, including the archive read and the rejected legacy write, against temporary sqlite files: live-verified. Harness binaries and `gh` were not executed.
+- Token gate, state machine, and driver argv in the smaller unit tests: unit-test-verified.
+- Live harness resume and `gh pr create` against a real repository: planned-only.

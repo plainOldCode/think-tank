@@ -1,0 +1,105 @@
+{
+  "name": "submit-without-token",
+  "description": "Submit with no work token is rejected. The agent is not a runner, so an agent submit is rejected too.",
+  "actors": [
+    {
+      "name": "ada",
+      "role": "human"
+    },
+    {
+      "name": "run-1",
+      "role": "runner",
+      "harnesses": [
+        "claude"
+      ]
+    },
+    {
+      "name": "worker",
+      "role": "agent"
+    },
+    {
+      "name": "probe",
+      "role": "probe"
+    }
+  ],
+  "git": {
+    "changed": [
+      "turbo/app.py"
+    ],
+    "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "pr_number": 4
+  },
+  "cards": [
+    {
+      "ref": "gate",
+      "title": "Gate the submit",
+      "body": "Implement the gate.",
+      "contract": "The runner submits. The agent does not.",
+      "harness": "claude",
+      "scope": {
+        "paths": [
+          "turbo/"
+        ],
+        "forbidden": [],
+        "verify": [
+          {
+            "cmd": "python3 -c \"import sys; raise SystemExit(0)\"",
+            "kind": "unit"
+          }
+        ]
+      }
+    }
+  ],
+  "steps": [
+    {
+      "name": "runner claims",
+      "op": "tick",
+      "arm": {
+        "alive": true,
+        "exit": 0
+      },
+      "expect": {
+        "state": "working"
+      }
+    },
+    {
+      "name": "agent marks ready without acking",
+      "op": "ready",
+      "expect": {
+        "status": 200,
+        "ready": true
+      }
+    },
+    {
+      "name": "raw submit with an empty token",
+      "op": "submit-raw",
+      "actor": "run-1",
+      "work_token": "",
+      "expect": {
+        "status": 403,
+        "error": "work token",
+        "state": "working"
+      }
+    },
+    {
+      "name": "runner submit before ack",
+      "op": "submit",
+      "expect": {
+        "status": 403,
+        "error": "ack required",
+        "state": "working"
+      }
+    },
+    {
+      "name": "agent submit is rejected",
+      "op": "submit-raw",
+      "actor": "worker",
+      "work_token": "",
+      "expect": {
+        "status": 403,
+        "error": "not a runner",
+        "state": "working"
+      }
+    }
+  ]
+}

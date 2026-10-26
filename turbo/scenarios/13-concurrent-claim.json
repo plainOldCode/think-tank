@@ -1,0 +1,85 @@
+{
+  "name": "concurrent-claim",
+  "description": "Two runners claim the same open card for two agents at the same time. One claim wins and the other is 409.",
+  "actors": [
+    {
+      "name": "ada",
+      "role": "human"
+    },
+    {
+      "name": "run-1",
+      "role": "runner",
+      "harnesses": [
+        "claude"
+      ]
+    },
+    {
+      "name": "worker",
+      "role": "agent"
+    },
+    {
+      "name": "probe",
+      "role": "probe"
+    },
+    {
+      "name": "run-2",
+      "role": "runner",
+      "harnesses": [
+        "claude"
+      ]
+    },
+    {
+      "name": "worker-2",
+      "role": "agent"
+    }
+  ],
+  "git": {
+    "changed": [
+      "turbo/app.py"
+    ],
+    "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "pr_number": 4
+  },
+  "cards": [
+    {
+      "ref": "gate",
+      "title": "One winner",
+      "body": "Implement the gate.",
+      "contract": "The runner submits. The agent does not.",
+      "harness": "claude",
+      "scope": {
+        "paths": [
+          "turbo/"
+        ],
+        "forbidden": [],
+        "verify": [
+          {
+            "cmd": "python3 -c \"import sys; raise SystemExit(0)\"",
+            "kind": "unit"
+          }
+        ]
+      }
+    }
+  ],
+  "steps": [
+    {
+      "name": "two runners claim together",
+      "op": "claim-race",
+      "card": "gate",
+      "claims": [
+        {
+          "actor": "run-1",
+          "agent": "worker"
+        },
+        {
+          "actor": "run-2",
+          "agent": "worker-2"
+        }
+      ],
+      "expect": {
+        "wins": 1,
+        "state": "working"
+      }
+    }
+  ]
+}

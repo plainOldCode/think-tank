@@ -1,0 +1,109 @@
+{
+  "name": "scope-reject",
+  "description": "A changed path outside scope.paths is rejected. A path inside scope.forbidden is rejected. Neither commits.",
+  "actors": [
+    {
+      "name": "ada",
+      "role": "human"
+    },
+    {
+      "name": "run-1",
+      "role": "runner",
+      "harnesses": [
+        "claude"
+      ]
+    },
+    {
+      "name": "worker",
+      "role": "agent"
+    },
+    {
+      "name": "probe",
+      "role": "probe"
+    }
+  ],
+  "git": {
+    "changed": [
+      "turbo/app.py"
+    ],
+    "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "pr_number": 4
+  },
+  "cards": [
+    {
+      "ref": "gate",
+      "title": "Gate the submit",
+      "body": "Implement the gate.",
+      "contract": "The runner submits. The agent does not.",
+      "harness": "claude",
+      "scope": {
+        "paths": [
+          "turbo/"
+        ],
+        "forbidden": [
+          "turbo/legacy_schema.py"
+        ],
+        "verify": [
+          {
+            "cmd": "python3 -c \"import sys; raise SystemExit(0)\"",
+            "kind": "unit"
+          }
+        ]
+      }
+    }
+  ],
+  "steps": [
+    {
+      "name": "runner claims",
+      "op": "tick",
+      "arm": {
+        "alive": true,
+        "exit": 0
+      },
+      "expect": {
+        "state": "working"
+      }
+    },
+    {
+      "name": "agent acks",
+      "op": "ack",
+      "expect": {
+        "status": 200
+      }
+    },
+    {
+      "name": "agent marks ready",
+      "op": "ready",
+      "expect": {
+        "status": 200
+      }
+    },
+    {
+      "name": "path outside scope",
+      "op": "submit",
+      "git_changed": [
+        "README.md"
+      ],
+      "expect": {
+        "status": 409,
+        "error": "outside scope",
+        "state": "working",
+        "no_commit": true
+      }
+    },
+    {
+      "name": "forbidden path",
+      "op": "submit",
+      "git_changed": [
+        "turbo/app.py",
+        "turbo/legacy_schema.py"
+      ],
+      "expect": {
+        "status": 409,
+        "error": "forbidden",
+        "state": "working",
+        "no_commit": true
+      }
+    }
+  ]
+}

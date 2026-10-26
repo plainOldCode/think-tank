@@ -1,0 +1,82 @@
+{
+  "name": "bad-digest-keeps-nonce",
+  "description": "A wrong body hash does not consume the nonce. The same nonce still acks.",
+  "actors": [
+    {
+      "name": "ada",
+      "role": "human"
+    },
+    {
+      "name": "run-1",
+      "role": "runner",
+      "harnesses": [
+        "claude"
+      ]
+    },
+    {
+      "name": "worker",
+      "role": "agent"
+    },
+    {
+      "name": "probe",
+      "role": "probe"
+    }
+  ],
+  "git": {
+    "changed": [
+      "turbo/app.py"
+    ],
+    "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "pr_number": 4
+  },
+  "cards": [
+    {
+      "ref": "gate",
+      "title": "Gate the submit",
+      "body": "Implement the gate.",
+      "contract": "The runner submits. The agent does not.",
+      "harness": "claude",
+      "scope": {
+        "paths": [
+          "turbo/"
+        ],
+        "forbidden": [],
+        "verify": [
+          {
+            "cmd": "python3 -c \"import sys; raise SystemExit(0)\"",
+            "kind": "unit"
+          }
+        ]
+      }
+    }
+  ],
+  "steps": [
+    {
+      "name": "runner claims",
+      "op": "tick",
+      "arm": {
+        "alive": true,
+        "exit": 0
+      },
+      "expect": {
+        "state": "working"
+      }
+    },
+    {
+      "name": "wrong digest",
+      "op": "ack",
+      "digest": "bad",
+      "expect": {
+        "status": 409,
+        "error": "digest"
+      }
+    },
+    {
+      "name": "same nonce acks",
+      "op": "ack",
+      "expect": {
+        "status": 200
+      }
+    }
+  ]
+}

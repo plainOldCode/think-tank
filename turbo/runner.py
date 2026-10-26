@@ -225,9 +225,11 @@ class Runner:
     def merge_card(self, card_id: str) -> dict:
         card = self.api.get(card_id)
         number = (card.get("pr") or {}).get("number")
+        # The server is the authority. A rejected merge must not reach gh.
+        result = self.api.merge(card_id, self.actor)
         if number:
             self.git.merge_pr(int(number), card.get("sha") or "")
-        return self.api.merge(card_id, self.actor)
+        return result
 
     def tick(self) -> None:
         now = self.clock()

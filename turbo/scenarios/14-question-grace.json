@@ -1,0 +1,93 @@
+{
+  "name": "question-grace",
+  "description": "The turn is still alive 120 seconds after the question, so the runner interrupts it and moves the card to awaiting-human.",
+  "actors": [
+    {
+      "name": "ada",
+      "role": "human"
+    },
+    {
+      "name": "run-1",
+      "role": "runner",
+      "harnesses": [
+        "claude"
+      ]
+    },
+    {
+      "name": "worker",
+      "role": "agent"
+    },
+    {
+      "name": "probe",
+      "role": "probe"
+    }
+  ],
+  "git": {
+    "changed": [
+      "turbo/app.py"
+    ],
+    "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "pr_number": 4
+  },
+  "cards": [
+    {
+      "ref": "gate",
+      "title": "Still talking",
+      "body": "Implement the gate.",
+      "contract": "The runner submits. The agent does not.",
+      "harness": "claude",
+      "scope": {
+        "paths": [
+          "turbo/"
+        ],
+        "forbidden": [],
+        "verify": [
+          {
+            "cmd": "python3 -c \"import sys; raise SystemExit(0)\"",
+            "kind": "unit"
+          }
+        ]
+      }
+    }
+  ],
+  "steps": [
+    {
+      "name": "runner claims",
+      "op": "tick",
+      "arm": {
+        "alive": true,
+        "exit": 0
+      },
+      "expect": {
+        "state": "working"
+      }
+    },
+    {
+      "name": "agent asks",
+      "op": "ask",
+      "blocked_question": "Ship it?",
+      "blocked_options": [
+        "yes",
+        "no"
+      ],
+      "blocked_default": "no",
+      "expect": {
+        "state": "question"
+      }
+    },
+    {
+      "name": "clock passes the grace",
+      "op": "advance",
+      "seconds": 121
+    },
+    {
+      "name": "runner interrupts the turn",
+      "op": "tick",
+      "expect": {
+        "state": "awaiting-human",
+        "interrupted": true,
+        "spawns": 1
+      }
+    }
+  ]
+}

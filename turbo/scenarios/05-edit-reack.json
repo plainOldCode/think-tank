@@ -1,0 +1,119 @@
+{
+  "name": "edit-reack",
+  "description": "An edit after ack clears the work token. The old token is rejected. A new ack is required.",
+  "actors": [
+    {
+      "name": "ada",
+      "role": "human"
+    },
+    {
+      "name": "run-1",
+      "role": "runner",
+      "harnesses": [
+        "claude"
+      ]
+    },
+    {
+      "name": "worker",
+      "role": "agent"
+    },
+    {
+      "name": "probe",
+      "role": "probe"
+    }
+  ],
+  "git": {
+    "changed": [
+      "turbo/app.py"
+    ],
+    "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "pr_number": 4
+  },
+  "cards": [
+    {
+      "ref": "gate",
+      "title": "Gate the submit",
+      "body": "Implement the gate.",
+      "contract": "The runner submits. The agent does not.",
+      "harness": "claude",
+      "scope": {
+        "paths": [
+          "turbo/"
+        ],
+        "forbidden": [],
+        "verify": [
+          {
+            "cmd": "python3 -c \"import sys; raise SystemExit(0)\"",
+            "kind": "unit"
+          }
+        ]
+      }
+    }
+  ],
+  "steps": [
+    {
+      "name": "runner claims",
+      "op": "tick",
+      "arm": {
+        "alive": true,
+        "exit": 0
+      },
+      "expect": {
+        "state": "working"
+      }
+    },
+    {
+      "name": "agent acks",
+      "op": "ack",
+      "expect": {
+        "status": 200
+      }
+    },
+    {
+      "name": "human edits the body",
+      "op": "edit",
+      "actor": "ada",
+      "body": "Edited body.",
+      "expect": {
+        "status": 200,
+        "contract_version": 2,
+        "state": "working"
+      }
+    },
+    {
+      "name": "agent marks ready",
+      "op": "ready",
+      "expect": {
+        "status": 200,
+        "ready": true
+      }
+    },
+    {
+      "name": "old token is rejected",
+      "op": "submit-raw",
+      "actor": "run-1",
+      "work_token": "$old",
+      "expect": {
+        "status": 403,
+        "error": "work token",
+        "state": "working"
+      }
+    },
+    {
+      "name": "agent re-acks the edited card",
+      "op": "ack",
+      "expect": {
+        "status": 200
+      }
+    },
+    {
+      "name": "runner submits with the new token",
+      "op": "submit",
+      "expect": {
+        "status": 200,
+        "state": "review",
+        "verify_level": "unit-test-verified"
+      }
+    }
+  ]
+}

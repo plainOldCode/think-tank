@@ -1,0 +1,165 @@
+{
+  "name": "happy-path",
+  "description": "Claim, ack, work, runner submit, server verify, approve, merge. git and gh are stubbed.",
+  "actors": [
+    {
+      "name": "ada",
+      "role": "human"
+    },
+    {
+      "name": "run-1",
+      "role": "runner",
+      "harnesses": [
+        "claude"
+      ]
+    },
+    {
+      "name": "worker",
+      "role": "agent"
+    },
+    {
+      "name": "probe",
+      "role": "probe"
+    }
+  ],
+  "git": {
+    "changed": [
+      "turbo/app.py"
+    ],
+    "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "pr_number": 4
+  },
+  "cards": [
+    {
+      "ref": "gate",
+      "title": "Gate the submit",
+      "body": "Implement the gate.",
+      "contract": "The runner submits. The agent does not.",
+      "harness": "claude",
+      "scope": {
+        "paths": [
+          "turbo/"
+        ],
+        "forbidden": [],
+        "verify": [
+          {
+            "cmd": "python3 -c \"import sys; raise SystemExit(0)\"",
+            "kind": "unit"
+          }
+        ]
+      }
+    }
+  ],
+  "steps": [
+    {
+      "name": "runner claims",
+      "op": "tick",
+      "arm": {
+        "alive": true,
+        "exit": 0
+      },
+      "expect": {
+        "state": "working",
+        "assignee": "run-1",
+        "agent": "worker",
+        "argv0": "claude",
+        "session_mode": "start",
+        "spawns": 1
+      }
+    },
+    {
+      "name": "agent acks the body",
+      "op": "ack",
+      "actor": "worker",
+      "card": "gate",
+      "expect": {
+        "status": 200
+      }
+    },
+    {
+      "name": "agent marks the tree ready",
+      "op": "ready",
+      "actor": "worker",
+      "card": "gate",
+      "expect": {
+        "status": 200,
+        "ready": true
+      }
+    },
+    {
+      "name": "harness exits",
+      "op": "tick",
+      "release": {
+        "exit": 0
+      },
+      "expect": {
+        "state": "working",
+        "spawns": 1
+      }
+    },
+    {
+      "name": "runner submits",
+      "op": "submit",
+      "card": "gate",
+      "expect": {
+        "status": 200,
+        "state": "review",
+        "verify_level": "unit-test-verified",
+        "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "pr_number": 4,
+        "git_calls": [
+          [
+            "git",
+            "commit"
+          ],
+          [
+            "gh",
+            "pr",
+            "create"
+          ]
+        ]
+      }
+    },
+    {
+      "name": "merge before approve is rejected and does not call gh",
+      "op": "merge",
+      "via": "runner",
+      "actor": "run-1",
+      "card": "gate",
+      "expect": {
+        "status": 409,
+        "state": "review",
+        "no_merge": true
+      }
+    },
+    {
+      "name": "probe approves",
+      "op": "verdict",
+      "actor": "probe",
+      "result": "approve",
+      "card": "gate",
+      "expect": {
+        "status": 200,
+        "verdict": "approve"
+      }
+    },
+    {
+      "name": "assignee runner merges",
+      "op": "merge",
+      "via": "runner",
+      "actor": "run-1",
+      "card": "gate",
+      "expect": {
+        "status": 200,
+        "state": "merged",
+        "git_calls": [
+          [
+            "gh",
+            "pr",
+            "merge"
+          ]
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,167 @@
+{
+  "name": "merge-authority",
+  "description": "A human and the agent cannot merge. A runner that does not hold the card cannot merge. The assignee runner can, after approve.",
+  "actors": [
+    {
+      "name": "ada",
+      "role": "human"
+    },
+    {
+      "name": "run-1",
+      "role": "runner",
+      "harnesses": [
+        "claude"
+      ]
+    },
+    {
+      "name": "worker",
+      "role": "agent"
+    },
+    {
+      "name": "probe",
+      "role": "probe"
+    },
+    {
+      "name": "run-2",
+      "role": "runner",
+      "harnesses": [
+        "claude"
+      ]
+    },
+    {
+      "name": "worker-2",
+      "role": "agent"
+    }
+  ],
+  "git": {
+    "changed": [
+      "turbo/app.py"
+    ],
+    "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "pr_number": 4
+  },
+  "cards": [
+    {
+      "ref": "gate",
+      "title": "Gate the submit",
+      "body": "Implement the gate.",
+      "contract": "The runner submits. The agent does not.",
+      "harness": "claude",
+      "scope": {
+        "paths": [
+          "turbo/"
+        ],
+        "forbidden": [],
+        "verify": [
+          {
+            "cmd": "python3 -c \"import sys; raise SystemExit(0)\"",
+            "kind": "unit"
+          }
+        ]
+      }
+    }
+  ],
+  "steps": [
+    {
+      "name": "runner claims",
+      "op": "tick",
+      "arm": {
+        "alive": true,
+        "exit": 0
+      },
+      "expect": {
+        "state": "working"
+      }
+    },
+    {
+      "name": "agent acks",
+      "op": "ack",
+      "expect": {
+        "status": 200
+      }
+    },
+    {
+      "name": "agent marks ready",
+      "op": "ready",
+      "expect": {
+        "status": 200
+      }
+    },
+    {
+      "name": "harness exits",
+      "op": "tick",
+      "release": {
+        "exit": 0
+      },
+      "expect": {
+        "state": "working"
+      }
+    },
+    {
+      "name": "runner submits",
+      "op": "submit",
+      "expect": {
+        "status": 200,
+        "state": "review"
+      }
+    },
+    {
+      "name": "probe approves",
+      "op": "verdict",
+      "result": "approve",
+      "expect": {
+        "verdict": "approve"
+      }
+    },
+    {
+      "name": "agent cannot merge its own work",
+      "op": "merge",
+      "via": "http",
+      "actor": "worker",
+      "expect": {
+        "status": 403,
+        "error": "not a probe or runner",
+        "state": "review"
+      }
+    },
+    {
+      "name": "human cannot merge",
+      "op": "merge",
+      "via": "http",
+      "actor": "ada",
+      "expect": {
+        "status": 403,
+        "error": "not a probe or runner",
+        "state": "review"
+      }
+    },
+    {
+      "name": "other runner cannot merge",
+      "op": "merge",
+      "via": "http",
+      "actor": "run-2",
+      "expect": {
+        "status": 403,
+        "error": "assignee runner",
+        "state": "review"
+      }
+    },
+    {
+      "name": "assignee runner merges",
+      "op": "merge",
+      "via": "runner",
+      "actor": "run-1",
+      "expect": {
+        "status": 200,
+        "state": "merged",
+        "git_calls": [
+          [
+            "gh",
+            "pr",
+            "merge"
+          ]
+        ]
+      }
+    }
+  ]
+}

@@ -115,10 +115,11 @@ class Store:
         self.con.row_factory = sqlite3.Row
         self.con.execute("PRAGMA journal_mode=WAL")
         self.con.execute("PRAGMA foreign_keys=ON")
-        self.con.executescript(SCHEMA)
-        self.con.commit()
         self.lock = threading.RLock()
         self._depth = 0
+        with self.lock:
+            self.con.executescript(SCHEMA)
+            self.con.commit()
 
     def close(self) -> None:
         self.con.close()
@@ -139,16 +140,19 @@ class Store:
                 self._depth -= 1
 
     def count_actors(self) -> int:
-        return int(self.con.execute("SELECT COUNT(*) FROM actors").fetchone()[0])
+        with self.lock:
+            return int(self.con.execute("SELECT COUNT(*) FROM actors").fetchone()[0])
 
     def insert_actor(self, name: str, role: str, harnesses: list[str]) -> None:
-        self.con.execute(
-            "INSERT INTO actors (name, role, harnesses) VALUES (?, ?, ?)",
-            (name, role, ",".join(harnesses)),
-        )
+        with self.lock:
+            self.con.execute(
+                "INSERT INTO actors (name, role, harnesses) VALUES (?, ?, ?)",
+                (name, role, ",".join(harnesses)),
+            )
 
     def actor(self, name: str) -> dict | None:
-        row = self.con.execute("SELECT * FROM actors WHERE name=?", (name,)).fetchone()
+        with self.lock:
+            row = self.con.execute("SELECT * FROM actors WHERE name=?", (name,)).fetchone()
         if not row:
             return None
         harnesses = [h for h in (row["harnesses"] or "").split(",") if h]
@@ -169,20 +173,23 @@ class Store:
     def insert_card(self, fields: dict) -> None:
         cols = ", ".join(fields)
         marks = ", ".join("?" for _ in fields)
-        self.con.execute(f"INSERT INTO cards ({cols}) VALUES ({marks})", list(fields.values()))
+        with self.lock:
+            self.con.execute(f"INSERT INTO cards ({cols}) VALUES ({marks})", list(fields.values()))
 
     def update_card(self, card_id: str, **fields) -> None:
         unknown = set(fields) - CARD_COLUMNS
         if unknown:
             raise RuntimeError("unknown card columns: " + ", ".join(sorted(unknown)))
         sets = ", ".join(f"{key}=?" for key in fields)
-        self.con.execute(
-            f"UPDATE cards SET {sets} WHERE id=?",
-            [*fields.values(), card_id],
-        )
+        with self.lock:
+            self.con.execute(
+                f"UPDATE cards SET {sets} WHERE id=?",
+                [*fields.values(), card_id],
+            )
 
     def get(self, card_id: str) -> dict:
-        row = self.con.execute("SELECT * FROM cards WHERE id=?", (card_id,)).fetchone()
+        with self.lock:
+            row = self.con.execute("SELECT * FROM cards WHERE id=?", (card_id,)).fetchone()
         if not row:
             raise TurboError(404, "card not found")
         return card_from_row(row)
@@ -197,28 +204,33 @@ class Store:
             sql += " AND harness=?"
             args.append(harness)
         sql += " ORDER BY created_at, id"
-        return [card_from_row(row) for row in self.con.execute(sql, args).fetchall()]
+        with self.lock:
+            rows = self.con.execute(sql, args).fetchall()
+        return [card_from_row(row) for row in rows]
 
     def busy_card(self, assignee: str) -> dict | None:
-        row = self.con.execute(
-            "SELECT * FROM cards WHERE assignee=? AND state IN "
-            "('working','question','awaiting-human','submit','review') "
-            "ORDER BY updated_at LIMIT 1",
-            (assignee,),
-        ).fetchone()
+        with self.lock:
+            row = self.con.execute(
+                "SELECT * FROM cards WHERE assignee=? AND state IN "
+                "('working','question','awaiting-human','submit','review') "
+                "ORDER BY updated_at LIMIT 1",
+                (assignee,),
+            ).fetchone()
         return card_from_row(row) if row else None
 
     def add_event(self, card_id: str, kind: str, payload: dict, ts: str) -> None:
-        self.con.execute(
-            "INSERT INTO events (card_id, kind, payload, ts) VALUES (?, ?, ?, ?)",
-            (card_id, kind, json.dumps(payload, ensure_ascii=False, sort_keys=True), ts),
-        )
+        with self.lock:
+            self.con.execute(
+                "INSERT INTO events (card_id, kind, payload, ts) VALUES (?, ?, ?, ?)",
+                (card_id, kind, json.dumps(payload, ensure_ascii=False, sort_keys=True), ts),
+            )
 
     def events(self, card_id: str, limit: int = 50) -> list[dict]:
-        rows = self.con.execute(
-            "SELECT id, kind, payload, ts FROM events WHERE card_id=? ORDER BY id DESC LIMIT ?",
-            (card_id, limit),
-        ).fetchall()
+        with self.lock:
+            rows = self.con.execute(
+                "SELECT id, kind, payload, ts FROM events WHERE card_id=? ORDER BY id DESC LIMIT ?",
+                (card_id, limit),
+            ).fetchall()
         out = []
         for row in reversed(rows):
             out.append({
@@ -230,29 +242,34 @@ class Store:
         return out
 
     def add_resume(self, card_id: str, token: str, kind: str, prompt: str, ts: str) -> None:
-        self.con.execute(
-            "INSERT INTO resumes (card_id, token, kind, prompt, created_at) VALUES (?, ?, ?, ?, ?)",
-            (card_id, token, kind, prompt, ts),
-        )
+        with self.lock:
+            self.con.execute(
+                "INSERT INTO resumes (card_id, token, kind, prompt, created_at) VALUES (?, ?, ?, ?, ?)",
+                (card_id, token, kind, prompt, ts),
+            )
 
     def pending_resume(self, card_id: str) -> dict | None:
-        row = self.con.execute(
-            "SELECT * FROM resumes WHERE card_id=? AND consumed=0 ORDER BY id LIMIT 1",
-            (card_id,),
-        ).fetchone()
+        with self.lock:
+            row = self.con.execute(
+                "SELECT * FROM resumes WHERE card_id=? AND consumed=0 ORDER BY id LIMIT 1",
+                (card_id,),
+            ).fetchone()
         return dict(row) if row else None
 
     def resume_by_token(self, token: str) -> dict | None:
-        row = self.con.execute("SELECT * FROM resumes WHERE token=?", (token,)).fetchone()
+        with self.lock:
+            row = self.con.execute("SELECT * FROM resumes WHERE token=?", (token,)).fetchone()
         return dict(row) if row else None
 
     def consume_resume(self, token: str) -> None:
-        self.con.execute("UPDATE resumes SET consumed=1 WHERE token=?", (token,))
+        with self.lock:
+            self.con.execute("UPDATE resumes SET consumed=1 WHERE token=?", (token,))
 
     def awaiting_deadline(self, now_stamp: str) -> list[dict]:
-        rows = self.con.execute(
-            "SELECT * FROM cards WHERE state='awaiting-human' AND answer='' "
-            "AND default_deadline!='' AND default_deadline<=?",
-            (now_stamp,),
-        ).fetchall()
+        with self.lock:
+            rows = self.con.execute(
+                "SELECT * FROM cards WHERE state='awaiting-human' AND answer='' "
+                "AND default_deadline!='' AND default_deadline<=?",
+                (now_stamp,),
+            ).fetchall()
         return [card_from_row(row) for row in rows]
