@@ -1,8 +1,10 @@
 # Shadow run
 
-이 문서는 설계다. 여기에 적힌 poller, shadow mode, replay, 비교 기록, 단계, 임계값은 모두 **계획**이며 구현되어 있지 않다. 숫자는 사람이 고르기 전의 placeholder이고, 표에 TBD로 적혀 있다.
+이 문서는 설계다. 여기에 적힌 poller, shadow mode, replay, 비교 기록, 단계, 임계값, 그리고 mainplane에서 빌린 event log, step record, `idempotency_key`, upgrade 검사는 모두 **계획**이며 구현되어 있지 않다. 숫자는 사람이 고르기 전의 placeholder이고, 표에 TBD로 적혀 있다.
 
 오늘 돌아가는 절차는 [TURBO.md](../TURBO.md)의 cutover다. 그 절차는 legacy claim을 멈추고 turbo를 권위 있는 board로 만든다. Shadow run은 그 결정 앞에서 하는 proof다. Shadow run이 돌아가는 동안 권위는 legacy main think-tank에 있다.
+
+Mainplane에서 가져온 것은 설계 패턴뿐이다. 코드는 복사하지 않았다. 저작권 표시는 `Copyright (c) 2026 Alexander Yue`이고, 저장소는 [mainplane-ai/mainplane](https://github.com/mainplane-ai/mainplane), 라이선스는 MIT다. 출처와, 나중에 코드를 복사할 때의 규칙은 [CREDITS.md](../CREDITS.md)에 있다.
 
 ## 목표
 
@@ -48,7 +50,7 @@ flowchart LR
 
 Board끼리 직접 붙이지 않는다. Main 서버를 turbo가 호출해 쓰지 않고, turbo 서버를 main이 호출하지도 않는다. Poller와 migrate가 유일한 다리다.
 
-P1에서는 poller 대신 이미 끝난 card의 고정 export를 넣어도 된다. 입력은 card의 title, body, contract, scope, harness다. Main이 만든 해답 diff는 입력에 넣지 않는다.
+P1에서는 poller 대신 이미 끝난 card의 고정 export를 넣어도 된다. 입력은 card의 title, body, contract, scope, harness다. Main이 만든 해답 diff는 입력에 넣지 않는다. 그 export는 column snapshot이 아니라 append-only event log다. 상태는 log에서 다시 유도한다. P1은 그 log를 그대로 replay한다.
 
 ## Side effect 격리
 
@@ -71,6 +73,8 @@ Timeout은 placeholder다. Turbo 질문이 생긴 뒤 main에서 대응 답이 �
 
 Shadow 질문에는 `blocked_default`를 적용하지 않는다. 답은 main replay에서만 온다. `confirm: true`인 질문은 오늘의 규칙대로도 자동 적용되지 않는다.
 
+Answer와 event post에는 `idempotency_key`를 둔다. Runner가 같은 post를 다시 보내면 log에는 한 번만 남는다. 재시도가 divergence로 세지지 않게 하려는 계획이다.
+
 어떤 main 이벤트가 어느 turbo 질문에 대응하는지는 열린 질문이다. 아래를 본다.
 
 ## 카드마다 비교하는 것
@@ -78,6 +82,10 @@ Shadow 질문에는 `blocked_default`를 적용하지 않는다. 답은 main rep
 짝마다 per-card JSON 하나를 남긴다. 모아서 aggregate report를 만든다. TT 통계 bot이 그 report를 차트로 그릴 수 있다. Bot을 바꾸는 일은 이 설계에 없다.
 
 기록에 secret, bearer, work token, nonce를 넣지 않는다. 경로는 repo 상대 경로만 쓴다.
+
+Card의 상태는 column을 덮어쓴 값이 아니다. Append-only event log에서 유도한다. Main과 turbo의 divergence는 그 두 log의 diff다.
+
+Cost의 token은 card 합계 하나가 아니다. Turn마다 남긴 step record의 usage를 더한다. 각 step은 request의 sha256, model, harness version을 가진다. 같은 입력인지는 이 셋이 main step과 같은지로 본다. 모델이 달랐으면 outcome 차이를 구현 차이로 세지 않는다.
 
 Outcome:
 
@@ -101,8 +109,9 @@ Contract:
 
 Cost:
 
-- Token 수.
+- Token 수. Step `usage`의 input, output, cache read, cache write를 합한다.
 - Runtime.
+- 같은 입력 여부. Step의 request sha256, model, harness version.
 
 계획된 per-card 기록의 모양이다. 필드가 비어 있을 수 있고, 없는 값은 `null`이다.
 
@@ -135,17 +144,29 @@ Cost:
   },
   "cost": {
     "tokens": null,
-    "runtime_s": null
+    "runtime_s": null,
+    "same_input": null
   },
+  "steps": [
+    {
+      "n": 1,
+      "request_sha256": null,
+      "model": null,
+      "harness_version": null,
+      "usage": {"input": null, "output": null, "cache_read": null, "cache_write": null}
+    }
+  ],
   "divergences": ["question main never asked"]
 }
 ```
 
-Aggregate report는 카드 수, terminal agreement, overlap의 중앙값, block 종류별 횟수, lead time과 question 수의 비율, token 합, runtime 합을 담는다.
+Aggregate report는 카드 수, terminal agreement, overlap의 중앙값, block 종류별 횟수, lead time과 question 수의 비율, token 합, runtime 합, log diff가 있는 card 수, `same_input` 비율을 담는다.
 
 ## 단계
 
-P1 replay. 이미 끝난 main card 수십 장을 turbo에 넣는다. 정답은 알려져 있다. 끝난 diff, verdict, 테스트 결과가 ground truth다. Live poller는 필요 없다. Side effect 격리는 P1에도 적용한다.
+P1 replay. 이미 끝난 main card 수십 장을 turbo에 넣는다. 정답은 알려져 있다. 끝난 diff, verdict, 테스트 결과가 ground truth다. 입력은 그 card의 event log다. Live poller는 필요 없다. Side effect 격리는 P1에도 적용한다.
+
+Legacy migration scenario도 계획이다. 이전 형태의 데이터를 넣고, migrate하고, issue와 comment와 유도된 상태가 남았는지 본다. 오늘의 scenario 파일에는 아직 없다.
 
 P2 live sample. Poller가 main을 읽기 전용으로 본다. Label이 `shadow`인 card만 turbo에 만든다. Harness 비용은 이 표본으로 한정한다.
 
@@ -180,6 +201,24 @@ Repo가 부딪힐 수 있다. Shadow 작업은 별도 repo, fork, 또는 `shadow
 
 Legacy board와 legacy DB는 그대로다. Poller와 migrate는 읽기 전용 연결만 쓴다.
 
+## Ideas borrowed from mainplane
+
+이 절은 계획이다. 빌린 것은 아이디어와 설계 패턴이고, [mainplane](https://github.com/mainplane-ai/mainplane)의 코드는 한 줄도 복사하지 않았다. 저장소는 Go로 되어 있고 라이선스는 MIT다. LICENSE의 저작권 줄은 `Copyright (c) 2026 Alexander Yue`다. 저자와 이후 복사 규칙은 [CREDITS.md](../CREDITS.md)에 있다.
+
+1. Event log. Card는 append-only event log다. 상태는 log에서 유도하고 column에 덮어쓰지 않는다. Mainplane은 record를 이어 붙이고 [`Derive`](https://github.com/mainplane-ai/mainplane/blob/main/pkg/statefile/context.go)로 status를 읽는다. Record 형식은 [`record.go`](https://github.com/mainplane-ai/mainplane/blob/main/pkg/statefile/record.go)다. Main과 turbo의 divergence는 그 log의 diff다. P1 replay는 끝난 card의 log를 그대로 넣는다.
+
+2. Step record. Turn마다 request의 sha256, model, token usage, harness version을 남긴다. Mainplane step header의 `request`, `model`, `usage`, `harness`가 그 자리다 ([`record.go`](https://github.com/mainplane-ai/mainplane/blob/main/pkg/statefile/record.go)). Cost는 이 usage의 합이다. 같은 입력인지는 이 값들로 본다.
+
+3. `idempotency_key`. Answer와 event post에 키를 둔다. 같은 키의 재시도는 log에 한 번만 남는다. Mainplane은 `Idempotency-Key` header로 이미 가진 part를 다시 append하지 않는다 ([`http.go`](https://github.com/mainplane-ai/mainplane/blob/main/pkg/harness/http.go)). 필드는 [`record.go`](https://github.com/mainplane-ai/mainplane/blob/main/pkg/statefile/record.go)의 `idempotency_key`다.
+
+4. Upgrade 검사. 이전 버전 데이터를 넣고, upgrade하고, 데이터가 남았는지 본다. Mainplane e2e는 이전 harness에 session을 만든 뒤 새 버전으로 올리고, provider와 session이 남고 그 session이 다시 step하는지 확인한다 ([`e2e/main.go`](https://github.com/mainplane-ai/mainplane/blob/main/e2e/main.go)의 `upgrade`). Legacy migration scenario에 같은 순서를 쓴다. 오늘의 scenario 파일에는 아직 없다.
+
+빌리지 않는 것:
+
+- AGENTS.md 주입을 규칙으로 쓰지 않는다. Mainplane은 session을 열 때 drive의 AGENTS.md를 읽어 system record에 넣는다 ([`agents.go`](https://github.com/mainplane-ai/mainplane/blob/main/pkg/harness/agents.go)). Turbo의 규칙은 token gate와 `scope`다.
+- Worker의 full shell을 주지 않는다. 그 scan은 worker interpreter로 `run`을 실행한다. Turbo는 runner가 harness process를 소유한다.
+- 테스트 없는 자세를 따르지 않는다. 이 기록을 쓸 때 mainplane의 `main`에는 `*_test.go`가 없었고, 검사는 [`e2e/main.go`](https://github.com/mainplane-ai/mainplane/blob/main/e2e/main.go)였다. Turbo는 scenario coverage를 유지한다. Upgrade에서 빌리는 것은 데이터가 남는지 보는 순서뿐이다.
+
 ## 사람에게 열린 질문
 
 1. P2의 `shadow` label은 누가, main의 어느 필드에 다는가.
@@ -189,7 +228,7 @@ Legacy board와 legacy DB는 그대로다. Poller와 migrate는 읽기 전용 �
 5. 격리의 기본값. 별도 fork인지 `shadow/*` branch인지. P1에서 fork PR을 남길지.
 6. Shadow 표본에 넣을 harness. OpenCode와 Hermes는 handoff-only라 질문 뒤 같은 session resume가 없다.
 7. Human touch에 edit를 넣을지, answer와 review만 넣을지.
-8. Token을 어느 기록에서 읽을지.
+8. Main log에 step `usage`가 없을 때 cost 비교를 뺄지, main 쪽에도 같은 step record를 남길지.
 9. Main card가 진행 중에 바뀌면 turbo card를 고치고 다시 ack할지.
 10. P1에 docs와 config처럼 ground truth diff가 없는 card를 넣을지.
 11. Noise floor용 재실행 장수.
