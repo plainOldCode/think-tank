@@ -57,6 +57,8 @@ Open, with the choice this cut made:
 
 Turbo replaces the legacy board. The archive does not keep taking claims.
 
+The proof stage before a human chooses this cutover is a planned shadow run: [turbo/SHADOW_RUN.md](turbo/SHADOW_RUN.md).
+
 1. Freeze legacy claims. Stop the old server. Do not claim, lease, or answer on the legacy file after this.
 2. Dry-run: `python -m turbo.migrate --legacy <legacy.db> --turbo <turbo.db> --dry-run`. The legacy file is opened read-only. A missing turbo file is not created.
 3. Import: the same command without `--dry-run`. Re-running does not duplicate ids or comments.
