@@ -59,7 +59,7 @@ Shadow mode에서 turbo의 작업 트리는 main repo가 아니다.
 - 별도 repo나 fork, 또는 `shadow/*` branch에서 작업한다.
 - 실제 upstream PR은 열지 않는다. Diff와 SHA만 기록한다. Fork 위에 PR을 남기는 것은 선택이다.
 - Merge 판단은 기록만 한다. Main에 merge를 실행하지 않는다.
-- 사람에게 알리지 않는다. Board ping, 메신저, wake가 없다.
+- 사람에게 알리지 않는다. Board ping, 메신저, wake가 없고, [TURBO.md](../TURBO.md)에 계획된 Hermes Telegram 알림도 shadow run에서는 끈다.
 
 Turbo card의 submit은 shadow tree의 SHA와 changed path를 남긴다. `gh pr create`와 `gh pr merge`는 이 모드에서 실제 remote에 나가지 않는다.
 

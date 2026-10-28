@@ -53,6 +53,22 @@ Open, with the choice this cut made:
 - There is no push channel. `python -m turbo.runner` ticks on an interval (default 5 seconds). That loop is the runner's schedule, not an agent wait.
 - A handoff or a turn that exits without a question or a ready tree stays `working`, so that runner does not claim another card. `metrics.stuck` is how that card stays visible.
 
+## Planned
+
+Not implemented. Verification level: planned-only.
+
+Awaiting-human notification via Hermes to Telegram. A remote session on the main think-tank left a selection prompt waiting for hours, which is why a question belongs on the board and why the person needs a ping when the board is waiting.
+
+The board stays the only place a question lives and the only place an answer is accepted. The runner still resumes from that board answer. The Telegram message carries the card id, the title, a one-line summary of the question, and a link to the card. It does not carry the answer buttons. `confirm: true` questions and the interrupt path (SIGINT, then SIGKILL, card already in `awaiting-human`) are included. An optional second trigger is a card appearing in `metrics().stuck`.
+
+Delivery uses the Hermes agent's existing Telegram channel. Hermes stays handoff-only as a harness: the runner does not spawn it, and this notifier is not a session. The send is fire-and-forget. If it fails, the card state does not change and the failure is logged.
+
+One notification per question, keyed by the question id (the planned `idempotency_key` on that event). A later tick does not send it again. Stuck notices are deduplicated the same way, once per stuck episode, and the sender is rate-limited.
+
+Off unless configured. `TURBO_NOTIFY` enables it. `TURBO_NOTIFY_BOT_TOKEN` and `TURBO_NOTIFY_CHAT_ID` are read from the host environment. Those values are not written into the repo, the database, or the message log. In a shadow run the notifier stays off even when `TURBO_NOTIFY` is set, so the person is not paged twice. See [turbo/SHADOW_RUN.md](turbo/SHADOW_RUN.md).
+
+A future scenario drives a stub notifier. Tests do not call Telegram or Hermes.
+
 ## Cutover
 
 Turbo replaces the legacy board. The archive does not keep taking claims.
@@ -183,3 +199,4 @@ CI runs secret-scan, pytest, mypy, the UI smoke, and `scripts/scenario-coverage.
 - Scenario set, including the archive read and the rejected legacy write, against temporary sqlite files: live-verified. Harness binaries and `gh` were not executed.
 - Token gate, state machine, and driver argv in the smaller unit tests: unit-test-verified.
 - Live harness resume and `gh pr create` against a real repository: planned-only.
+- Awaiting-human notification via Hermes to Telegram: planned-only. No scenario calls Telegram or Hermes.
