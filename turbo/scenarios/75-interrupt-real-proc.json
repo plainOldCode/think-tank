@@ -1,0 +1,88 @@
+{
+  "name": "interrupt-real-proc",
+  "description": "Question grace sends SIGINT to a real child that is still asleep.",
+  "actors": [
+    {
+      "name": "ada",
+      "role": "human"
+    },
+    {
+      "name": "run-1",
+      "role": "runner",
+      "harnesses": [
+        "claude"
+      ]
+    },
+    {
+      "name": "worker",
+      "role": "agent"
+    },
+    {
+      "name": "probe",
+      "role": "probe"
+    }
+  ],
+  "git": {
+    "changed": [
+      "turbo/app.py"
+    ],
+    "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "pr_number": 4
+  },
+  "cards": [
+    {
+      "ref": "gate",
+      "title": "Still talking",
+      "body": "Implement the gate.",
+      "contract": "The runner submits. The agent does not.",
+      "harness": "claude",
+      "scope": {
+        "paths": ["turbo/"],
+        "forbidden": [],
+        "verify": [
+          {"cmd": "python3 -c \"import sys; raise SystemExit(0)\"", "kind": "unit"}
+        ]
+      }
+    }
+  ],
+  "proc": "subprocess",
+  "steps": [
+    {
+      "name": "spawn",
+      "op": "tick",
+      "arm": {
+        "mode": "sleep"
+      },
+      "expect": {
+        "state": "working",
+        "argv0": "claude"
+      }
+    },
+    {
+      "name": "agent asks",
+      "op": "ask",
+      "blocked_question": "Ship it?",
+      "blocked_options": [
+        "yes",
+        "no"
+      ],
+      "blocked_default": "no",
+      "expect": {
+        "state": "question"
+      }
+    },
+    {
+      "name": "clock passes the grace",
+      "op": "advance",
+      "seconds": 120
+    },
+    {
+      "name": "interrupt",
+      "op": "tick",
+      "expect": {
+        "state": "awaiting-human",
+        "interrupted": true
+      }
+    }
+  ]
+}

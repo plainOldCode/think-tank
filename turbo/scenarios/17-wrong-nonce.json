@@ -1,0 +1,92 @@
+{
+  "name": "wrong-nonce",
+  "description": "Ack rejects a nonce that does not match the claim, including one of a different length.",
+  "actors": [
+    {
+      "name": "ada",
+      "role": "human"
+    },
+    {
+      "name": "run-1",
+      "role": "runner",
+      "harnesses": [
+        "claude"
+      ]
+    },
+    {
+      "name": "worker",
+      "role": "agent"
+    },
+    {
+      "name": "probe",
+      "role": "probe"
+    }
+  ],
+  "git": {
+    "changed": [
+      "turbo/app.py"
+    ],
+    "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "pr_number": 4
+  },
+  "cards": [
+    {
+      "ref": "gate",
+      "title": "Gate the submit",
+      "body": "Implement the gate.",
+      "contract": "The runner submits. The agent does not.",
+      "harness": "claude",
+      "scope": {
+        "paths": [
+          "turbo/"
+        ],
+        "forbidden": [],
+        "verify": [
+          {
+            "cmd": "python3 -c \"import sys; raise SystemExit(0)\"",
+            "kind": "unit"
+          }
+        ]
+      }
+    }
+  ],
+  "steps": [
+    {
+      "name": "runner claims",
+      "op": "tick",
+      "arm": {
+        "alive": true,
+        "exit": 0
+      },
+      "expect": {
+        "state": "working",
+        "assignee": "run-1"
+      }
+    },
+    {
+      "name": "wrong nonce",
+      "op": "ack",
+      "nonce": "wrong",
+      "expect": {
+        "status": 409,
+        "error": "nonce does not match"
+      }
+    },
+    {
+      "name": "short nonce",
+      "op": "ack",
+      "nonce": "short",
+      "expect": {
+        "status": 409,
+        "error": "nonce does not match"
+      }
+    },
+    {
+      "name": "real nonce still works",
+      "op": "ack",
+      "expect": {
+        "status": 200
+      }
+    }
+  ]
+}

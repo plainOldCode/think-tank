@@ -1,0 +1,69 @@
+{
+  "name": "legacy-brief-stats",
+  "description": "Metrics count legacy cards and how many have all four brief fields.",
+  "actors": [
+    {
+      "name": "ada",
+      "role": "human"
+    },
+    {
+      "name": "run-1",
+      "role": "runner",
+      "harnesses": [
+        "claude"
+      ]
+    },
+    {
+      "name": "worker",
+      "role": "agent"
+    },
+    {
+      "name": "probe",
+      "role": "probe"
+    }
+  ],
+  "git": {
+    "changed": [
+      "turbo/app.py"
+    ],
+    "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "pr_number": 4
+  },
+  "cards": [],
+  "legacy": {
+    "issues": [
+      {
+        "id": "FULL",
+        "title": "full",
+        "body": "b",
+        "created_at": "t",
+        "updated_at": "t",
+        "brief_scope": "s",
+        "brief_verify": "v",
+        "brief_forbidden": "f",
+        "brief_timebox": "1d"
+      },
+      {
+        "id": "PART",
+        "title": "part",
+        "body": "b",
+        "created_at": "t",
+        "updated_at": "t",
+        "brief_scope": "s"
+      }
+    ]
+  },
+  "steps": [
+    {
+      "name": "metrics",
+      "op": "http",
+      "method": "GET",
+      "path": "/turbo/metrics",
+      "expect": {
+        "status": 200,
+        "legacy_cards": 2,
+        "legacy_brief_complete": 1
+      }
+    }
+  ]
+}

@@ -1,0 +1,153 @@
+{
+  "name": "edit-locked",
+  "description": "A human cannot edit a card once it has been submitted, and cannot ack it after it has merged.",
+  "actors": [
+    {
+      "name": "ada",
+      "role": "human"
+    },
+    {
+      "name": "run-1",
+      "role": "runner",
+      "harnesses": [
+        "claude"
+      ]
+    },
+    {
+      "name": "worker",
+      "role": "agent"
+    },
+    {
+      "name": "probe",
+      "role": "probe"
+    }
+  ],
+  "git": {
+    "changed": [
+      "turbo/app.py"
+    ],
+    "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "pr_number": 4
+  },
+  "cards": [
+    {
+      "ref": "gate",
+      "title": "Gate the submit",
+      "body": "Implement the gate.",
+      "contract": "The runner submits. The agent does not.",
+      "harness": "claude",
+      "scope": {
+        "paths": [
+          "turbo/"
+        ],
+        "forbidden": [],
+        "verify": [
+          {
+            "cmd": "python3 -c \"import sys; raise SystemExit(0)\"",
+            "kind": "unit"
+          }
+        ]
+      }
+    }
+  ],
+  "steps": [
+    {
+      "name": "runner claims",
+      "op": "tick",
+      "arm": {
+        "alive": true,
+        "exit": 0
+      },
+      "expect": {
+        "state": "working",
+        "assignee": "run-1"
+      }
+    },
+    {
+      "name": "merge while working",
+      "op": "merge",
+      "expect": {
+        "status": 409,
+        "error": "cannot move",
+        "state": "working"
+      }
+    },
+    {
+      "name": "agent acks",
+      "op": "ack",
+      "actor": "worker",
+      "expect": {
+        "status": 200
+      }
+    },
+    {
+      "name": "agent marks ready",
+      "op": "ready",
+      "expect": {
+        "status": 200,
+        "ready": true
+      }
+    },
+    {
+      "name": "runner submits",
+      "op": "submit",
+      "expect": {
+        "status": 200,
+        "state": "review"
+      }
+    },
+    {
+      "name": "edit in review",
+      "op": "edit",
+      "body": "too late",
+      "expect": {
+        "status": 409,
+        "error": "no longer be edited",
+        "state": "review"
+      }
+    },
+    {
+      "name": "probe approves",
+      "op": "verdict",
+      "result": "approve",
+      "expect": {
+        "status": 200
+      }
+    },
+    {
+      "name": "runner merges",
+      "op": "merge",
+      "expect": {
+        "status": 200,
+        "state": "merged"
+      }
+    },
+    {
+      "name": "edit after merge",
+      "op": "edit",
+      "body": "still too late",
+      "expect": {
+        "status": 409,
+        "error": "no longer be edited",
+        "state": "merged"
+      }
+    },
+    {
+      "name": "ack after merge",
+      "op": "ack",
+      "expect": {
+        "status": 409,
+        "error": "ack is not open"
+      }
+    },
+    {
+      "name": "submit after merge",
+      "op": "submit-raw",
+      "expect": {
+        "status": 409,
+        "error": "cannot move",
+        "state": "merged"
+      }
+    }
+  ]
+}

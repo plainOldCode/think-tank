@@ -1,2 +1,0 @@
-- ZK3G built-in probe e2e measured record: the server daemon thread automates PR merge→verify→done (2026-10-03, M407NTZ3-ZAWE)
-- ZK3G measurement 2(b): merge→verify concurrent cycle (M409F1WK-874R, 2026-10-03)

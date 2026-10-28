@@ -1,0 +1,104 @@
+{
+  "name": "board-list",
+  "description": "The board lists turbo cards, and the harness filter keeps the other ones out.",
+  "actors": [
+    {
+      "name": "ada",
+      "role": "human"
+    },
+    {
+      "name": "run-1",
+      "role": "runner",
+      "harnesses": [
+        "claude"
+      ]
+    },
+    {
+      "name": "worker",
+      "role": "agent"
+    },
+    {
+      "name": "probe",
+      "role": "probe"
+    }
+  ],
+  "git": {
+    "changed": [
+      "turbo/app.py"
+    ],
+    "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "pr_number": 4
+  },
+  "cards": [
+    {
+      "ref": "claude-card",
+      "title": "Gate the submit",
+      "body": "Implement the gate.",
+      "contract": "The runner submits. The agent does not.",
+      "harness": "claude",
+      "scope": {
+        "paths": [
+          "turbo/"
+        ],
+        "forbidden": [],
+        "verify": [
+          {
+            "cmd": "python3 -c \"import sys; raise SystemExit(0)\"",
+            "kind": "unit"
+          }
+        ]
+      }
+    },
+    {
+      "ref": "grok-card",
+      "title": "Grok card",
+      "body": "Implement the gate.",
+      "contract": "The runner submits. The agent does not.",
+      "harness": "grok",
+      "scope": {
+        "paths": [
+          "turbo/"
+        ],
+        "forbidden": [],
+        "verify": [
+          {
+            "cmd": "python3 -c \"import sys; raise SystemExit(0)\"",
+            "kind": "unit"
+          }
+        ]
+      }
+    }
+  ],
+  "steps": [
+    {
+      "name": "list every card",
+      "op": "http",
+      "method": "GET",
+      "path": "/turbo/cards",
+      "expect": {
+        "status": 200,
+        "card_count": 2
+      }
+    },
+    {
+      "name": "filter to claude",
+      "op": "http",
+      "method": "GET",
+      "path": "/turbo/cards?harness=claude",
+      "expect": {
+        "status": 200,
+        "card_count": 1
+      }
+    },
+    {
+      "name": "filter to grok",
+      "op": "http",
+      "method": "GET",
+      "path": "/turbo/cards?harness=grok",
+      "expect": {
+        "status": 200,
+        "card_count": 1
+      }
+    }
+  ]
+}

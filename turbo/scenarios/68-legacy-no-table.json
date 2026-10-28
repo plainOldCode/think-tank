@@ -1,0 +1,56 @@
+{
+  "name": "legacy-no-table",
+  "description": "An sqlite file with no issues table is not an archive.",
+  "actors": [
+    {
+      "name": "ada",
+      "role": "human"
+    },
+    {
+      "name": "run-1",
+      "role": "runner",
+      "harnesses": [
+        "claude"
+      ]
+    },
+    {
+      "name": "worker",
+      "role": "agent"
+    },
+    {
+      "name": "probe",
+      "role": "probe"
+    }
+  ],
+  "git": {
+    "changed": [
+      "turbo/app.py"
+    ],
+    "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "pr_number": 4
+  },
+  "cards": [],
+  "legacy_kind": "empty",
+  "steps": [
+    {
+      "name": "list",
+      "op": "http",
+      "method": "GET",
+      "path": "/legacy/issues",
+      "expect": {
+        "status": 404,
+        "error": "no issues table"
+      }
+    },
+    {
+      "name": "detail",
+      "op": "http",
+      "method": "GET",
+      "path": "/legacy/issues/T1",
+      "expect": {
+        "status": 404,
+        "error": "no issues table"
+      }
+    }
+  ]
+}

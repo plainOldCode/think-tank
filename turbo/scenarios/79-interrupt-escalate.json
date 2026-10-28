@@ -1,0 +1,60 @@
+{
+  "name": "interrupt-escalate",
+  "description": "SIGINT moves the card to awaiting-human even when the child ignores it. After the kill wait the runner sends SIGKILL.",
+  "proc": "subprocess",
+  "kill_wait_s": 1,
+  "actors": [
+    {"name": "ada", "role": "human"},
+    {"name": "run-1", "role": "runner", "harnesses": ["claude"]},
+    {"name": "worker", "role": "agent"},
+    {"name": "probe", "role": "probe"}
+  ],
+  "git": {"changed": ["turbo/app.py"], "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "pr_number": 4},
+  "cards": [
+    {
+      "ref": "gate",
+      "title": "Ignores SIGINT",
+      "body": "Implement the gate.",
+      "contract": "The runner submits. The agent does not.",
+      "harness": "claude",
+      "scope": {
+        "paths": ["turbo/"],
+        "forbidden": [],
+        "verify": [{"cmd": "python3 -c \"import sys; raise SystemExit(0)\"", "kind": "unit"}]
+      }
+    }
+  ],
+  "steps": [
+    {
+      "name": "runner claims a stubborn child",
+      "op": "tick",
+      "arm": {"mode": "ignore-int"},
+      "expect": {"state": "working", "spawns": 1}
+    },
+    {
+      "name": "agent asks",
+      "op": "ask",
+      "blocked_question": "Ship it?",
+      "blocked_options": ["yes", "no"],
+      "blocked_default": "no",
+      "expect": {"state": "question"}
+    },
+    {"name": "clock passes the grace", "op": "advance", "seconds": 120},
+    {
+      "name": "SIGINT forces awaiting-human while the child lives",
+      "op": "tick",
+      "expect": {"state": "awaiting-human", "interrupted": true, "kills": 0, "spawns": 1}
+    },
+    {
+      "name": "the kill wait has not elapsed",
+      "op": "tick",
+      "expect": {"state": "awaiting-human", "kills": 0, "spawns": 1}
+    },
+    {"name": "clock passes the kill wait", "op": "advance", "seconds": 1},
+    {
+      "name": "SIGKILL reaps the stubborn child",
+      "op": "tick",
+      "expect": {"state": "awaiting-human", "kills": 1, "spawns": 1}
+    }
+  ]
+}

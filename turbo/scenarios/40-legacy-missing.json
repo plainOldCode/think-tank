@@ -1,0 +1,87 @@
+{
+  "name": "legacy-missing",
+  "description": "A configured legacy path that is not a file is a 404, and metrics record that the archive could not be read.",
+  "actors": [
+    {
+      "name": "ada",
+      "role": "human"
+    },
+    {
+      "name": "run-1",
+      "role": "runner",
+      "harnesses": [
+        "claude"
+      ]
+    },
+    {
+      "name": "worker",
+      "role": "agent"
+    },
+    {
+      "name": "probe",
+      "role": "probe"
+    }
+  ],
+  "git": {
+    "changed": [
+      "turbo/app.py"
+    ],
+    "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "pr_number": 4
+  },
+  "cards": [
+    {
+      "ref": "gate",
+      "title": "Gate the submit",
+      "body": "Implement the gate.",
+      "contract": "The runner submits. The agent does not.",
+      "harness": "claude",
+      "scope": {
+        "paths": [
+          "turbo/"
+        ],
+        "forbidden": [],
+        "verify": [
+          {
+            "cmd": "python3 -c \"import sys; raise SystemExit(0)\"",
+            "kind": "unit"
+          }
+        ]
+      }
+    }
+  ],
+  "steps": [
+    {
+      "name": "list",
+      "op": "http",
+      "method": "GET",
+      "path": "/legacy/issues",
+      "expect": {
+        "status": 404,
+        "error": "not found"
+      }
+    },
+    {
+      "name": "detail",
+      "op": "http",
+      "method": "GET",
+      "path": "/legacy/issues/ANY",
+      "expect": {
+        "status": 404,
+        "error": "not found"
+      }
+    },
+    {
+      "name": "metrics survive a missing archive",
+      "op": "http",
+      "method": "GET",
+      "path": "/turbo/metrics",
+      "expect": {
+        "status": 200,
+        "metric_cards": 1,
+        "legacy_cards": 0
+      }
+    }
+  ],
+  "legacy_missing": true
+}

@@ -1,0 +1,76 @@
+{
+  "name": "unknown-actor-missing-card",
+  "description": "An unknown actor is 403. A card id that was never created is 404.",
+  "actors": [
+    {
+      "name": "ada",
+      "role": "human"
+    },
+    {
+      "name": "run-1",
+      "role": "runner",
+      "harnesses": [
+        "claude"
+      ]
+    },
+    {
+      "name": "worker",
+      "role": "agent"
+    },
+    {
+      "name": "probe",
+      "role": "probe"
+    }
+  ],
+  "git": {
+    "changed": [
+      "turbo/app.py"
+    ],
+    "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "pr_number": 4
+  },
+  "cards": [
+    {
+      "ref": "gate",
+      "title": "Gate the submit",
+      "body": "Implement the gate.",
+      "contract": "The runner submits. The agent does not.",
+      "harness": "claude",
+      "scope": {
+        "paths": [
+          "turbo/"
+        ],
+        "forbidden": [],
+        "verify": [
+          {
+            "cmd": "python3 -c \"import sys; raise SystemExit(0)\"",
+            "kind": "unit"
+          }
+        ]
+      }
+    }
+  ],
+  "steps": [
+    {
+      "name": "unknown actor",
+      "op": "register",
+      "actor_name": "new-human",
+      "role": "human",
+      "by": "ghost",
+      "expect": {
+        "status": 403,
+        "error": "unknown actor"
+      }
+    },
+    {
+      "name": "missing card",
+      "op": "http",
+      "method": "GET",
+      "path": "/turbo/cards/no-such-card",
+      "expect": {
+        "status": 404,
+        "error": "card not found"
+      }
+    }
+  ]
+}

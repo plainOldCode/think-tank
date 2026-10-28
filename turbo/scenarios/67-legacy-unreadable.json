@@ -1,0 +1,68 @@
+{
+  "name": "legacy-unreadable",
+  "description": "A legacy file the process cannot read is a read-only open failure, and metrics stay at zero.",
+  "actors": [
+    {
+      "name": "ada",
+      "role": "human"
+    },
+    {
+      "name": "run-1",
+      "role": "runner",
+      "harnesses": [
+        "claude"
+      ]
+    },
+    {
+      "name": "worker",
+      "role": "agent"
+    },
+    {
+      "name": "probe",
+      "role": "probe"
+    }
+  ],
+  "git": {
+    "changed": [
+      "turbo/app.py"
+    ],
+    "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "pr_number": 4
+  },
+  "cards": [],
+  "legacy": {
+    "issues": [
+      {
+        "id": "T1",
+        "title": "t",
+        "body": "b",
+        "created_at": "t",
+        "updated_at": "t"
+      }
+    ]
+  },
+  "legacy_chmod": 0,
+  "steps": [
+    {
+      "name": "list",
+      "op": "http",
+      "method": "GET",
+      "path": "/legacy/issues",
+      "expect": {
+        "status": 404,
+        "error": "read-only"
+      }
+    },
+    {
+      "name": "metrics",
+      "op": "http",
+      "method": "GET",
+      "path": "/turbo/metrics",
+      "expect": {
+        "status": 200,
+        "legacy_cards": 0,
+        "legacy_brief_complete": 0
+      }
+    }
+  ]
+}
