@@ -165,6 +165,20 @@ CHECKS: list[tuple[str, str, str, str, int]] = [
     ("turbo/proof.py", "scenario JSON needs a cmd", "pass", "82-scenario-proof.json", 0),
     ("turbo/proof.py", "scenario passed on base", "pass", "82-scenario-proof.json", 0),
     ("turbo/proof.py", "scenario failed on head", "pass", "82-scenario-proof.json", 0),
+    ("turbo/service.py", 'state="open"', 'state="working"', "82-scenario-proof.json", 0),
+    ("turbo/submitgate.py", "card kind must be", "pass", "83-visual-evidence.json", 0),
+    ("turbo/submitgate.py", "visual work needs measurement evidence", "pass", "83-visual-evidence.json", 0),
+    ("turbo/submitgate.py", "evidence missing at head", "pass", "83-visual-evidence.json", 0),
+    ("turbo/service.py", "visual work needs a passing CI verify", "pass", "83-visual-evidence.json", 0),
+    ("turbo/submitgate.py", "not mergeable against base", "pass", "84-merge-and-head.json", 0),
+    ("turbo/submitgate.py", "pr.mergeable must be true or false", "pass", "84-merge-and-head.json", 0),
+    ("turbo/submitgate.py", "head sha does not match the pull request", "pass", "84-merge-and-head.json", 0),
+    ("turbo/submitgate.py", "head sha does not match the pull request", "pass", "84-merge-and-head.json", 1),
+    ("turbo/submitgate.py", "head sha does not match the pull request", "pass", "84-merge-and-head.json", 2),
+    ("turbo/submitgate.py", "pr.rebase_paths must be a list of paths", "pass", "85-rebase-rereview.json", 0),
+    ("turbo/service.py", "re-review required after a merge outside scope", "pass", "85-rebase-rereview.json", 0),
+    ("turbo/service.py", "an epic closes when its children are merged", "pass", "86-epic-closes.json", 0),
+    ("turbo/service.py", "parent must be an epic", "pass", "86-epic-closes.json", 0),
 ]
 
 

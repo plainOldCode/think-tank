@@ -1,0 +1,195 @@
+{
+  "name": "visual-evidence",
+  "description": "Visual work needs measurement files at the submitted head and a passing CI verify. A feature card still needs a failing scenario. A report card does not.",
+  "actors": [
+    {"name": "ada", "role": "human"},
+    {"name": "run-1", "role": "runner", "harnesses": ["claude"]},
+    {"name": "run-2", "role": "runner", "harnesses": ["claude"]},
+    {"name": "worker", "role": "agent"},
+    {"name": "probe", "role": "probe"}
+  ],
+  "git": {"changed": ["turbo/app.py"], "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "pr_number": 4},
+  "cards": [
+    {
+      "ref": "feature",
+      "title": "Behavior",
+      "body": "Implement the gate.",
+      "contract": "The runner submits. The agent does not.",
+      "harness": "claude",
+      "kind": "feature",
+      "proof": false,
+      "scope": {
+        "paths": ["turbo/"],
+        "forbidden": [],
+        "verify": [{"cmd": "python3 -c \"import sys; raise SystemExit(0)\"", "kind": "unit"}]
+      }
+    },
+    {
+      "ref": "report",
+      "title": "Notes",
+      "body": "Implement the gate.",
+      "contract": "The runner submits. The agent does not.",
+      "harness": "claude",
+      "kind": "report",
+      "proof": false,
+      "scope": {
+        "paths": ["turbo/"],
+        "forbidden": [],
+        "verify": [{"cmd": "python3 -c \"import sys; raise SystemExit(0)\"", "kind": "planned"}]
+      }
+    },
+    {
+      "ref": "shown",
+      "title": "Pixels",
+      "body": "Implement the gate.",
+      "contract": "The runner submits. The agent does not.",
+      "harness": "claude",
+      "kind": "visual",
+      "proof": false,
+      "scope": {
+        "paths": ["turbo/"],
+        "forbidden": [],
+        "evidence": ["turbo/app.py"],
+        "verify": [{"cmd": "python3 -c \"import sys; raise SystemExit(0)\"", "kind": "unit"}]
+      }
+    }
+  ],
+  "steps": [
+    {
+      "name": "kind must be known",
+      "op": "create-card",
+      "ref": "bad-kind",
+      "title": "Bad kind",
+      "kind": "nope",
+      "scope": {"paths": ["turbo/"], "forbidden": [], "verify": [{"cmd": "python3 -c \"import sys; raise SystemExit(0)\"", "kind": "unit"}]},
+      "expect": {"status": 422, "error": "card kind must be"}
+    },
+    {
+      "name": "evidence must be paths",
+      "op": "create-card",
+      "ref": "bad-evidence",
+      "title": "Bad evidence",
+      "scope": {"paths": ["turbo/"], "forbidden": [], "evidence": "shots", "verify": [{"cmd": "python3 -c \"import sys; raise SystemExit(0)\"", "kind": "unit"}]},
+      "expect": {"status": 422, "error": "scope.evidence must be a list of paths"}
+    },
+    {
+      "name": "a blank evidence path is rejected",
+      "op": "create-card",
+      "ref": "blank-evidence",
+      "title": "Blank evidence",
+      "scope": {"paths": ["turbo/"], "forbidden": [], "evidence": [" "], "verify": [{"cmd": "python3 -c \"import sys; raise SystemExit(0)\"", "kind": "unit"}]},
+      "expect": {"status": 422, "error": "scope.evidence must be a list of paths"}
+    },
+    {"name": "claim the feature", "op": "claim", "card": "feature", "actor": "run-1", "agent": "worker", "expect": {"status": 200}},
+    {"name": "ack the feature", "op": "ack", "card": "feature", "expect": {"status": 200}},
+    {"name": "feature is ready", "op": "ready", "card": "feature", "expect": {"status": 200}},
+    {
+      "name": "a feature card still needs a scenario",
+      "op": "submit-raw",
+      "card": "feature",
+      "actor": "run-1",
+      "work_token": "$token",
+      "changed_paths": ["turbo/app.py"],
+      "expect": {"status": 422, "error": "scope.scenario is required", "state": "open", "card": "feature"}
+    },
+    {"name": "claim the report", "op": "claim", "card": "report", "actor": "run-2", "agent": "worker", "expect": {"status": 200}},
+    {"name": "ack the report", "op": "ack", "card": "report", "expect": {"status": 200}},
+    {"name": "report is ready", "op": "ready", "card": "report", "expect": {"status": 200}},
+    {
+      "name": "a report card submits without a scenario",
+      "op": "submit-raw",
+      "card": "report",
+      "actor": "run-2",
+      "work_token": "$token",
+      "changed_paths": ["turbo/app.py"],
+      "expect": {"status": 200, "state": "review", "verify_level": "planned-only", "card": "report"}
+    },
+    {
+      "name": "visual work with no measurements",
+      "op": "create-card",
+      "ref": "bare-visual",
+      "title": "No shots",
+      "kind": "visual",
+      "scope": {"paths": ["turbo/"], "forbidden": [], "verify": [{"cmd": "python3 -c \"import sys; raise SystemExit(0)\"", "kind": "unit"}]},
+      "expect": {"status": 200}
+    },
+    {"name": "claim the bare visual", "op": "claim", "card": "bare-visual", "actor": "run-1", "agent": "worker", "expect": {"status": 200}},
+    {"name": "ack the bare visual", "op": "ack", "card": "bare-visual", "expect": {"status": 200}},
+    {"name": "bare visual is ready", "op": "ready", "card": "bare-visual", "expect": {"status": 200}},
+    {
+      "name": "visual work needs measurement evidence",
+      "op": "submit-raw",
+      "card": "bare-visual",
+      "actor": "run-1",
+      "work_token": "$token",
+      "changed_paths": ["turbo/app.py"],
+      "expect": {"status": 409, "error": "visual work needs measurement evidence", "state": "open", "card": "bare-visual"}
+    },
+    {
+      "name": "visual evidence that is not in the commit",
+      "op": "create-card",
+      "ref": "missing-shot",
+      "title": "Missing shot",
+      "kind": "visual",
+      "scope": {
+        "paths": ["turbo/"],
+        "forbidden": [],
+        "evidence": ["shots/missing.png"],
+        "verify": [{"cmd": "python3 -c \"import sys; raise SystemExit(0)\"", "kind": "unit"}]
+      },
+      "expect": {"status": 200}
+    },
+    {"name": "claim the missing shot", "op": "claim", "card": "missing-shot", "actor": "run-1", "agent": "worker", "expect": {"status": 200}},
+    {"name": "ack the missing shot", "op": "ack", "card": "missing-shot", "expect": {"status": 200}},
+    {"name": "missing shot is ready", "op": "ready", "card": "missing-shot", "expect": {"status": 200}},
+    {
+      "name": "evidence missing at head",
+      "op": "submit-raw",
+      "card": "missing-shot",
+      "actor": "run-1",
+      "work_token": "$token",
+      "changed_paths": ["turbo/app.py"],
+      "expect": {"status": 409, "error": "evidence missing at head", "state": "open", "card": "missing-shot"}
+    },
+    {
+      "name": "visual work whose verify is only planned",
+      "op": "create-card",
+      "ref": "planned-visual",
+      "title": "Planned pixels",
+      "kind": "visual",
+      "scope": {
+        "paths": ["turbo/"],
+        "forbidden": [],
+        "evidence": ["turbo/app.py"],
+        "verify": [{"cmd": "python3 -c \"import sys; raise SystemExit(0)\"", "kind": "planned"}]
+      },
+      "expect": {"status": 200}
+    },
+    {"name": "claim the planned visual", "op": "claim", "card": "planned-visual", "actor": "run-1", "agent": "worker", "expect": {"status": 200}},
+    {"name": "ack the planned visual", "op": "ack", "card": "planned-visual", "expect": {"status": 200}},
+    {"name": "planned visual is ready", "op": "ready", "card": "planned-visual", "expect": {"status": 200}},
+    {
+      "name": "visual work needs a passing CI verify",
+      "op": "submit-raw",
+      "card": "planned-visual",
+      "actor": "run-1",
+      "work_token": "$token",
+      "changed_paths": ["turbo/app.py"],
+      "expect": {"status": 409, "error": "visual work needs a passing CI verify", "state": "open", "card": "planned-visual"}
+    },
+    {"name": "claim the measured visual", "op": "claim", "card": "shown", "actor": "run-1", "agent": "worker", "expect": {"status": 200}},
+    {"name": "ack the measured visual", "op": "ack", "card": "shown", "expect": {"status": 200}},
+    {"name": "measured visual is ready", "op": "ready", "card": "shown", "expect": {"status": 200}},
+    {
+      "name": "visual work with evidence and CI enters review",
+      "op": "submit-raw",
+      "card": "shown",
+      "actor": "run-1",
+      "work_token": "$token",
+      "changed_paths": ["turbo/app.py"],
+      "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "pr": {"head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "mergeable": true},
+      "expect": {"status": 200, "state": "review", "verify_level": "unit-test-verified", "card": "shown"}
+    }
+  ]
+}

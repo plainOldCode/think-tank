@@ -466,14 +466,19 @@ class Run:
             if status != 200:
                 raise RuntimeError(f"actor {actor['name']}: {status} {payload}")
         for card in self.scenario.get("cards") or []:
-            status, payload = _request(self.base, "POST", "/turbo/cards", {
+            body = {
                 "actor": human,
                 "title": card["title"],
                 "body": card["body"],
                 "contract": card["contract"],
                 "harness": card["harness"],
                 "scope": self._inject_proof(card),
-            })
+            }
+            if card.get("kind"):
+                body["kind"] = card["kind"]
+            if card.get("parent"):
+                body["parent_id"] = self.cards[card["parent"]]
+            status, payload = _request(self.base, "POST", "/turbo/cards", body)
             if status != 200:
                 raise RuntimeError(f"card {card.get('ref')}: {status} {payload}")
             self.cards[card.get("ref") or card["title"]] = payload["id"]
@@ -481,6 +486,8 @@ class Run:
     def _inject_proof(self, card: dict) -> dict:
         scope = json.loads(json.dumps(card["scope"]))
         if scope.get("exempt") is True or card.get("proof") is False:
+            return scope
+        if card.get("kind") in {"visual", "report", "docs", "research", "epic"}:
             return scope
         if not scope.get("scenario"):
             self._write_proof()
@@ -630,11 +637,14 @@ class Run:
             if self.status == 200 and self.body.get("nonce"):
                 self.nonces[ref] = self.body["nonce"]
         elif op == "verdict":
-            self._http("POST", f"/turbo/cards/{self.card_id(spec)}/verdict", {
+            verdict_body = {
                 "actor": spec.get("actor") or "probe",
                 "result": spec["result"],
                 "findings": spec.get("findings") or "",
-            })
+            }
+            if "head_sha" in spec:
+                verdict_body["head_sha"] = spec["head_sha"]
+            self._http("POST", f"/turbo/cards/{self.card_id(spec)}/verdict", verdict_body)
         elif op == "submit":
             cid = self.card_id(spec)
             self._catch_runner(lambda: self.runner.submit_ready(cid))
@@ -657,14 +667,21 @@ class Run:
             self._merge(spec)
         elif op == "create-card":
             human = self.scenario["actors"][0]["name"]
-            self._http("POST", "/turbo/cards", {
+            created = {
                 "actor": human,
                 "title": spec["title"],
                 "body": spec.get("body") or "Implement the gate.",
                 "contract": spec.get("contract") or "The runner submits. The agent does not.",
                 "harness": spec.get("harness") or "claude",
                 "scope": spec["scope"],
-            })
+            }
+            if spec.get("kind"):
+                created["kind"] = spec["kind"]
+            if spec.get("parent"):
+                created["parent_id"] = self.cards[spec["parent"]]
+            elif spec.get("parent_id"):
+                created["parent_id"] = spec["parent_id"]
+            self._http("POST", "/turbo/cards", created)
             if self.status == 200:
                 self.cards[spec["ref"]] = self.body["id"]
         elif op == "claim":

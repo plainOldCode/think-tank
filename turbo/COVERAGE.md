@@ -8,10 +8,10 @@
 
 | | |
 |---|---|
-| Statements | **1541 / 1541 (100%)** |
-| Branches | **468 / 468 (100%)** |
+| Statements | **1640 / 1640 (100%)** |
+| Branches | **516 / 516 (100%)** |
 | Combined | **100%** |
-| Scenarios | **82** (`01` through `82`) |
+| Scenarios | **86** (`01` through `86`) |
 | `# TURBO-UNCOVERED` marks | **0** (the marker is gone) |
 
 The script passes `--fail-under=100`. CI runs it on pull requests and on pushes to `turbo`. A drop in statements or branches fails that job.
@@ -36,7 +36,11 @@ The script passes `--fail-under=100`. CI runs it on pull requests and on pushes 
 | `79` | SIGINT, then SIGKILL after `TURBO_KILL_WAIT_S`, against a child that ignores SIGINT. `14` covers the child that is already dead while draining |
 | `80` | `metrics.stuck`: open cards, a live handle, no session, a handoff, and a dead turn. The live route rejects a non-list and drops non-strings |
 | `81` | Legacy migration: dry-run, import, re-run, no issues table, a thin table. The legacy file stays unchanged |
-| `82` | Scenario red-green: accept, pass-on-base, fail-on-head, missing file, bad JSON, bad cmd, scenario not in the commit, exempt, and no scenario |
+| `82` | Scenario red-green: accept, pass-on-base, fail-on-head, missing file, bad JSON, bad cmd, scenario not in the commit, exempt, and no scenario. A rejected submit returns to `open` and is not stuck |
+| `83` | Visual evidence and CI, a feature card that still needs a scenario, and a report card that does not |
+| `84` | Merge conflict, a bad mergeable flag, and head sha at submit and at approve |
+| `85` | A rebase inside scope, and a rebase outside scope that blocks approve until a clean submit |
+| `86` | An epic closes when its children merge, and cannot submit a passed result |
 
 ## Code removed or restructured
 
@@ -57,4 +61,4 @@ Dead fallbacks were deleted instead of excluded:
 - Labels from sqlite are text. A list is not a label value.
 - `SubprocessProc.interrupt` always signals the child. The runner only interrupts a live poll.
 
-`scripts/mutate-guards.py` flips 131 guards. Each one fails its scenario.
+`scripts/mutate-guards.py` flips 145 guards. Each one fails its scenario.

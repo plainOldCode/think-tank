@@ -1,0 +1,126 @@
+{
+  "name": "rebase-rereview",
+  "description": "A merge that touches paths outside the card scope cannot be approved until a clean submit.",
+  "actors": [
+    {"name": "ada", "role": "human"},
+    {"name": "run-1", "role": "runner", "harnesses": ["claude"]},
+    {"name": "worker", "role": "agent"},
+    {"name": "probe", "role": "probe"}
+  ],
+  "git": {"changed": ["turbo/app.py"], "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "pr_number": 4},
+  "cards": [
+    {
+      "ref": "inside",
+      "title": "Inside",
+      "body": "Implement the gate.",
+      "contract": "The runner submits. The agent does not.",
+      "harness": "claude",
+      "kind": "report",
+      "proof": false,
+      "scope": {
+        "paths": ["turbo/"],
+        "forbidden": [],
+        "verify": [{"cmd": "python3 -c \"import sys; raise SystemExit(0)\"", "kind": "unit"}]
+      }
+    },
+    {
+      "ref": "outside",
+      "title": "Outside",
+      "body": "Implement the gate.",
+      "contract": "The runner submits. The agent does not.",
+      "harness": "claude",
+      "kind": "docs",
+      "proof": false,
+      "scope": {
+        "paths": ["turbo/"],
+        "forbidden": [],
+        "verify": [{"cmd": "python3 -c \"import sys; raise SystemExit(0)\"", "kind": "unit"}]
+      }
+    }
+  ],
+  "steps": [
+    {"name": "claim the inside card", "op": "claim", "card": "inside", "actor": "run-1", "agent": "worker", "expect": {"status": 200}},
+    {"name": "ack the inside card", "op": "ack", "card": "inside", "expect": {"status": 200}},
+    {"name": "inside card is ready", "op": "ready", "card": "inside", "expect": {"status": 200}},
+    {
+      "name": "rebase paths must be a list",
+      "op": "submit-raw",
+      "card": "inside",
+      "actor": "run-1",
+      "work_token": "$token",
+      "changed_paths": ["turbo/app.py"],
+      "pr": {"rebase_paths": "README.md"},
+      "expect": {"status": 422, "error": "pr.rebase_paths must be a list of paths", "state": "working", "card": "inside"}
+    },
+    {
+      "name": "a rebase inside scope does not ask for another review",
+      "op": "submit-raw",
+      "card": "inside",
+      "actor": "run-1",
+      "work_token": "$token",
+      "changed_paths": ["turbo/app.py"],
+      "pr": {"rebase_paths": ["turbo/app.py", ""]},
+      "expect": {"status": 200, "state": "review", "card": "inside"}
+    },
+    {
+      "name": "approve the inside rebase",
+      "op": "verdict",
+      "card": "inside",
+      "result": "approve",
+      "expect": {"status": 200, "verdict": "approve", "card": "inside"}
+    },
+    {"name": "merge the inside card", "op": "merge", "card": "inside", "via": "http", "actor": "probe", "expect": {"status": 200, "state": "merged", "card": "inside"}},
+    {"name": "claim the outside card", "op": "claim", "card": "outside", "actor": "run-1", "agent": "worker", "expect": {"status": 200, "card": "outside"}},
+    {"name": "ack the outside card", "op": "ack", "card": "outside", "expect": {"status": 200}},
+    {"name": "outside card is ready", "op": "ready", "card": "outside", "expect": {"status": 200}},
+    {
+      "name": "a rebase outside scope enters review flagged",
+      "op": "submit-raw",
+      "card": "outside",
+      "actor": "run-1",
+      "work_token": "$token",
+      "changed_paths": ["turbo/app.py"],
+      "pr": {"rebase_paths": ["README.md"]},
+      "expect": {"status": 200, "state": "review", "card": "outside"}
+    },
+    {
+      "name": "approve is blocked until a clean submit",
+      "op": "verdict",
+      "card": "outside",
+      "result": "approve",
+      "expect": {"status": 409, "error": "re-review required after a merge outside scope", "state": "review", "card": "outside"}
+    },
+    {
+      "name": "probe requests changes",
+      "op": "verdict",
+      "card": "outside",
+      "result": "request-changes",
+      "expect": {"status": 200, "verdict": "request-changes", "card": "outside"}
+    },
+    {
+      "name": "the runner resumes",
+      "op": "resume",
+      "card": "outside",
+      "token": "$resume",
+      "expect": {"status": 200, "state": "working", "card": "outside"}
+    },
+    {"name": "the resumed card is ready", "op": "ready", "card": "outside", "expect": {"status": 200}},
+    {
+      "name": "a clean submit can be approved",
+      "op": "submit-raw",
+      "card": "outside",
+      "actor": "run-1",
+      "work_token": "$token",
+      "changed_paths": ["turbo/app.py"],
+      "pr": {},
+      "expect": {"status": 200, "state": "review", "verdict": "", "card": "outside"}
+    },
+    {
+      "name": "approve the clean submit",
+      "op": "verdict",
+      "card": "outside",
+      "result": "approve",
+      "expect": {"status": 200, "verdict": "approve", "card": "outside"}
+    }
+  ]
+}

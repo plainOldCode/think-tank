@@ -2,8 +2,8 @@
 
 A bug or feature card names a JSON file in ``scope.scenario``. Submit runs
 that file's ``cmd`` with ``TURBO_REV=base`` (must exit non-zero) and
-``TURBO_REV=head`` (must exit 0). ``scope.exempt`` is the only skip, for a
-change that has no reproducible failure. Commands are not a shell.
+``TURBO_REV=head`` (must exit 0). The caller skips this for an exempt card
+and for visual, report, and epic cards. Commands are not a shell.
 """
 
 import json
@@ -14,8 +14,6 @@ from .errors import TurboError
 
 
 def prove(scope: dict, changed: list) -> None:
-    if scope.get("exempt"):
-        return
     path = scope.get("scenario") or ""
     if not path:
         raise TurboError(422, "scope.scenario is required unless scope.exempt is true")

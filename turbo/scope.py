@@ -41,6 +41,9 @@ def parse_scope(raw: object) -> dict:
         raise TurboError(422, "scope.scenario must be a path to a scenario JSON")
     if exempt and scenario:
         raise TurboError(422, "an exempt card does not carry a scenario")
+    evidence = raw.get("evidence") or []
+    if not isinstance(evidence, list) or not all(isinstance(item, str) and item.strip() for item in evidence):
+        raise TurboError(422, "scope.evidence must be a list of paths")
     return {
         "paths": [p.strip() for p in paths],
         "forbidden": [p.strip() for p in forbidden if p.strip()],
@@ -48,6 +51,7 @@ def parse_scope(raw: object) -> dict:
         "timebox_s": timebox,
         "exempt": bool(exempt),
         "scenario": scenario.strip() if isinstance(scenario, str) else "",
+        "evidence": [item.strip() for item in evidence],
     }
 
 

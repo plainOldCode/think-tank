@@ -93,6 +93,7 @@ def create_app(db_path: str, legacy_path: str | None = None, verify=None, clock=
         return service.create_card(
             store, _s(body, "actor"), _s(body, "title"), _s(body, "body"),
             _s(body, "contract"), _s(body, "harness"), body.get("scope"), now,
+            _s(body, "kind") or "bug", _s(body, "parent_id"),
         )
 
     @app.get("/turbo/cards")
@@ -157,7 +158,7 @@ def create_app(db_path: str, legacy_path: str | None = None, verify=None, clock=
     def post_verdict(card_id: str, body: dict):
         return service.verdict(
             store, card_id, _s(body, "actor"), _s(body, "result"),
-            _s(body, "findings"), now,
+            _s(body, "findings"), now, _s(body, "head_sha"),
         )
 
     @app.post("/turbo/cards/{card_id}/merge")

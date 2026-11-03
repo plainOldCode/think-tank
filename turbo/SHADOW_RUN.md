@@ -166,7 +166,7 @@ Aggregate report는 카드 수, terminal agreement, overlap의 중앙값, block 
 
 P1 replay. 이미 끝난 main card 수십 장을 turbo에 넣는다. 정답은 알려져 있다. 끝난 diff, verdict, 테스트 결과가 ground truth다. 입력은 그 card의 event log다. Live poller는 필요 없다. Side effect 격리는 P1에도 적용한다.
 
-끝난 150장을 다시 실행하지 않는 오프라인 시뮬레이션은 [sim/P1_SIMULATION.md](sim/P1_SIMULATION.md)다. 검증 수준은 planned-only다. Live board, harness, GitHub, Telegram을 부르지 않는다.
+끝난 150장을 다시 실행하지 않는 오프라인 시뮬레이션은 [sim/P1_SIMULATION.md](sim/P1_SIMULATION.md)다. 검증 수준은 planned-only다. Live board, harness, GitHub, Telegram을 부르지 않는다. 그 측정 뒤 turbo의 게이트는 바뀌었다. 행동 카드만 red-green을 요구하고, visual은 측정 파일과 통과한 CI를 요구한다. 근거 경로가 head에 없거나 PR이 mergeable하지 않거나 head sha가 다르면 review 전에 거절한다.
 
 Legacy migration scenario도 계획이다. 이전 형태의 데이터를 넣고, migrate하고, issue와 comment와 유도된 상태가 남았는지 본다. 오늘의 scenario 파일에는 아직 없다.
 

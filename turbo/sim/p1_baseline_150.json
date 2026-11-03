@@ -19,7 +19,12 @@
    "has_red_command": false,
    "delivery_mode": null,
    "merged": false,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "epic",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M6E97QRA-N0VR",
@@ -38,7 +43,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M6E97QPR-H7YG",
@@ -57,7 +67,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M6E97QNC-F5P6",
@@ -76,7 +91,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M6E97QKX-3KXS",
@@ -95,7 +115,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M6E97QJJ-76R5",
@@ -114,7 +139,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M6E97QH6-DNC9",
@@ -133,7 +163,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M6E97Q4X-E4XP",
@@ -152,7 +187,17 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 2,
+   "rejection_reasons": [
+    "evidence_missing",
+    "figma_measure_mismatch",
+    "merge_conflict",
+    "regression"
+   ],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M6E97Q92-9J9D",
@@ -171,7 +216,18 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 3,
+   "rejection_reasons": [
+    "evidence_missing",
+    "figma_measure_mismatch",
+    "merge_conflict",
+    "regression",
+    "report_mismatch"
+   ],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M6E97QFQ-CX2W",
@@ -190,7 +246,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M6E97QE7-47Q3",
@@ -209,7 +270,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M6E97QCA-36MK",
@@ -228,7 +294,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M6E97QAT-TVFX",
@@ -247,7 +318,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M6E97Q7M-ES8B",
@@ -266,7 +342,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M6E97Q69-MDHK",
@@ -285,7 +366,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M6E97Q29-0RVH",
@@ -304,7 +390,16 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 1,
+   "rejection_reasons": [
+    "evidence_missing",
+    "figma_measure_mismatch",
+    "merge_conflict"
+   ],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M6E97Q3N-F5SH",
@@ -323,7 +418,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M6E97Q0W-R74R",
@@ -342,7 +442,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M6E97PW6-W770",
@@ -361,7 +466,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M6E97PZH-QVZ5",
@@ -380,7 +490,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M6E97PY4-CQER",
@@ -399,7 +514,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M6E97PTM-WRFJ",
@@ -418,7 +538,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M6E97PS5-TCE9",
@@ -437,7 +562,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M6E97PQC-44QK",
@@ -456,7 +586,14 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 2,
+   "rejection_reasons": [
+    "merge_conflict"
+   ],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M6E97PKE-AP2P",
@@ -475,7 +612,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M6E97PND-2PBN",
@@ -494,7 +636,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M6E97PG7-WXFW",
@@ -513,7 +660,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M6EF7228-6071",
@@ -532,7 +684,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": true,
+   "post_merge_defect_kind": "visual"
   },
   {
    "legacy_id": "M6E97PEC-TQB4",
@@ -551,7 +708,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M6E97PCP-YZT1",
@@ -570,7 +732,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M6E97PB3-5DBM",
@@ -589,7 +756,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M6E979K4-2Y02",
@@ -608,7 +780,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYYHA-NT6T",
@@ -627,7 +804,14 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 1,
+   "rejection_reasons": [
+    "evidence_missing"
+   ],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M6CYJ1YS-13Z7",
@@ -646,7 +830,15 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 1,
+   "rejection_reasons": [
+    "evidence_missing",
+    "merge_conflict"
+   ],
+   "is_followup_defect_card": true,
+   "post_merge_defect_kind": "visual"
   },
   {
    "legacy_id": "M6CWZM17-1J8K",
@@ -665,7 +857,16 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 3,
+   "rejection_reasons": [
+    "figma_measure_mismatch",
+    "head_sha_mismatch",
+    "merge_conflict"
+   ],
+   "is_followup_defect_card": true,
+   "post_merge_defect_kind": "visual"
   },
   {
    "legacy_id": "M63YYYC0-57CF",
@@ -684,7 +885,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYYDS-XA13",
@@ -703,7 +909,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYYFK-79JR",
@@ -722,7 +933,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYYA9-YNK1",
@@ -741,7 +957,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYY8P-GZ70",
@@ -760,7 +981,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYY71-VBWG",
@@ -779,7 +1005,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYY5F-WNKB",
@@ -798,7 +1029,16 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 2,
+   "rejection_reasons": [
+    "evidence_missing",
+    "figma_measure_mismatch",
+    "head_sha_mismatch"
+   ],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYY3P-45PF",
@@ -817,7 +1057,15 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 1,
+   "rejection_reasons": [
+    "evidence_missing",
+    "figma_measure_mismatch"
+   ],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYY1W-63WK",
@@ -836,7 +1084,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYXZQ-V1X4",
@@ -855,7 +1108,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYXH5-VPPK",
@@ -874,7 +1132,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYXJX-HBWB",
@@ -893,7 +1156,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYXFC-ZBA0",
@@ -912,7 +1180,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYXDF-MWTH",
@@ -931,7 +1204,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYXBS-TQVN",
@@ -950,7 +1228,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYXA6-2NPZ",
@@ -969,7 +1252,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYX8M-X2AA",
@@ -988,7 +1276,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYX73-P753",
@@ -1007,7 +1300,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYX5E-1ES6",
@@ -1026,7 +1324,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYX3M-X9JP",
@@ -1045,7 +1348,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYX1V-258C",
@@ -1064,7 +1372,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYX04-CXYC",
@@ -1083,7 +1396,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYWY2-GTA6",
@@ -1102,7 +1420,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYWWB-S8B8",
@@ -1121,7 +1444,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYWTP-GPP1",
@@ -1140,7 +1468,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYWS3-44TM",
@@ -1159,7 +1492,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYWQB-6VQF",
@@ -1178,7 +1516,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYWNN-0GYT",
@@ -1197,7 +1540,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYWKH-KJT8",
@@ -1216,7 +1564,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYWHS-XS5E",
@@ -1235,7 +1588,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYW79-ZKG8",
@@ -1254,7 +1612,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYW94-7QX1",
@@ -1273,7 +1636,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYWG2-2KHP",
@@ -1292,7 +1660,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYWE9-R8K5",
@@ -1311,7 +1684,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYWCF-SYPT",
@@ -1330,7 +1708,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYWAR-EE8E",
@@ -1349,7 +1732,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYW5M-YKHB",
@@ -1368,7 +1756,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYW3S-VQW6",
@@ -1387,7 +1780,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYVYB-T4NB",
@@ -1406,7 +1804,14 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 1,
+   "rejection_reasons": [
+    "evidence_missing"
+   ],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYW06-DRSF",
@@ -1425,7 +1830,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYW21-X0ZB",
@@ -1444,7 +1854,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYVRV-BE0N",
@@ -1463,7 +1878,15 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 1,
+   "rejection_reasons": [
+    "figma_measure_mismatch",
+    "merge_conflict"
+   ],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYVTX-V3JX",
@@ -1482,7 +1905,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYVWN-4M08",
@@ -1501,7 +1929,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYVQ7-R30Q",
@@ -1520,7 +1953,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYVNJ-1TY4",
@@ -1539,7 +1977,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYVHS-WRWW",
@@ -1558,7 +2001,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYVG2-0F7S",
@@ -1577,7 +2025,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYVAM-7PAR",
@@ -1596,7 +2049,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYVKJ-Q1PV",
@@ -1615,7 +2073,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYV5M-WDF5",
@@ -1634,7 +2097,15 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 1,
+   "rejection_reasons": [
+    "evidence_missing",
+    "figma_measure_mismatch"
+   ],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYVEA-PHTH",
@@ -1653,7 +2124,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYVC7-P56D",
@@ -1672,7 +2148,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYV7A-7GWK",
@@ -1691,7 +2172,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYV91-4FEW",
@@ -1710,7 +2196,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYTZK-Q8VZ",
@@ -1729,7 +2220,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYV1C-23D9",
@@ -1748,7 +2244,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYV3S-AT6A",
@@ -1767,7 +2268,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYTXT-TPJN",
@@ -1786,7 +2292,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYTW3-P2BM",
@@ -1805,7 +2316,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYTTE-YTMB",
@@ -1824,7 +2340,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYTMH-VS4D",
@@ -1843,7 +2364,16 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 2,
+   "rejection_reasons": [
+    "evidence_missing",
+    "figma_measure_mismatch",
+    "merge_conflict"
+   ],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYTRG-Y8NJ",
@@ -1862,7 +2392,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYTF8-928Z",
@@ -1881,7 +2416,15 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 1,
+   "rejection_reasons": [
+    "figma_measure_mismatch",
+    "merge_conflict"
+   ],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYTPQ-NS91",
@@ -1900,7 +2443,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYTJF-E62Y",
@@ -1919,7 +2467,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYTGV-TYKV",
@@ -1938,7 +2491,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYTDJ-FT64",
@@ -1957,7 +2515,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYTA7-1RF0",
@@ -1976,7 +2539,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYT8G-74Z3",
@@ -1995,7 +2563,16 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 1,
+   "rejection_reasons": [
+    "evidence_missing",
+    "figma_measure_mismatch",
+    "merge_conflict"
+   ],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYT4S-E06Y",
@@ -2014,7 +2591,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYT6T-VSSY",
@@ -2033,7 +2615,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYT32-XEP3",
@@ -2052,7 +2639,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYT1D-06VY",
@@ -2071,7 +2663,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYSZ4-64NM",
@@ -2090,7 +2687,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYSX1-8WZT",
@@ -2109,7 +2711,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYSVB-DBJD",
@@ -2128,7 +2735,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYSSS-XMG2",
@@ -2147,7 +2759,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYSR6-BMYH",
@@ -2166,7 +2783,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYSPD-0S8B",
@@ -2185,7 +2807,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYSMP-PG18",
@@ -2204,7 +2831,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYSJS-40NZ",
@@ -2223,7 +2855,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYSH0-AS01",
@@ -2242,7 +2879,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYSF7-7CJS",
@@ -2261,7 +2903,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYSDD-HHPT",
@@ -2280,7 +2927,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYXXY-F97J",
@@ -2299,7 +2951,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYXS3-PXA8",
@@ -2318,7 +2975,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYXW9-3A2V",
@@ -2337,7 +2999,15 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 1,
+   "rejection_reasons": [
+    "figma_measure_mismatch",
+    "report_mismatch"
+   ],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYXTP-RFHW",
@@ -2356,7 +3026,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYXQA-DRQT",
@@ -2375,7 +3050,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M67PHWSJ-3W7P",
@@ -2394,7 +3074,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYXN8-G01N",
@@ -2413,7 +3098,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYS6S-QEZ4",
@@ -2432,7 +3122,15 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 1,
+   "rejection_reasons": [
+    "figma_measure_mismatch",
+    "head_sha_mismatch"
+   ],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYSBQ-BKNS",
@@ -2451,7 +3149,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYSA4-QK4C",
@@ -2470,7 +3173,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYS8G-X6A3",
@@ -2489,7 +3197,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYS55-XPJM",
@@ -2508,7 +3221,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYS3D-SNYP",
@@ -2527,7 +3245,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYRZV-BG90",
@@ -2546,7 +3269,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYS1P-2AET",
@@ -2565,7 +3293,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYRY3-WC6A",
@@ -2584,7 +3317,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYRTE-DHHV",
@@ -2603,7 +3341,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYRWA-VVMY",
@@ -2622,7 +3365,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYRRK-WG6V",
@@ -2641,7 +3389,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYRQ2-NDWN",
@@ -2660,7 +3413,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYRN7-2B9A",
@@ -2679,7 +3437,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYRKE-XT50",
@@ -2698,7 +3461,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYRHP-9XHJ",
@@ -2717,7 +3485,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYRC8-BG1C",
@@ -2736,7 +3509,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYRE2-WE19",
@@ -2755,7 +3533,16 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 1,
+   "rejection_reasons": [
+    "evidence_missing",
+    "figma_measure_mismatch",
+    "regression"
+   ],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63YYRFW-MFZP",
@@ -2774,7 +3561,14 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 1,
+   "rejection_reasons": [
+    "figma_measure_mismatch"
+   ],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M63CJB61-HGHZ",
@@ -2793,7 +3587,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": true,
+   "post_merge_defect_kind": "visual"
   },
   {
    "legacy_id": "M61DRHRE-C6SE",
@@ -2812,7 +3611,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "visual",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M61DH067-HFMS",
@@ -2831,7 +3635,12 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "other",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   },
   {
    "legacy_id": "M61DH049-WRYM",
@@ -2850,7 +3659,13 @@
    "has_red_command": false,
    "delivery_mode": "pr",
    "merged": true,
-   "verification_status": "reported"
+   "verification_status": "reported",
+   "card_kind": "other",
+   "review_request_changes": 0,
+   "rejection_reasons": [],
+   "is_followup_defect_card": false,
+   "post_merge_defect_kind": null
   }
- ]
+ ],
+ "notes": "card_kind derived from labels/titles (not published). rejection_reasons are keyword-classified from reviewer request-changes comments (approximate, multi-label). Follow-up defect cards: 4, all visual (figma pixel/color), 0 functional/API. CI ran existing 1730 unit tests + browser e2e on every PR; no per-card red tests."
 }

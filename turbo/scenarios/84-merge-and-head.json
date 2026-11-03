@@ -1,0 +1,115 @@
+{
+  "name": "merge-and-head",
+  "description": "A pull request that does not merge cleanly returns to open. The submitted sha must match the pull request head, including at approve.",
+  "actors": [
+    {"name": "ada", "role": "human"},
+    {"name": "run-1", "role": "runner", "harnesses": ["claude"]},
+    {"name": "worker", "role": "agent"},
+    {"name": "probe", "role": "probe"}
+  ],
+  "git": {"changed": ["turbo/app.py"], "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "pr_number": 4},
+  "cards": [
+    {
+      "ref": "gate",
+      "title": "Head",
+      "body": "Implement the gate.",
+      "contract": "The runner submits. The agent does not.",
+      "harness": "claude",
+      "kind": "report",
+      "proof": false,
+      "scope": {
+        "paths": ["turbo/"],
+        "forbidden": [],
+        "verify": [{"cmd": "python3 -c \"import sys; raise SystemExit(0)\"", "kind": "unit"}]
+      }
+    }
+  ],
+  "steps": [
+    {"name": "claim", "op": "claim", "actor": "run-1", "agent": "worker", "expect": {"status": 200}},
+    {"name": "ack", "op": "ack", "expect": {"status": 200}},
+    {"name": "ready", "op": "ready", "expect": {"status": 200}},
+    {
+      "name": "a conflict returns the card to open",
+      "op": "submit-raw",
+      "actor": "run-1",
+      "work_token": "$token",
+      "changed_paths": ["turbo/app.py"],
+      "pr": {"mergeable": false},
+      "expect": {"status": 409, "error": "not mergeable against base", "state": "open"}
+    },
+    {"name": "claim again", "op": "claim", "actor": "run-1", "agent": "worker", "expect": {"status": 200}},
+    {"name": "ack again", "op": "ack", "expect": {"status": 200}},
+    {"name": "ready again", "op": "ready", "expect": {"status": 200}},
+    {
+      "name": "mergeable must be boolean",
+      "op": "submit-raw",
+      "actor": "run-1",
+      "work_token": "$token",
+      "changed_paths": ["turbo/app.py"],
+      "pr": {"mergeable": "yes"},
+      "expect": {"status": 422, "error": "pr.mergeable must be true or false", "state": "working"}
+    },
+    {
+      "name": "a mismatched head is rejected",
+      "op": "submit-raw",
+      "actor": "run-1",
+      "work_token": "$token",
+      "changed_paths": ["turbo/app.py"],
+      "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "pr": {"head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+      "expect": {"status": 409, "error": "head sha does not match the pull request", "state": "open"}
+    },
+    {"name": "claim after the mismatch", "op": "claim", "actor": "run-1", "agent": "worker", "expect": {"status": 200}},
+    {"name": "ack after the mismatch", "op": "ack", "expect": {"status": 200}},
+    {"name": "ready after the mismatch", "op": "ready", "expect": {"status": 200}},
+    {
+      "name": "a matching head enters review",
+      "op": "submit-raw",
+      "actor": "run-1",
+      "work_token": "$token",
+      "changed_paths": ["turbo/app.py"],
+      "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "pr": {"sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "mergeable": true},
+      "expect": {"status": 200, "state": "review", "verify_level": "unit-test-verified"}
+    },
+    {
+      "name": "approve rejects a different head",
+      "op": "verdict",
+      "result": "approve",
+      "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "expect": {"status": 409, "error": "head sha does not match the pull request", "state": "review"}
+    },
+    {
+      "name": "the stored head is no longer the card sha",
+      "op": "tamper",
+      "set": {"sha": "cccccccccccccccccccccccccccccccccccccccc"},
+      "expect": {"status": 200}
+    },
+    {
+      "name": "approve rejects the stored mismatch",
+      "op": "verdict",
+      "result": "approve",
+      "expect": {"status": 409, "error": "head sha does not match the pull request", "state": "review"}
+    },
+    {
+      "name": "restore the submitted sha",
+      "op": "tamper",
+      "set": {"sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+      "expect": {"status": 200}
+    },
+    {
+      "name": "approve accepts the same head",
+      "op": "verdict",
+      "result": "approve",
+      "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "expect": {"status": 200, "state": "review", "verdict": "approve"}
+    },
+    {
+      "name": "probe merges",
+      "op": "merge",
+      "via": "http",
+      "actor": "probe",
+      "expect": {"status": 200, "state": "merged"}
+    }
+  ]
+}

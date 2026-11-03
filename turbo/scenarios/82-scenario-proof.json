@@ -111,9 +111,16 @@
       "expect": {
         "status": 422,
         "error": "scope.scenario is required unless scope.exempt is true",
-        "state": "working",
+        "state": "open",
         "card": "bare"
       }
+    },
+    {
+      "name": "a rejected submit is not stuck",
+      "op": "http",
+      "method": "GET",
+      "path": "/turbo/metrics",
+      "expect": {"status": 200, "stuck": []}
     },
     {
       "name": "claim the exempt card",
@@ -156,8 +163,11 @@
       "card": "proof",
       "actor": "run-3",
       "work_token": "$token",
-      "expect": {"status": 422, "error": "scenario JSON could not be read", "state": "working", "card": "proof"}
+      "expect": {"status": 422, "error": "scenario JSON could not be read", "state": "open", "card": "proof"}
     },
+    {"name": "claim after a missing file", "op": "claim", "card": "proof", "actor": "run-3", "agent": "worker", "expect": {"status": 200, "card": "proof"}},
+    {"name": "ack after a missing file", "op": "ack", "card": "proof", "expect": {"status": 200}},
+    {"name": "ready after a missing file", "op": "ready", "card": "proof", "expect": {"status": 200}},
     {"name": "write broken json", "op": "proof-write", "text": "{", "expect": {"status": null}},
     {
       "name": "broken json is rejected",
@@ -165,8 +175,11 @@
       "card": "proof",
       "actor": "run-3",
       "work_token": "$token",
-      "expect": {"status": 422, "error": "scenario JSON could not be read", "state": "working", "card": "proof"}
+      "expect": {"status": 422, "error": "scenario JSON could not be read", "state": "open", "card": "proof"}
     },
+    {"name": "claim after broken json", "op": "claim", "card": "proof", "actor": "run-3", "agent": "worker", "expect": {"status": 200, "card": "proof"}},
+    {"name": "ack after broken json", "op": "ack", "card": "proof", "expect": {"status": 200}},
+    {"name": "ready after broken json", "op": "ready", "card": "proof", "expect": {"status": 200}},
     {"name": "write a list", "op": "proof-write", "text": "[1]", "expect": {"status": null}},
     {
       "name": "a list has no cmd",
@@ -174,8 +187,11 @@
       "card": "proof",
       "actor": "run-3",
       "work_token": "$token",
-      "expect": {"status": 422, "error": "scenario JSON needs a cmd", "state": "working", "card": "proof"}
+      "expect": {"status": 422, "error": "scenario JSON needs a cmd", "state": "open", "card": "proof"}
     },
+    {"name": "claim after a list", "op": "claim", "card": "proof", "actor": "run-3", "agent": "worker", "expect": {"status": 200, "card": "proof"}},
+    {"name": "ack after a list", "op": "ack", "card": "proof", "expect": {"status": 200}},
+    {"name": "ready after a list", "op": "ready", "card": "proof", "expect": {"status": 200}},
     {"name": "write a non-string cmd", "op": "proof-write", "text": "{\"cmd\": 1}", "expect": {"status": null}},
     {
       "name": "a non-string cmd is rejected",
@@ -183,8 +199,11 @@
       "card": "proof",
       "actor": "run-3",
       "work_token": "$token",
-      "expect": {"status": 422, "error": "scenario JSON needs a cmd", "state": "working"}
+      "expect": {"status": 422, "error": "scenario JSON needs a cmd", "state": "open", "card": "proof"}
     },
+    {"name": "claim after a non-string cmd", "op": "claim", "card": "proof", "actor": "run-3", "agent": "worker", "expect": {"status": 200, "card": "proof"}},
+    {"name": "ack after a non-string cmd", "op": "ack", "card": "proof", "expect": {"status": 200}},
+    {"name": "ready after a non-string cmd", "op": "ready", "card": "proof", "expect": {"status": 200}},
     {"name": "write a blank cmd", "op": "proof-write", "text": "{\"cmd\": \"   \"}", "expect": {"status": null}},
     {
       "name": "a blank cmd is rejected",
@@ -192,8 +211,11 @@
       "card": "proof",
       "actor": "run-3",
       "work_token": "$token",
-      "expect": {"status": 422, "error": "scenario JSON needs a cmd", "state": "working", "card": "proof"}
+      "expect": {"status": 422, "error": "scenario JSON needs a cmd", "state": "open", "card": "proof"}
     },
+    {"name": "claim after a blank cmd", "op": "claim", "card": "proof", "actor": "run-3", "agent": "worker", "expect": {"status": 200, "card": "proof"}},
+    {"name": "ack after a blank cmd", "op": "ack", "card": "proof", "expect": {"status": 200}},
+    {"name": "ready after a blank cmd", "op": "ready", "card": "proof", "expect": {"status": 200}},
     {
       "name": "write a cmd that passes on base",
       "op": "proof-write",
@@ -206,8 +228,11 @@
       "card": "proof",
       "actor": "run-3",
       "work_token": "$token",
-      "expect": {"status": 409, "error": "scenario passed on base", "state": "working", "card": "proof"}
+      "expect": {"status": 409, "error": "scenario passed on base", "state": "open", "card": "proof"}
     },
+    {"name": "claim after a base pass", "op": "claim", "card": "proof", "actor": "run-3", "agent": "worker", "expect": {"status": 200, "card": "proof"}},
+    {"name": "ack after a base pass", "op": "ack", "card": "proof", "expect": {"status": 200}},
+    {"name": "ready after a base pass", "op": "ready", "card": "proof", "expect": {"status": 200}},
     {
       "name": "write a cmd that fails on head",
       "op": "proof-write",
@@ -220,8 +245,11 @@
       "card": "proof",
       "actor": "run-3",
       "work_token": "$token",
-      "expect": {"status": 409, "error": "scenario failed on head", "state": "working", "card": "proof"}
+      "expect": {"status": 409, "error": "scenario failed on head", "state": "open", "card": "proof"}
     },
+    {"name": "claim after a head failure", "op": "claim", "card": "proof", "actor": "run-3", "agent": "worker", "expect": {"status": 200, "card": "proof"}},
+    {"name": "ack after a head failure", "op": "ack", "card": "proof", "expect": {"status": 200}},
+    {"name": "ready after a head failure", "op": "ready", "card": "proof", "expect": {"status": 200}},
     {
       "name": "the scenario file must be in the commit",
       "op": "submit-raw",
@@ -230,8 +258,11 @@
       "work_token": "$token",
       "omit_proof": true,
       "git_changed": ["turbo/app.py"],
-      "expect": {"status": 409, "error": "the scenario must be part of the submit", "state": "working", "card": "proof"}
+      "expect": {"status": 409, "error": "the scenario must be part of the submit", "state": "open", "card": "proof"}
     },
+    {"name": "claim after the scenario was omitted", "op": "claim", "card": "proof", "actor": "run-3", "agent": "worker", "expect": {"status": 200, "card": "proof"}},
+    {"name": "ack after the scenario was omitted", "op": "ack", "card": "proof", "expect": {"status": 200}},
+    {"name": "ready after the scenario was omitted", "op": "ready", "card": "proof", "expect": {"status": 200}},
     {"name": "restore a failing-then-passing scenario", "op": "proof-write", "text": "default", "expect": {"status": null}},
     {
       "name": "base fails and head passes",

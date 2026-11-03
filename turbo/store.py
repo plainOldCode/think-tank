@@ -25,6 +25,10 @@ CREATE TABLE IF NOT EXISTS cards (
   contract_version INTEGER NOT NULL DEFAULT 1,
   scope_json TEXT NOT NULL,
   harness TEXT NOT NULL,
+  kind TEXT NOT NULL DEFAULT 'bug',
+  parent_id TEXT NOT NULL DEFAULT '',
+  rejection TEXT NOT NULL DEFAULT '',
+  rereview INTEGER NOT NULL DEFAULT 0,
   state TEXT NOT NULL,
   assignee TEXT NOT NULL DEFAULT '',
   agent TEXT NOT NULL DEFAULT '',
@@ -86,6 +90,7 @@ def card_from_row(row: sqlite3.Row) -> dict:
     d["ready"] = bool(d["ready"])
     d["nonce_used"] = bool(d["nonce_used"])
     d["confirm"] = bool(d["confirm"])
+    d["rereview"] = bool(d["rereview"])
     return d
 
 
@@ -194,6 +199,14 @@ class Store:
         sql += " ORDER BY created_at, id"
         with self.lock:
             rows = self.con.execute(sql, args).fetchall()
+        return [card_from_row(row) for row in rows]
+
+    def children(self, parent_id: str) -> list[dict]:
+        with self.lock:
+            rows = self.con.execute(
+                "SELECT * FROM cards WHERE parent_id=? ORDER BY created_at, id",
+                (parent_id,),
+            ).fetchall()
         return [card_from_row(row) for row in rows]
 
     def busy_card(self, assignee: str) -> dict | None:

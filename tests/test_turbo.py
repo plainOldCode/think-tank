@@ -232,16 +232,30 @@ def test_scope_and_verify_failure(tmp_path):
         "nonce": claimed["nonce"],
     }).json()["work_token"]
     client.post(f"/turbo/cards/{card['id']}/ready", json={"actor": "worker"})
+
+    def reclaim() -> str:
+        again = client.post(f"/turbo/cards/{card['id']}/claim", json={"actor": "run-1", "agent": "worker"}).json()
+        fresh = client.post(f"/turbo/cards/{card['id']}/ack", json={
+            "actor": "worker",
+            "digest": digest(again["body"], again["contract"], again["contract_version"], again["scope"]),
+            "nonce": again["nonce"],
+        }).json()["work_token"]
+        client.post(f"/turbo/cards/{card['id']}/ready", json={"actor": "worker"})
+        return fresh
+
     outside = client.post(f"/turbo/cards/{card['id']}/submit", json={
         "actor": "run-1", "sha": "ab" * 20, "pr": {},
         "changed_paths": ["README.md"], "work_token": token,
     })
     assert outside.status_code == 409
+    assert client.get(f"/turbo/cards/{card['id']}").json()["state"] == "open"
+    token = reclaim()
     forbidden = client.post(f"/turbo/cards/{card['id']}/submit", json={
         "actor": "run-1", "sha": "ab" * 20, "pr": {},
         "changed_paths": ["turbo/app.py", "turbo/legacy_schema.py"], "work_token": token,
     })
     assert forbidden.status_code == 409
+    token = reclaim()
     failed = client.post(f"/turbo/cards/{card['id']}/submit", json={
         "actor": "run-1", "sha": "ab" * 20, "pr": {},
         "changed_paths": ["turbo/app.py"], "work_token": token,

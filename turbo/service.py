@@ -13,6 +13,7 @@ from .drivers import HARNESSES
 from .errors import TurboError
 from .proof import prove
 from .store import Store, new_id, public_card
+from . import submitgate
 
 ROLES = {"human", "runner", "agent", "probe"}
 _SUMMARY = (
@@ -57,7 +58,8 @@ def register_actor(store: Store, name: str, role: str, harnesses: list | None,
 
 
 def create_card(store: Store, actor: str, title: str, body: str, contract: str,
-                harness: str, raw_scope: object, clock) -> dict:
+                harness: str, raw_scope: object, clock, kind: str = "bug",
+                parent_id: str = "") -> dict:
     store.require_role(actor, "human")
     if not isinstance(title, str) or not title.strip():
         raise TurboError(422, "title is required")
@@ -67,10 +69,16 @@ def create_card(store: Store, actor: str, title: str, body: str, contract: str,
         raise TurboError(422, "contract is required")
     if harness not in HARNESSES:
         raise TurboError(422, "unknown harness")
+    kind = submitgate.check_kind(kind or "bug")
+    parent_id = parent_id or ""
     parsed = scope.parse_scope(raw_scope)
     now = _now(clock)
     card_id = new_id()
     with store.transaction():
+        if parent_id:
+            parent = store.get(parent_id)
+            if parent["kind"] != "epic":
+                raise TurboError(422, "parent must be an epic")
         store.insert_card({
             "id": card_id,
             "title": title.strip(),
@@ -79,11 +87,13 @@ def create_card(store: Store, actor: str, title: str, body: str, contract: str,
             "contract_version": 1,
             "scope_json": json.dumps(parsed, sort_keys=True, ensure_ascii=False),
             "harness": harness,
+            "kind": kind,
+            "parent_id": parent_id,
             "state": "open",
             "created_at": now,
             "updated_at": now,
         })
-        store.add_event(card_id, "created", {"actor": actor, "harness": harness}, now)
+        store.add_event(card_id, "created", {"actor": actor, "harness": harness, "kind": kind}, now)
     return _view(store, card_id, reveal=False)
 
 
@@ -355,6 +365,26 @@ def resume_started(store: Store, card_id: str, actor: str, token: str,
     return _view(store, card_id, reveal=True)
 
 
+def _open_rejected(store: Store, card_id: str, reason: str, clock) -> None:
+    now = _now(clock)
+    with store.transaction():
+        store.get(card_id)
+        store.update_card(
+            card_id,
+            state="open",
+            assignee="",
+            agent="",
+            ready=0,
+            work_token="",
+            token_digest="",
+            nonce="",
+            nonce_used=0,
+            rejection=reason,
+            updated_at=now,
+        )
+        store.add_event(card_id, "rejected", {"reason": reason}, now)
+
+
 def submit(store: Store, card_id: str, actor: str, sha: str, pr: dict,
            changed: list, token: str, verify, clock) -> dict:
     store.require_role(actor, "runner")
@@ -362,6 +392,16 @@ def submit(store: Store, card_id: str, actor: str, sha: str, pr: dict,
         raise TurboError(422, "sha must be the full 40-character commit")
     if not isinstance(pr, dict):
         raise TurboError(422, "pr must be an object")
+    try:
+        return _submit_inner(store, card_id, actor, sha, pr, changed, token, verify, clock)
+    except TurboError as exc:
+        if submitgate.returns_to_todo(exc.status, exc.message):
+            _open_rejected(store, card_id, exc.message, clock)
+        raise
+
+
+def _submit_inner(store: Store, card_id: str, actor: str, sha: str, pr: dict,
+                  changed: list, token: str, verify, clock) -> dict:
     now = _now(clock)
     with store.transaction():
         card = store.get(card_id)
@@ -374,7 +414,14 @@ def submit(store: Store, card_id: str, actor: str, sha: str, pr: dict,
         gate.check_token(card, token)
         scope.check_changed(card["scope"], changed)
         state.require(card["state"], "submit")
-        prove(card["scope"], changed)
+        if card["kind"] == "epic":
+            raise TurboError(409, "an epic closes when its children are merged")
+        if submitgate.needs_scenario(card["kind"], bool(card["scope"].get("exempt"))):
+            prove(card["scope"], changed)
+        submitgate.check_evidence(card["kind"], card["scope"].get("evidence") or [], changed)
+        submitgate.check_head(sha, pr)
+        submitgate.check_mergeable(pr)
+        outside = submitgate.rebase_outside(card["scope"]["paths"], pr.get("rebase_paths"))
         store.update_card(
             card_id,
             state="submit",
@@ -390,6 +437,8 @@ def submit(store: Store, card_id: str, actor: str, sha: str, pr: dict,
             results.append({"cmd": step["cmd"], "kind": step["kind"], "code": int(code)})
             logs.append(f"$ {step['cmd']}\nexit {int(code)}\n{output}")
         level = scope.level_of(card["scope"]["verify"], results)
+        if card["kind"] == "visual" and level not in _MERGE_LEVELS:
+            raise TurboError(409, "visual work needs a passing CI verify")
         verdict = ""
         rc_count = card["rc_count"]
         if level in {"failed", "planned-only"}:
@@ -403,6 +452,8 @@ def submit(store: Store, card_id: str, actor: str, sha: str, pr: dict,
             verify_log="\n".join(logs)[-4000:],
             verdict=verdict,
             rc_count=rc_count,
+            rereview=1 if outside else 0,
+            rejection="",
             updated_at=now,
         )
         store.add_event(card_id, "verify", {"level": level, "results": results}, now)
@@ -413,7 +464,8 @@ def submit(store: Store, card_id: str, actor: str, sha: str, pr: dict,
     return _view(store, card_id, reveal=True)
 
 
-def verdict(store: Store, card_id: str, actor: str, result: str, findings: str, clock) -> dict:
+def verdict(store: Store, card_id: str, actor: str, result: str, findings: str, clock,
+            head_sha: str = "") -> dict:
     store.require_role(actor, "probe")
     if result not in {"approve", "request-changes"}:
         raise TurboError(422, "verdict must be approve or request-changes")
@@ -422,6 +474,10 @@ def verdict(store: Store, card_id: str, actor: str, result: str, findings: str, 
         card = store.get(card_id)
         if card["state"] != "review":
             raise TurboError(409, "verdict belongs on a card in review")
+        if result == "approve" and card["rereview"]:
+            raise TurboError(409, "re-review required after a merge outside scope")
+        if result == "approve":
+            submitgate.check_approve_head(card, head_sha)
         if result == "approve" and card["verify_level"] in {"", "failed", "planned-only"}:
             raise TurboError(409, "approve requires a passed server verify")
         rc_count = card["rc_count"] + (1 if result == "request-changes" and card["verdict"] != "request-changes" else 0)
@@ -454,7 +510,18 @@ def merge(store: Store, card_id: str, actor: str, clock) -> dict:
         state.require(card["state"], "merged")
         store.update_card(card_id, state="merged", updated_at=now)
         store.add_event(card_id, "merge", {"actor": actor, "sha": card["sha"]}, now)
+        _close_epic(store, card, now)
     return _view(store, card_id, reveal=False)
+
+
+def _close_epic(store: Store, child: dict, now: str) -> None:
+    parent_id = child.get("parent_id") or ""
+    if not parent_id:
+        return
+    if any(kid["state"] != "merged" for kid in store.children(parent_id)):
+        return
+    store.update_card(parent_id, state="merged", updated_at=now)
+    store.add_event(parent_id, "merge", {"actor": "server", "reason": "children merged"}, now)
 
 
 def edit_card(store: Store, card_id: str, actor: str, body: str | None,

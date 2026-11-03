@@ -2,69 +2,49 @@
 
 Verification level: planned-only. This is a simulation. It does not re-execute the work, and it does not call the live board, a harness CLI, GitHub, or Telegram.
 
-The simulator is `scripts/p1_replay.py`. It is outside the `turbo` package, so `scripts/scenario-coverage.sh` does not measure it. The gates it calls are `turbo.service` and `turbo.proof`.
+The simulator is `scripts/p1_replay.py`, outside the covered `turbo` package. It calls the real submit, verdict, and merge gates.
 
-Input: `turbo/sim/p1_baseline_150.json`, 150 done cards, metadata only.
+Input: `turbo/sim/p1_baseline_150.json`, 150 done cards, metadata only, including `card_kind` and `rejection_reasons`.
 
-## Headline
+## Before and after
 
-| Variant | Accepted | Rejected | Ask human | Exempt applied | Awaiting-human pings | Stuck pings |
-|---|---:|---:|---:|---:|---:|---:|
-| A-strict | 0 | 150 | 0 | 0 | 0 | 150 |
-| B-figma-ui | 0 | 150 | 0 | 0 | 0 | 150 |
-| S-no-red | 5 | 145 | 0 | 150 | 0 | 0 |
-| L-level | 149 | 1 | 0 | 150 | 0 | 0 |
+Before is the previous simulation, when every card was treated as a behavior card with no scenario. After is this run. Stuck is `metrics().stuck` with an empty live set. Ask-human is the `awaiting-human` state.
 
-## Top rejection reasons
+| | Accepted | Rejected | Ask human | Stuck |
+|---|---:|---:|---:|---:|
+| Before | 0 | 150 | 0 | 150 |
+| After | 130 | 20 | 0 | 0 |
 
-### A-strict
+Before, the only rejection was 150 red-green: scope.scenario is required unless scope.exempt is true.
 
-- 150 `red-green`: scope.scenario is required unless scope.exempt is true
+## After, by gate
 
-Main rework (`claim_count` 2): 24. Turbo `rc_count` summed after the real verify gate: 0. Notification total if both triggers are on: 150.
+These counts are the gate the real code fired. They are not a second copy of the measured reason labels.
 
-### B-figma-ui
+- 12 `evidence`: evidence missing at head: replay/missing.txt
+- 3 `mergeability`: not mergeable against base
+- 2 `head-sha`: head sha does not match the pull request
+- 2 `red-green`: scope.scenario is required unless scope.exempt is true
+- 1 `epic`: an epic closes when its children are merged
 
-- 150 `red-green`: scope.scenario is required unless scope.exempt is true
+## Request-changes caught before review
 
-Main rework (`claim_count` 2): 24. Turbo `rc_count` summed after the real verify gate: 0. Notification total if both triggers are on: 150.
+Measured on main: 27 request-changes across 19 cards.
 
-### S-no-red
+Modeled: a card is caught before review when its measured reasons include evidence missing, a merge conflict, a regression outside scope, or a head sha mismatch, and this replay rejected it before `review`. Pixel and report mismatches are not an automatic gate.
 
-- 145 `verdict`: approve requires a passed server verify
+Caught: 25 of 27 request-changes, on 17 of 19 cards. A card with several reasons hits the first gate only. Evidence is checked before mergeability and head sha, so a conflict that also missed evidence is counted under evidence. The three measured regressions were on cards that already failed one of those earlier gates.
 
-Main rework (`claim_count` 2): 24. Turbo `rc_count` summed after the real verify gate: 145. Notification total if both triggers are on: 0.
-
-### L-level
-
-- 1 `merge`: merge requires an approve verdict
-
-Main rework (`claim_count` 2): 24. Turbo `rc_count` summed after the real verify gate: 0. Notification total if both triggers are on: 0.
-
-## What each variant changes
-
-- `A-strict`: no card is exempt. Verify kind comes from `method`. A planned card stays kind `planned` even when main recorded `live-verified`.
-- `B-figma-ui`: the same as A, except cards in `--figma-ids` are `scope.exempt`. This baseline has no title, label, or path, and the id list shipped with the sim is empty, so zero cards match.
-- `S-no-red`: every card with `has_red_command` false is exempt. This is a sensitivity bound, not an identification of figma or UI cards. Kind still comes from `method`, so the planned-plus-passed contradiction is the next gate.
-- `L-level`: the same exemption, but verify kind comes from main's `verification_level`. Cards main called live-verified or unit-test-verified can pass verify. The evidence-only epic then reaches `merge` without an approve.
+The 4 post-merge defects are measured as visual. None of them is a functional or API failure. A figma pixel mismatch still needs a person.
 
 ## Assumptions
 
-- No scenario file is written, because `has_red_command` is false on every card. `prove` rejects a non-exempt card before verify runs.
-- `result=passed` makes the in-process verify stub return exit 0. The stub does not execute a command. `level_of` inside `submit` decides the level from the kind, not from main's recorded level.
-- Changed path is `replay/card.txt` under scope `replay/`. The baseline has no paths.
-- Title and body stored in the temp database are the legacy id and the word `replay`. They are not the private card text, and they are not written to the output.
-- Harness is `opencode` because the assignee name is an opencode worker. The replay does not spawn it. OpenCode stays handoff-only.
-- A missing assignee is still claimed by the replay runner, so a later gate can run. Main's epic was not claimed.
-- `delivery_mode=pr` becomes a pr object with `number` null. No PR number from main is stored.
-- Independent review maps the reviewer name to a probe actor and calls `verdict(approve)` then `merge`. Evidence-only does not call approve.
-- `claim_count` is reported as main's rework count. It is not turned into a question. `would-ask-human` is only the real `awaiting-human` state. Nothing in the metadata is a question, so that count stays 0.
-- Awaiting-human pings are the planned Hermes trigger. Stuck pings are the optional trigger: `metrics().stuck` with an empty live set, one per card left `working`. A failed `submit` rolls back, so the card stays `working` and counts as stuck. No message is sent.
+- `card_kind` `visual` skips the scenario gate. `other` is mapped to `feature`, so it still needs a scenario. The epic is submitted once and rejected; children are not replayed in one database, so automatic epic close is not part of this count.
+- For a visual card, CI kind comes from main's `verification_level`, because CI already ran. `method=planned` means there was no red-first test.
+- Evidence, mergeability, head sha, and rebase paths are not in the metadata. They are set from `rejection_reasons`: missing evidence is a path not in the commit, a merge conflict sets `mergeable` false, a head mismatch sets a different `head_sha`, and a regression sets a rebase path outside `replay/`. A visual card with none of those reasons is given an evidence path that is in the commit. That mapping is modeled.
+- `has_red_command` is false for every card, so no scenario file is written.
+- The verify stub returns exit 0 when `result` is `passed`. It does not run a command.
+- A rejected submit now returns the card to `open`, so it is not stuck.
+- No notification is sent. Awaiting-human pings are 0.
 
-## Limitations
-
-The baseline cannot say which cards are figma or UI sync. Variant B therefore cannot show that sensitivity. Variant S shows the upper bound of exempting every card that has no red command.
-
-Parent links are not a turbo field. The epic is replayed as its own card.
-
-This does not compare diffs, tokens, or lead time. Those fields are not in the baseline.
+Main rework (`claim_count` 2) is 24. It is not turned into a question.
