@@ -1,0 +1,77 @@
+{
+  "name": "codex-real-proc",
+  "description": "The real process port runs a stub codex and reads its stdout.",
+  "actors": [
+    {
+      "name": "ada",
+      "role": "human"
+    },
+    {
+      "name": "run-1",
+      "role": "runner",
+      "harnesses": [
+        "codex"
+      ]
+    },
+    {
+      "name": "worker",
+      "role": "agent"
+    },
+    {
+      "name": "probe",
+      "role": "probe"
+    }
+  ],
+  "git": {
+    "changed": [
+      "turbo/app.py"
+    ],
+    "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "pr_number": 4
+  },
+  "cards": [
+    {
+      "ref": "gate",
+      "title": "Gate the submit",
+      "body": "Implement the gate.",
+      "contract": "The runner submits. The agent does not.",
+      "harness": "codex",
+      "scope": {
+        "paths": [
+          "turbo/"
+        ],
+        "forbidden": [],
+        "verify": [
+          {
+            "cmd": "python3 -c \"import sys; raise SystemExit(0)\"",
+            "kind": "unit"
+          }
+        ]
+      }
+    }
+  ],
+  "proc": "subprocess",
+  "steps": [
+    {
+      "name": "spawn",
+      "op": "tick",
+      "arm": {
+        "mode": "ok",
+        "output": "{\"type\":\"thread.started\",\"thread_id\":\"th_real\"}\n"
+      },
+      "expect": {
+        "state": "working",
+        "argv0": "codex",
+        "spawns": 1
+      }
+    },
+    {
+      "name": "reap",
+      "op": "tick",
+      "expect": {
+        "state": "working",
+        "session_id": "th_real"
+      }
+    }
+  ]
+}

@@ -1,0 +1,54 @@
+{
+  "name": "legacy-throwaway-exists",
+  "description": "create_throwaway refuses to replace a file that is already there.",
+  "actors": [
+    {
+      "name": "ada",
+      "role": "human"
+    },
+    {
+      "name": "run-1",
+      "role": "runner",
+      "harnesses": [
+        "claude"
+      ]
+    },
+    {
+      "name": "worker",
+      "role": "agent"
+    },
+    {
+      "name": "probe",
+      "role": "probe"
+    }
+  ],
+  "git": {
+    "changed": [
+      "turbo/app.py"
+    ],
+    "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "pr_number": 4
+  },
+  "cards": [],
+  "legacy": {
+    "issues": [
+      {
+        "id": "T1",
+        "title": "t",
+        "body": "b",
+        "created_at": "t",
+        "updated_at": "t"
+      }
+    ]
+  },
+  "steps": [
+    {
+      "name": "second create",
+      "op": "legacy-recreate",
+      "expect": {
+        "status": 409,
+        "error": "legacy.db"
+      }
+    }
+  ]
+}

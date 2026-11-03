@@ -1,0 +1,63 @@
+{
+  "name": "confirm-blocks-default",
+  "description": "confirm true is an approval-shaped question. The 24 hour default must not apply it. A non-boolean confirm is rejected.",
+  "actors": [
+    {"name": "ada", "role": "human"},
+    {"name": "run-1", "role": "runner", "harnesses": ["claude"]},
+    {"name": "worker", "role": "agent"},
+    {"name": "probe", "role": "probe"}
+  ],
+  "git": {"changed": ["turbo/app.py"], "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "pr_number": 4},
+  "cards": [
+    {
+      "ref": "gate",
+      "title": "Needs a person",
+      "body": "Implement the gate.",
+      "contract": "The runner submits. The agent does not.",
+      "harness": "claude",
+      "scope": {
+        "paths": ["turbo/"],
+        "forbidden": [],
+        "verify": [{"cmd": "python3 -c \"import sys; raise SystemExit(0)\"", "kind": "unit"}]
+      }
+    }
+  ],
+  "steps": [
+    {
+      "name": "runner claims",
+      "op": "tick",
+      "arm": {"alive": true, "exit": 0},
+      "expect": {"state": "working"}
+    },
+    {
+      "name": "confirm must be boolean",
+      "op": "ask",
+      "confirm": "yes",
+      "blocked_question": "Ship it?",
+      "blocked_options": ["yes", "no"],
+      "blocked_default": "yes",
+      "expect": {"status": 422, "error": "confirm must be true or false", "state": "working"}
+    },
+    {
+      "name": "agent asks for confirmation",
+      "op": "ask",
+      "confirm": true,
+      "blocked_question": "Ship it?",
+      "blocked_options": ["yes", "no"],
+      "blocked_default": "yes",
+      "expect": {"state": "question", "confirm": true}
+    },
+    {
+      "name": "turn ends",
+      "op": "tick",
+      "release": {"exit": 0},
+      "expect": {"state": "awaiting-human", "answer": ""}
+    },
+    {"name": "clock passes the 24 hour deadline", "op": "advance", "seconds": 86405},
+    {
+      "name": "the default is not applied",
+      "op": "tick",
+      "expect": {"answer": "", "state": "awaiting-human", "spawns": 1, "confirm": true}
+    }
+  ]
+}

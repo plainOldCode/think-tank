@@ -1,0 +1,119 @@
+{
+  "name": "second-claim",
+  "description": "While a card is awaiting a human, the same runner cannot claim another card.",
+  "actors": [
+    {
+      "name": "ada",
+      "role": "human"
+    },
+    {
+      "name": "run-1",
+      "role": "runner",
+      "harnesses": [
+        "claude"
+      ]
+    },
+    {
+      "name": "worker",
+      "role": "agent"
+    },
+    {
+      "name": "probe",
+      "role": "probe"
+    }
+  ],
+  "git": {
+    "changed": [
+      "turbo/app.py"
+    ],
+    "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "pr_number": 4
+  },
+  "cards": [
+    {
+      "ref": "gate",
+      "title": "Held",
+      "body": "Implement the gate.",
+      "contract": "The runner submits. The agent does not.",
+      "harness": "claude",
+      "scope": {
+        "paths": [
+          "turbo/"
+        ],
+        "forbidden": [],
+        "verify": [
+          {
+            "cmd": "python3 -c \"import sys; raise SystemExit(0)\"",
+            "kind": "unit"
+          }
+        ]
+      }
+    }
+  ],
+  "steps": [
+    {
+      "name": "runner claims the first card",
+      "op": "tick",
+      "arm": {
+        "alive": true,
+        "exit": 0
+      },
+      "expect": {
+        "card": "gate",
+        "state": "working"
+      }
+    },
+    {
+      "name": "agent asks",
+      "op": "ask",
+      "card": "gate",
+      "blocked_question": "Ship it?",
+      "blocked_options": [
+        "yes",
+        "no"
+      ],
+      "blocked_default": "yes",
+      "expect": {
+        "card": "gate",
+        "state": "question"
+      }
+    },
+    {
+      "name": "turn ends",
+      "op": "tick",
+      "release": {
+        "exit": 0
+      },
+      "expect": {
+        "card": "gate",
+        "state": "awaiting-human"
+      }
+    },
+    {
+      "name": "a second card is opened",
+      "op": "create-card",
+      "ref": "other",
+      "title": "Second card",
+      "harness": "claude",
+      "scope": {
+        "paths": ["turbo/"],
+        "forbidden": [],
+        "verify": [{"cmd": "python3 -c \"import sys; raise SystemExit(0)\"", "kind": "unit"}]
+      },
+      "expect": {"status": 200}
+    },
+    {
+      "name": "second claim is refused",
+      "op": "claim",
+      "card": "other",
+      "actor": "run-1",
+      "agent": "worker",
+      "expect": {
+        "status": 409,
+        "error": "already holds",
+        "card": "other",
+        "state": "open"
+      }
+    }
+  ]
+}

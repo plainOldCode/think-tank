@@ -1,0 +1,135 @@
+/* Ink board, same ground as the legacy think-tank page.
+   Off-white, dark ink, vermilion only on the mast square. No shadows. */
+@font-face {
+  font-family: "Galmuri Mono";
+  src: url("/fonts/GalmuriMono11.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+:root {
+  --bg: #f7f6f3;
+  --panel: #ffffff;
+  --ink: #141414;
+  --line: #141414;
+  --hair: #d4cfc6;
+  --dim: #6d6d68;
+  --hot: #c23b22;
+  --pixel: "Galmuri Mono", ui-monospace, "Courier New", monospace;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0;
+  min-height: 100%;
+  background: var(--bg);
+  color: var(--ink);
+  font: 13px/1.45 var(--pixel);
+  -webkit-font-smoothing: none;
+}
+header { border-bottom: 4px solid var(--hair); background: var(--panel); }
+.mast {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  padding: 12px 16px 10px;
+}
+.mast b { font-weight: 400; font-size: 22px; letter-spacing: 0.04em; }
+.mast b::before {
+  content: "";
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  margin-right: 8px;
+  background: var(--hot);
+  border: 2px solid var(--ink);
+  vertical-align: -1px;
+}
+.mast small { color: var(--dim); font-size: 11px; letter-spacing: 0.04em; }
+.tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 10px;
+  align-items: center;
+  padding: 10px 16px;
+  background: var(--bg);
+  border-top: 4px solid var(--hair);
+}
+.tools input, .tools button {
+  height: 32px;
+  border: 2px solid var(--ink);
+  border-radius: 0;
+  background: var(--panel);
+  color: var(--ink);
+  font: inherit;
+  padding: 0 8px;
+}
+.tools button { cursor: pointer; }
+.tools label { color: var(--dim); display: flex; align-items: center; gap: 6px; }
+main {
+  display: grid;
+  grid-template-columns: 1fr 1fr 320px;
+  min-height: calc(100% - 96px);
+}
+section { padding: 12px 16px 36px; min-width: 0; }
+section + section { border-left: 2px solid var(--hair); }
+h2 {
+  margin: 0 0 8px;
+  font-size: 11px;
+  font-weight: 400;
+  letter-spacing: 0.12em;
+  color: var(--dim);
+  border-bottom: 2px solid var(--hair);
+  padding-bottom: 8px;
+}
+.group { margin: 0 0 16px; }
+.glabel {
+  margin: 0;
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  color: var(--dim);
+}
+.card {
+  background: var(--panel);
+  border: 2px solid var(--hair);
+  margin: 8px 0;
+  padding: 12px 14px;
+  cursor: pointer;
+}
+.card:hover { background: var(--bg); }
+.card .id { color: var(--dim); font-size: 11px; letter-spacing: 0.04em; }
+.card .ttl { display: block; margin: 4px 0; font-size: 16px; }
+.card .sub { color: var(--dim); font-size: 12px; }
+#detail {
+  border-left: 4px solid var(--hair);
+  background: var(--panel);
+  padding: 12px 14px 36px;
+  overflow: auto;
+}
+#detail h3 { font-size: 16px; font-weight: 400; margin: 8px 0; }
+#detail .meta { color: var(--dim); font-size: 11px; }
+pre {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font: inherit;
+  background: var(--bg);
+  border: 2px solid var(--hair);
+  padding: 8px;
+}
+.choices { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; }
+.choices button, .ghost {
+  border: 2px solid var(--ink);
+  background: var(--bg);
+  color: var(--ink);
+  font: inherit;
+  padding: 6px 10px;
+  cursor: pointer;
+  border-radius: 0;
+}
+.note { color: var(--dim); font-size: 11px; }
+.cmt { margin: 8px 0; }
+.err { color: var(--hot); }
+@media (max-width: 900px) {
+  main { grid-template-columns: 1fr; }
+  #detail, section + section { border-left: 0; border-top: 4px solid var(--hair); }
+}

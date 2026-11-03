@@ -1,0 +1,66 @@
+{
+  "name": "grok-bot-no-bearer",
+  "description": "A webhook with a URL and no bearer sends no Authorization header.",
+  "actors": [
+    {
+      "name": "ada",
+      "role": "human"
+    },
+    {
+      "name": "run-1",
+      "role": "runner",
+      "harnesses": [
+        "grok-bot"
+      ]
+    },
+    {
+      "name": "worker",
+      "role": "agent"
+    },
+    {
+      "name": "probe",
+      "role": "probe"
+    }
+  ],
+  "git": {
+    "changed": [
+      "turbo/app.py"
+    ],
+    "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "pr_number": 4
+  },
+  "cards": [
+    {
+      "ref": "gate",
+      "title": "Gate the submit",
+      "body": "Implement the gate.",
+      "contract": "The runner submits. The agent does not.",
+      "harness": "grok-bot",
+      "scope": {
+        "paths": [
+          "turbo/"
+        ],
+        "forbidden": [],
+        "verify": [
+          {
+            "cmd": "python3 -c \"import sys; raise SystemExit(0)\"",
+            "kind": "unit"
+          }
+        ]
+      }
+    }
+  ],
+  "webhook": "http://127.0.0.1:9/hook",
+  "steps": [
+    {
+      "name": "posts without a bearer",
+      "op": "tick",
+      "expect": {
+        "state": "working",
+        "session_mode": "webhook",
+        "webhook_posts": 1,
+        "webhook_auth": ""
+      }
+    }
+  ]
+}

@@ -1,0 +1,138 @@
+{
+  "name": "claude-fork-session",
+  "description": "A successful Claude fork with no preassigned id parses session_id from the JSON object.",
+  "actors": [
+    {
+      "name": "ada",
+      "role": "human"
+    },
+    {
+      "name": "run-1",
+      "role": "runner",
+      "harnesses": [
+        "claude"
+      ]
+    },
+    {
+      "name": "worker",
+      "role": "agent"
+    },
+    {
+      "name": "probe",
+      "role": "probe"
+    }
+  ],
+  "git": {
+    "changed": [
+      "turbo/app.py"
+    ],
+    "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "pr_number": 4
+  },
+  "cards": [
+    {
+      "ref": "gate",
+      "title": "Gate the submit",
+      "body": "Implement the gate.",
+      "contract": "The runner submits. The agent does not.",
+      "harness": "claude",
+      "scope": {
+        "paths": [
+          "turbo/"
+        ],
+        "forbidden": [],
+        "verify": [
+          {
+            "cmd": "python3 -c \"import sys; raise SystemExit(0)\"",
+            "kind": "unit"
+          }
+        ]
+      }
+    }
+  ],
+  "steps": [
+    {
+      "name": "runner claims",
+      "op": "tick",
+      "arm": {
+        "alive": true,
+        "exit": 0
+      },
+      "expect": {
+        "state": "working",
+        "spawns": 1
+      }
+    },
+    {
+      "name": "agent asks",
+      "op": "ask",
+      "blocked_question": "Continue?",
+      "blocked_options": [
+        "yes",
+        "no"
+      ],
+      "blocked_default": "yes",
+      "expect": {
+        "state": "question"
+      }
+    },
+    {
+      "name": "turn ends",
+      "op": "tick",
+      "release": {
+        "exit": 0
+      },
+      "expect": {
+        "state": "awaiting-human"
+      }
+    },
+    {
+      "name": "human answers",
+      "op": "answer",
+      "choice": "yes",
+      "expect": {
+        "answer": "yes"
+      }
+    },
+    {
+      "name": "resume exits",
+      "op": "tick",
+      "arm": {
+        "alive": false,
+        "exit": 1
+      },
+      "expect": {
+        "state": "working",
+        "argv_contains": [
+          "--resume"
+        ],
+        "spawns": 2
+      }
+    },
+    {
+      "name": "fork spawns",
+      "op": "tick",
+      "arm": {
+        "alive": false,
+        "exit": 0,
+        "output": "{\"session_id\":\"s_from_fork\"}"
+      },
+      "expect": {
+        "state": "working",
+        "argv_contains": [
+          "--fork-session"
+        ],
+        "spawns": 3
+      }
+    },
+    {
+      "name": "fork is reaped",
+      "op": "tick",
+      "expect": {
+        "state": "working",
+        "spawns": 3,
+        "session_id": "s_from_fork"
+      }
+    }
+  ]
+}

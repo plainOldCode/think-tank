@@ -1,0 +1,115 @@
+{
+  "name": "grok-bot-webhook",
+  "description": "Grok Bot launches and resumes by webhook. The bearer is the status text, so the status log would leak it without redaction.",
+  "actors": [
+    {
+      "name": "ada",
+      "role": "human"
+    },
+    {
+      "name": "run-1",
+      "role": "runner",
+      "harnesses": [
+        "grok-bot"
+      ]
+    },
+    {
+      "name": "worker",
+      "role": "agent"
+    },
+    {
+      "name": "probe",
+      "role": "probe"
+    }
+  ],
+  "webhook": "http://127.0.0.1:9/hook",
+  "bearer": "status=202",
+  "git": {
+    "changed": [
+      "turbo/app.py"
+    ],
+    "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "pr_number": 4
+  },
+  "cards": [
+    {
+      "ref": "gate",
+      "title": "Grok Bot",
+      "body": "Implement the gate.",
+      "contract": "The runner submits. The agent does not.",
+      "harness": "grok-bot",
+      "scope": {
+        "paths": [
+          "turbo/"
+        ],
+        "forbidden": [],
+        "verify": [
+          {
+            "cmd": "python3 -c \"import sys; raise SystemExit(0)\"",
+            "kind": "unit"
+          }
+        ]
+      }
+    }
+  ],
+  "steps": [
+    {
+      "name": "webhook launch",
+      "op": "tick",
+      "expect": {
+        "state": "working",
+        "session_mode": "webhook",
+        "spawns": 0,
+        "webhook_posts": 1,
+        "webhook_auth": "Bearer status=202",
+        "webhook_contains": "contract:",
+        "log_contains": "[redacted]",
+        "log_excludes": "status=202"
+      }
+    },
+    {
+      "name": "agent asks",
+      "op": "ask",
+      "blocked_question": "Continue?",
+      "blocked_options": [
+        "yes",
+        "no"
+      ],
+      "blocked_default": "yes",
+      "expect": {
+        "status": 200,
+        "state": "question"
+      }
+    },
+    {
+      "name": "turn ends",
+      "op": "turn-closed",
+      "expect": {
+        "status": 200,
+        "state": "awaiting-human"
+      }
+    },
+    {
+      "name": "human answers",
+      "op": "answer",
+      "choice": "yes",
+      "expect": {
+        "status": 200,
+        "answer": "yes"
+      }
+    },
+    {
+      "name": "webhook resume",
+      "op": "tick",
+      "expect": {
+        "state": "working",
+        "session_mode": "webhook",
+        "spawns": 0,
+        "webhook_posts": 2,
+        "webhook_contains": "choice=yes",
+        "webhook_auth": "Bearer status=202",
+        "log_excludes": "status=202"
+      }
+    }
+  ]
+}

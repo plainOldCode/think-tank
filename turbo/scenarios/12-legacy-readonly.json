@@ -1,0 +1,102 @@
+{
+  "name": "legacy-readonly",
+  "description": "The archive shows fixture issues, children, comments, and completion reports. A write through the read-only connection fails, and POST /legacy/issues is not a route.",
+  "actors": [
+    {
+      "name": "ada",
+      "role": "human"
+    },
+    {
+      "name": "run-1",
+      "role": "runner",
+      "harnesses": [
+        "claude"
+      ]
+    },
+    {
+      "name": "worker",
+      "role": "agent"
+    },
+    {
+      "name": "probe",
+      "role": "probe"
+    }
+  ],
+  "git": {
+    "changed": [
+      "turbo/app.py"
+    ],
+    "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "pr_number": 4
+  },
+  "cards": [],
+  "legacy": {
+    "issues": [
+      {
+        "id": "PARENT01",
+        "title": "parent",
+        "body": "parent body",
+        "state": "todo",
+        "acceptance": "done when tested",
+        "created_at": "2026-10-01T00:00:00+0000",
+        "updated_at": "2026-10-01T00:00:00+0000",
+        "brief_scope": "turbo/",
+        "brief_verify": "pytest",
+        "brief_forbidden": "no secrets",
+        "brief_timebox": "1d",
+        "blocked_question": "Ship it?",
+        "blocked_options": "[\"yes\",\"no\"]",
+        "blocked_default": "yes"
+      },
+      {
+        "id": "CHILD001",
+        "title": "child",
+        "body": "child body",
+        "state": "in_progress",
+        "parent_id": "PARENT01",
+        "created_at": "2026-10-01T00:00:00+0000",
+        "updated_at": "2026-10-01T00:00:00+0000",
+        "completion_report": "{\"summary\": \"report text\"}"
+      }
+    ],
+    "comments": [
+      {
+        "issue_id": "PARENT01",
+        "author": "ada",
+        "body": "a comment",
+        "ts": "2026-10-01T00:00:00+0000"
+      }
+    ]
+  },
+  "steps": [
+    {
+      "name": "archive shows the fixture",
+      "op": "legacy-get",
+      "issue": "PARENT01",
+      "expect": {
+        "status": 200,
+        "legacy_issue": "PARENT01",
+        "legacy_body": "parent body",
+        "legacy_read_only": true,
+        "legacy_children": [
+          "CHILD001"
+        ],
+        "legacy_comment": "a comment",
+        "legacy_child_report": "report text",
+        "legacy_ids": [
+          "CHILD001",
+          "PARENT01"
+        ]
+      }
+    },
+    {
+      "name": "a write fails",
+      "op": "legacy-write",
+      "expect": {
+        "status": 403,
+        "error": "readonly",
+        "post_status": 405
+      }
+    }
+  ]
+}

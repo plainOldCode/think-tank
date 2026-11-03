@@ -1,0 +1,136 @@
+{
+  "name": "epic-closes",
+  "description": "An epic closes when every child has merged. It cannot close by submitting a passed result.",
+  "actors": [
+    {"name": "ada", "role": "human"},
+    {"name": "run-1", "role": "runner", "harnesses": ["claude"]},
+    {"name": "worker", "role": "agent"},
+    {"name": "probe", "role": "probe"}
+  ],
+  "git": {"changed": ["turbo/app.py"], "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "pr_number": 4},
+  "cards": [
+    {
+      "ref": "epic",
+      "title": "Epic",
+      "body": "Implement the gate.",
+      "contract": "The runner submits. The agent does not.",
+      "harness": "claude",
+      "kind": "epic",
+      "proof": false,
+      "scope": {
+        "paths": ["turbo/"],
+        "forbidden": [],
+        "verify": [{"cmd": "python3 -c \"import sys; raise SystemExit(0)\"", "kind": "unit"}]
+      }
+    },
+    {
+      "ref": "one",
+      "title": "One",
+      "body": "Implement the gate.",
+      "contract": "The runner submits. The agent does not.",
+      "harness": "claude",
+      "kind": "research",
+      "parent": "epic",
+      "proof": false,
+      "scope": {
+        "paths": ["turbo/"],
+        "forbidden": [],
+        "verify": [{"cmd": "python3 -c \"import sys; raise SystemExit(0)\"", "kind": "unit"}]
+      }
+    },
+    {
+      "ref": "two",
+      "title": "Two",
+      "body": "Implement the gate.",
+      "contract": "The runner submits. The agent does not.",
+      "harness": "claude",
+      "kind": "docs",
+      "parent": "epic",
+      "proof": false,
+      "scope": {
+        "paths": ["turbo/"],
+        "forbidden": [],
+        "evidence": ["turbo/app.py"],
+        "verify": [{"cmd": "python3 -c \"import sys; raise SystemExit(0)\"", "kind": "unit"}]
+      }
+    },
+    {
+      "ref": "bug",
+      "title": "Not an epic",
+      "body": "Implement the gate.",
+      "contract": "The runner submits. The agent does not.",
+      "harness": "claude",
+      "kind": "bug",
+      "proof": false,
+      "scope": {
+        "paths": ["turbo/"],
+        "forbidden": [],
+        "verify": [{"cmd": "python3 -c \"import sys; raise SystemExit(0)\"", "kind": "unit"}]
+      }
+    }
+  ],
+  "steps": [
+    {
+      "name": "a missing parent is rejected",
+      "op": "create-card",
+      "ref": "orphan",
+      "title": "Orphan",
+      "kind": "report",
+      "parent_id": "NO-SUCH",
+      "scope": {"paths": ["turbo/"], "forbidden": [], "verify": [{"cmd": "python3 -c \"import sys; raise SystemExit(0)\"", "kind": "unit"}]},
+      "expect": {"status": 404, "error": "card not found"}
+    },
+    {
+      "name": "a parent must be an epic",
+      "op": "create-card",
+      "ref": "bad-parent",
+      "title": "Bad parent",
+      "kind": "report",
+      "parent": "bug",
+      "scope": {"paths": ["turbo/"], "forbidden": [], "verify": [{"cmd": "python3 -c \"import sys; raise SystemExit(0)\"", "kind": "unit"}]},
+      "expect": {"status": 422, "error": "parent must be an epic"}
+    },
+    {"name": "claim the epic", "op": "claim", "card": "epic", "actor": "run-1", "agent": "worker", "expect": {"status": 200, "card": "epic"}},
+    {"name": "ack the epic", "op": "ack", "card": "epic", "expect": {"status": 200}},
+    {"name": "epic is ready", "op": "ready", "card": "epic", "expect": {"status": 200}},
+    {
+      "name": "an epic cannot submit a passed result",
+      "op": "submit-raw",
+      "card": "epic",
+      "actor": "run-1",
+      "work_token": "$token",
+      "changed_paths": ["turbo/app.py"],
+      "expect": {"status": 409, "error": "an epic closes when its children are merged", "state": "open", "card": "epic"}
+    },
+    {"name": "claim the first child", "op": "claim", "card": "one", "actor": "run-1", "agent": "worker", "expect": {"status": 200, "card": "one"}},
+    {"name": "ack the first child", "op": "ack", "card": "one", "expect": {"status": 200}},
+    {"name": "first child is ready", "op": "ready", "card": "one", "expect": {"status": 200}},
+    {
+      "name": "submit the first child",
+      "op": "submit-raw",
+      "card": "one",
+      "actor": "run-1",
+      "work_token": "$token",
+      "changed_paths": ["turbo/app.py"],
+      "expect": {"status": 200, "state": "review", "card": "one"}
+    },
+    {"name": "approve the first child", "op": "verdict", "card": "one", "result": "approve", "expect": {"status": 200, "card": "one"}},
+    {"name": "merge the first child", "op": "merge", "card": "one", "via": "http", "actor": "probe", "expect": {"status": 200, "state": "merged", "card": "one"}},
+    {"name": "the epic stays open", "op": "get", "card": "epic", "expect": {"status": 200, "state": "open", "card": "epic"}},
+    {"name": "claim the second child", "op": "claim", "card": "two", "actor": "run-1", "agent": "worker", "expect": {"status": 200, "card": "two"}},
+    {"name": "ack the second child", "op": "ack", "card": "two", "expect": {"status": 200}},
+    {"name": "second child is ready", "op": "ready", "card": "two", "expect": {"status": 200}},
+    {
+      "name": "submit the second child",
+      "op": "submit-raw",
+      "card": "two",
+      "actor": "run-1",
+      "work_token": "$token",
+      "changed_paths": ["turbo/app.py"],
+      "expect": {"status": 200, "state": "review", "card": "two"}
+    },
+    {"name": "approve the second child", "op": "verdict", "card": "two", "result": "approve", "expect": {"status": 200, "card": "two"}},
+    {"name": "merge the second child", "op": "merge", "card": "two", "via": "http", "actor": "probe", "expect": {"status": 200, "state": "merged", "card": "two"}},
+    {"name": "the epic closes", "op": "get", "card": "epic", "expect": {"status": 200, "state": "merged", "card": "epic"}}
+  ]
+}

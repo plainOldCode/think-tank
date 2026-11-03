@@ -1,0 +1,122 @@
+{
+  "name": "verify-fails",
+  "description": "The server reruns verify. A failing command is not accepted: approve and merge are rejected.",
+  "actors": [
+    {
+      "name": "ada",
+      "role": "human"
+    },
+    {
+      "name": "run-1",
+      "role": "runner",
+      "harnesses": [
+        "claude"
+      ]
+    },
+    {
+      "name": "worker",
+      "role": "agent"
+    },
+    {
+      "name": "probe",
+      "role": "probe"
+    }
+  ],
+  "git": {
+    "changed": [
+      "turbo/app.py"
+    ],
+    "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "pr_number": 4
+  },
+  "cards": [
+    {
+      "ref": "gate",
+      "title": "Verify must pass",
+      "body": "Implement the gate.",
+      "contract": "The runner submits. The agent does not.",
+      "harness": "claude",
+      "scope": {
+        "paths": [
+          "turbo/"
+        ],
+        "forbidden": [],
+        "verify": [
+          {
+            "cmd": "python3 -c \"import sys; raise SystemExit(1)\"",
+            "kind": "unit"
+          }
+        ]
+      }
+    }
+  ],
+  "steps": [
+    {
+      "name": "runner claims",
+      "op": "tick",
+      "arm": {
+        "alive": true,
+        "exit": 0
+      },
+      "expect": {
+        "state": "working"
+      }
+    },
+    {
+      "name": "agent acks",
+      "op": "ack",
+      "expect": {
+        "status": 200
+      }
+    },
+    {
+      "name": "agent marks ready",
+      "op": "ready",
+      "expect": {
+        "status": 200
+      }
+    },
+    {
+      "name": "harness exits",
+      "op": "tick",
+      "release": {
+        "exit": 0
+      },
+      "expect": {
+        "state": "working"
+      }
+    },
+    {
+      "name": "runner submits and the server verify fails",
+      "op": "submit",
+      "expect": {
+        "status": 200,
+        "state": "review",
+        "verify_level": "failed",
+        "verdict": "request-changes",
+        "rc_count": 1
+      }
+    },
+    {
+      "name": "probe cannot approve",
+      "op": "verdict",
+      "result": "approve",
+      "expect": {
+        "status": 409,
+        "error": "passed server verify",
+        "verdict": "request-changes"
+      }
+    },
+    {
+      "name": "runner cannot merge",
+      "op": "merge",
+      "via": "runner",
+      "expect": {
+        "status": 409,
+        "error": "approve",
+        "state": "review",
+        "no_merge": true
+      }
+    }
+  ]
+}

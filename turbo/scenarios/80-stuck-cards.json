@@ -1,0 +1,132 @@
+{
+  "name": "stuck-cards",
+  "description": "metrics.stuck lists working cards with no live handle, and distinguishes a handoff from a dead turn.",
+  "actors": [
+    {"name": "ada", "role": "human"},
+    {"name": "run-1", "role": "runner", "harnesses": ["claude"]},
+    {"name": "run-2", "role": "runner", "harnesses": ["hermes"]},
+    {"name": "worker", "role": "agent"},
+    {"name": "probe", "role": "probe"}
+  ],
+  "git": {"changed": ["turbo/app.py"], "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "pr_number": 4},
+  "cards": [
+    {
+      "ref": "live",
+      "title": "Still spawning",
+      "body": "Implement the gate.",
+      "contract": "The runner submits. The agent does not.",
+      "harness": "claude",
+      "scope": {
+        "paths": ["turbo/"],
+        "forbidden": [],
+        "verify": [{"cmd": "python3 -c \"import sys; raise SystemExit(0)\"", "kind": "unit"}]
+      }
+    },
+    {
+      "ref": "hand",
+      "title": "Needs a person to drive it",
+      "body": "Implement the gate.",
+      "contract": "The runner submits. The agent does not.",
+      "harness": "hermes",
+      "scope": {
+        "paths": ["turbo/"],
+        "forbidden": [],
+        "verify": [{"cmd": "python3 -c \"import sys; raise SystemExit(0)\"", "kind": "unit"}]
+      }
+    }
+  ],
+  "steps": [
+    {
+      "name": "live cards must be a list",
+      "op": "http",
+      "method": "POST",
+      "path": "/turbo/runner/live",
+      "body": {"cards": "no"},
+      "expect": {"status": 422, "error": "cards must be a list of ids"}
+    },
+    {
+      "name": "non-string ids are dropped",
+      "op": "http",
+      "method": "POST",
+      "path": "/turbo/runner/live",
+      "body": {"cards": ["ok", 1]},
+      "expect": {"status": 200, "metric_cards": ["ok"]}
+    },
+    {
+      "name": "open cards are not stuck",
+      "op": "http",
+      "method": "GET",
+      "path": "/turbo/metrics",
+      "expect": {"status": 200, "stuck": []}
+    },
+    {
+      "name": "runner claims the claude card",
+      "op": "tick",
+      "arm": {"alive": true, "exit": 0},
+      "expect": {"state": "working", "card": "live", "spawns": 1}
+    },
+    {
+      "name": "a live handle is not stuck",
+      "op": "http",
+      "method": "GET",
+      "path": "/turbo/metrics",
+      "expect": {"status": 200, "stuck": []}
+    },
+    {
+      "name": "the other runner claims hermes",
+      "op": "claim",
+      "card": "hand",
+      "actor": "run-2",
+      "agent": "worker",
+      "expect": {"status": 200, "state": "working", "card": "hand"}
+    },
+    {
+      "name": "working with no session is no live handle",
+      "op": "http",
+      "method": "GET",
+      "path": "/turbo/metrics",
+      "expect": {
+        "status": 200,
+        "stuck": [{"card": "hand", "reason": "no live handle"}]
+      }
+    },
+    {
+      "name": "record the handoff",
+      "op": "session",
+      "card": "hand",
+      "actor": "run-2",
+      "driver": "hermes",
+      "mode": "handoff",
+      "expect": {"status": 200, "session_mode": "handoff", "card": "hand"}
+    },
+    {
+      "name": "handoff is stuck for a different reason",
+      "op": "http",
+      "method": "GET",
+      "path": "/turbo/metrics",
+      "expect": {
+        "status": 200,
+        "stuck": [{"card": "hand", "reason": "handoff"}]
+      }
+    },
+    {
+      "name": "the claude turn exits",
+      "op": "tick",
+      "release": {"exit": 0},
+      "expect": {"state": "working", "card": "live", "spawns": 1}
+    },
+    {
+      "name": "both working cards are stuck",
+      "op": "http",
+      "method": "GET",
+      "path": "/turbo/metrics",
+      "expect": {
+        "status": 200,
+        "stuck": [
+          {"card": "live", "reason": "no live handle"},
+          {"card": "hand", "reason": "handoff"}
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,165 @@
+{
+  "name": "unknown-harness",
+  "description": "An unknown harness is rejected on a card and on a runner. Actor registration rejects the other bad shapes.",
+  "actors": [
+    {
+      "name": "ada",
+      "role": "human"
+    },
+    {
+      "name": "run-1",
+      "role": "runner",
+      "harnesses": [
+        "claude"
+      ]
+    },
+    {
+      "name": "worker",
+      "role": "agent"
+    },
+    {
+      "name": "probe",
+      "role": "probe"
+    }
+  ],
+  "git": {
+    "changed": [
+      "turbo/app.py"
+    ],
+    "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "pr_number": 4
+  },
+  "cards": [
+    {
+      "ref": "gate",
+      "title": "Gate the submit",
+      "body": "Implement the gate.",
+      "contract": "The runner submits. The agent does not.",
+      "harness": "claude",
+      "scope": {
+        "paths": [
+          "turbo/"
+        ],
+        "forbidden": [],
+        "verify": [
+          {
+            "cmd": "python3 -c \"import sys; raise SystemExit(0)\"",
+            "kind": "unit"
+          }
+        ]
+      }
+    }
+  ],
+  "steps": [
+    {
+      "name": "card harness",
+      "op": "create-card",
+      "ref": "nope",
+      "title": "Nope",
+      "harness": "nope",
+      "scope": {
+        "paths": [
+          "turbo/"
+        ],
+        "forbidden": [],
+        "verify": [
+          {
+            "cmd": "python3 -c \"import sys; raise SystemExit(0)\"",
+            "kind": "unit"
+          }
+        ]
+      },
+      "expect": {
+        "status": 422,
+        "error": "unknown harness"
+      }
+    },
+    {
+      "name": "runner harness",
+      "op": "register",
+      "actor_name": "run-2",
+      "role": "runner",
+      "harnesses": [
+        "nope"
+      ],
+      "by": "ada",
+      "expect": {
+        "status": 422,
+        "error": "unknown harness"
+      }
+    },
+    {
+      "name": "empty actor name",
+      "op": "register",
+      "actor_name": " ",
+      "role": "human",
+      "by": "ada",
+      "expect": {
+        "status": 422,
+        "error": "actor name"
+      }
+    },
+    {
+      "name": "bad role",
+      "op": "register",
+      "actor_name": "wiz",
+      "role": "wizard",
+      "by": "ada",
+      "expect": {
+        "status": 422,
+        "error": "role must be"
+      }
+    },
+    {
+      "name": "harnesses must be a list",
+      "op": "register",
+      "actor_name": "run-3",
+      "role": "runner",
+      "harnesses": [
+        1
+      ],
+      "by": "ada",
+      "expect": {
+        "status": 422,
+        "error": "harnesses must be"
+      }
+    },
+    {
+      "name": "runner needs a harness",
+      "op": "register",
+      "actor_name": "run-4",
+      "role": "runner",
+      "harnesses": [],
+      "by": "ada",
+      "expect": {
+        "status": 422,
+        "error": "at least one harness"
+      }
+    },
+    {
+      "name": "only a runner has harnesses",
+      "op": "register",
+      "actor_name": "agent-2",
+      "role": "agent",
+      "harnesses": [
+        "claude"
+      ],
+      "by": "ada",
+      "expect": {
+        "status": 422,
+        "error": "only a runner"
+      }
+    },
+    {
+      "name": "duplicate actor",
+      "op": "register",
+      "actor_name": "ada",
+      "role": "human",
+      "by": "ada",
+      "expect": {
+        "status": 409,
+        "error": "already exists"
+      }
+    }
+  ]
+}

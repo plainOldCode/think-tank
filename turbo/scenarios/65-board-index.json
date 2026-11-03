@@ -1,0 +1,66 @@
+{
+  "name": "board-index",
+  "description": "GET / serves the ink page. Static assets and fonts are mounted. The database path has no parent directory.",
+  "actors": [
+    {
+      "name": "ada",
+      "role": "human"
+    },
+    {
+      "name": "run-1",
+      "role": "runner",
+      "harnesses": [
+        "claude"
+      ]
+    },
+    {
+      "name": "worker",
+      "role": "agent"
+    },
+    {
+      "name": "probe",
+      "role": "probe"
+    }
+  ],
+  "git": {
+    "changed": [
+      "turbo/app.py"
+    ],
+    "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "pr_number": 4
+  },
+  "cards": [],
+  "db": "flat",
+  "steps": [
+    {
+      "name": "index",
+      "op": "http",
+      "method": "GET",
+      "path": "/",
+      "expect": {
+        "status": 200,
+        "text_contains": "think-tank"
+      }
+    },
+    {
+      "name": "css",
+      "op": "http",
+      "method": "GET",
+      "path": "/assets/turbo.css",
+      "expect": {
+        "status": 200,
+        "text_contains": "#f7f6f3"
+      }
+    },
+    {
+      "name": "font",
+      "op": "http",
+      "method": "GET",
+      "path": "/fonts/GalmuriMono11.woff2",
+      "expect": {
+        "status": 200,
+        "bytes": 489452
+      }
+    }
+  ]
+}

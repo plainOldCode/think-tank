@@ -1,9 +1,0 @@
-[
- {
-  "action": "tt-review-fix",
-  "agent": "worker",
-  "issue": "M4TTTT-GH01",
-  "marker": "[tt-review-fix TT#M4TTTT-GH01@a1/3c0e5a16467826521e17e2f1e714bd60a5ba36b160cdc7e783bf95daaf6284b4]",
-  "subject": "TT#M4TTTT-GH01@a1/3c0e5a16467826521e17e2f1e714bd60a5ba36b160cdc7e783bf95daaf6284b4"
- }
-]

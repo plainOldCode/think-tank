@@ -1,0 +1,108 @@
+{
+  "name": "glob-rules",
+  "description": "A glob in scope.paths matches one file and rejects a path the glob does not cover.",
+  "actors": [
+    {
+      "name": "ada",
+      "role": "human"
+    },
+    {
+      "name": "run-1",
+      "role": "runner",
+      "harnesses": [
+        "claude"
+      ]
+    },
+    {
+      "name": "worker",
+      "role": "agent"
+    },
+    {
+      "name": "probe",
+      "role": "probe"
+    }
+  ],
+  "git": {
+    "changed": [
+      "turbo/app.py"
+    ],
+    "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "pr_number": 4
+  },
+  "cards": [
+    {
+      "ref": "gate",
+      "title": "Gate the submit",
+      "body": "Implement the gate.",
+      "contract": "The runner submits. The agent does not.",
+      "harness": "claude",
+      "scope": {
+        "paths": [
+          "turbo/*.py"
+        ],
+        "forbidden": [],
+        "verify": [
+          {
+            "cmd": "python3 -c \"import sys; raise SystemExit(0)\"",
+            "kind": "unit"
+          }
+        ]
+      }
+    }
+  ],
+  "steps": [
+    {
+      "name": "runner claims",
+      "op": "tick",
+      "arm": {
+        "alive": true,
+        "exit": 0
+      },
+      "expect": {
+        "state": "working",
+        "assignee": "run-1"
+      }
+    },
+    {
+      "name": "agent acks",
+      "op": "ack",
+      "actor": "worker",
+      "expect": {
+        "status": 200
+      }
+    },
+    {
+      "name": "agent marks ready",
+      "op": "ready",
+      "expect": {
+        "status": 200,
+        "ready": true
+      }
+    },
+    {
+      "name": "glob does not match",
+      "op": "submit",
+      "git_changed": [
+        "README.md"
+      ],
+      "expect": {
+        "status": 409,
+        "error": "outside scope",
+        "no_commit": true,
+        "state": "working"
+      }
+    },
+    {
+      "name": "glob matches",
+      "op": "submit",
+      "git_changed": [
+        "turbo/app.py"
+      ],
+      "expect": {
+        "status": 200,
+        "state": "review",
+        "verify_level": "unit-test-verified"
+      }
+    }
+  ]
+}

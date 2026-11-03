@@ -1,0 +1,119 @@
+{
+  "name": "live-verified",
+  "description": "A passing live verify is recorded as live-verified and can be approved.",
+  "actors": [
+    {
+      "name": "ada",
+      "role": "human"
+    },
+    {
+      "name": "run-1",
+      "role": "runner",
+      "harnesses": [
+        "claude"
+      ]
+    },
+    {
+      "name": "worker",
+      "role": "agent"
+    },
+    {
+      "name": "probe",
+      "role": "probe"
+    }
+  ],
+  "git": {
+    "changed": [
+      "turbo/app.py"
+    ],
+    "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "pr_number": 4
+  },
+  "cards": [
+    {
+      "ref": "gate",
+      "title": "Gate the submit",
+      "body": "Implement the gate.",
+      "contract": "The runner submits. The agent does not.",
+      "harness": "claude",
+      "scope": {
+        "paths": [
+          "turbo/"
+        ],
+        "forbidden": [],
+        "verify": [
+          {
+            "cmd": "python3 -c \"import sys; raise SystemExit(0)\"",
+            "kind": "live"
+          }
+        ]
+      }
+    }
+  ],
+  "steps": [
+    {
+      "name": "runner claims",
+      "op": "tick",
+      "arm": {
+        "alive": true,
+        "exit": 0
+      },
+      "expect": {
+        "state": "working",
+        "assignee": "run-1"
+      }
+    },
+    {
+      "name": "agent acks",
+      "op": "ack",
+      "actor": "worker",
+      "expect": {
+        "status": 200
+      }
+    },
+    {
+      "name": "agent marks ready",
+      "op": "ready",
+      "expect": {
+        "status": 200,
+        "ready": true
+      }
+    },
+    {
+      "name": "live verify",
+      "op": "submit",
+      "expect": {
+        "status": 200,
+        "state": "review",
+        "verify_level": "live-verified",
+        "verdict": ""
+      }
+    },
+    {
+      "name": "probe approves",
+      "op": "verdict",
+      "result": "approve",
+      "expect": {
+        "status": 200,
+        "verdict": "approve"
+      }
+    },
+    {
+      "name": "verify level is wiped",
+      "op": "tamper",
+      "set": {
+        "verify_level": ""
+      }
+    },
+    {
+      "name": "merge without a passed verify",
+      "op": "merge",
+      "expect": {
+        "status": 409,
+        "error": "passed server verify",
+        "state": "review",
+        "no_merge": true
+      }
+    }
+  ]
+}

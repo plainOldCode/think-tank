@@ -1,0 +1,166 @@
+{
+  "name": "grok-resume-fork",
+  "description": "Grok CLI starts with a session name, resumes with -r, and forks when that resume exits non-zero.",
+  "actors": [
+    {
+      "name": "ada",
+      "role": "human"
+    },
+    {
+      "name": "run-1",
+      "role": "runner",
+      "harnesses": [
+        "grok"
+      ]
+    },
+    {
+      "name": "worker",
+      "role": "agent"
+    },
+    {
+      "name": "probe",
+      "role": "probe"
+    }
+  ],
+  "git": {
+    "changed": [
+      "turbo/app.py"
+    ],
+    "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "pr_number": 4
+  },
+  "cards": [
+    {
+      "ref": "gate",
+      "title": "Grok",
+      "body": "Implement the gate.",
+      "contract": "The runner submits. The agent does not.",
+      "harness": "grok",
+      "scope": {
+        "paths": [
+          "turbo/"
+        ],
+        "forbidden": [],
+        "verify": [
+          {
+            "cmd": "python3 -c \"import sys; raise SystemExit(0)\"",
+            "kind": "unit"
+          }
+        ]
+      }
+    }
+  ],
+  "steps": [
+    {
+      "name": "grok starts",
+      "op": "tick",
+      "arm": {
+        "alive": false,
+        "exit": 0,
+        "output": ""
+      },
+      "expect": {
+        "state": "working",
+        "session_mode": "start",
+        "argv0": "grok",
+        "argv_contains": [
+          "-p",
+          "-s",
+          "--output-format",
+          "--rules"
+        ],
+        "spawns": 1
+      }
+    },
+    {
+      "name": "start exits",
+      "op": "tick",
+      "expect": {
+        "state": "working",
+        "session_mode": "start",
+        "spawns": 1
+      }
+    },
+    {
+      "name": "agent asks",
+      "op": "ask",
+      "blocked_question": "Continue?",
+      "blocked_options": [
+        "yes",
+        "no"
+      ],
+      "blocked_default": "yes",
+      "expect": {
+        "status": 200,
+        "state": "question"
+      }
+    },
+    {
+      "name": "turn ends",
+      "op": "turn-closed",
+      "expect": {
+        "status": 200,
+        "state": "awaiting-human"
+      }
+    },
+    {
+      "name": "human answers",
+      "op": "answer",
+      "choice": "yes",
+      "expect": {
+        "status": 200,
+        "answer": "yes"
+      }
+    },
+    {
+      "name": "resume the grok session",
+      "op": "tick",
+      "arm": {
+        "alive": false,
+        "exit": 1,
+        "output": ""
+      },
+      "expect": {
+        "state": "working",
+        "argv0": "grok",
+        "argv_contains": [
+          "-r",
+          "-p",
+          "--rules",
+          "choice=yes"
+        ],
+        "same_session": true,
+        "spawns": 2
+      }
+    },
+    {
+      "name": "resume failure forks",
+      "op": "tick",
+      "arm": {
+        "alive": false,
+        "exit": 0,
+        "output": "{\"sessionId\":\"g_live\"}\n"
+      },
+      "expect": {
+        "state": "working",
+        "argv0": "grok",
+        "argv_contains": [
+          "-r",
+          "--fork-session",
+          "--output-format"
+        ],
+        "same_session": true,
+        "spawns": 3
+      }
+    },
+    {
+      "name": "fork output yields the grok session",
+      "op": "tick",
+      "expect": {
+        "state": "working",
+        "session_id": "g_live",
+        "spawns": 3
+      }
+    }
+  ]
+}

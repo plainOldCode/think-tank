@@ -1,0 +1,226 @@
+{
+  "name": "migrate-legacy",
+  "description": "A one-shot migrator copies legacy issues into turbo, skips what turbo cannot represent, and does not duplicate on a second run. The legacy file stays unchanged.",
+  "actors": [
+    {"name": "ada", "role": "human"},
+    {"name": "run-1", "role": "runner", "harnesses": ["claude"]},
+    {"name": "worker", "role": "agent"},
+    {"name": "probe", "role": "probe"}
+  ],
+  "git": {"changed": ["turbo/app.py"], "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "pr_number": 4},
+  "cards": [],
+  "legacy": {
+    "issues": [
+      {
+        "id": "T-TODO",
+        "title": "Todo card",
+        "body": "Write the gate.",
+        "state": "todo",
+        "work_contract": "Do the thing",
+        "created_at": "2020-01-01T00:00:00+0000",
+        "updated_at": "2020-01-01T00:00:00+0000"
+      },
+      {
+        "id": "T-BACK",
+        "title": "Backlog card",
+        "body": "",
+        "state": "backlog",
+        "acceptance": "Accepted text",
+        "created_at": "2020-01-01T00:00:00+0000",
+        "updated_at": ""
+      },
+      {
+        "id": "T-BUSY",
+        "title": "Was in progress",
+        "body": "Half done.",
+        "state": "in_progress",
+        "assignee": "ada",
+        "lease_by": "old-runner",
+        "created_at": "2020-01-01T00:00:00+0000",
+        "updated_at": "2020-01-01T00:00:00+0000"
+      },
+      {
+        "id": "T-Q",
+        "title": "Blocked on a question",
+        "body": "Waiting.",
+        "state": "blocked",
+        "blocked_question": "Ship?",
+        "blocked_options": "yes,,no",
+        "blocked_default": "no",
+        "created_at": "2020-01-01T00:00:00+0000",
+        "updated_at": "2020-01-01T00:00:00+0000"
+      },
+      {
+        "id": "T-QJ",
+        "title": "JSON options",
+        "body": "Waiting.",
+        "state": "blocked",
+        "blocked_question": "Which?",
+        "blocked_options": "[\"a\", \"\"]",
+        "blocked_default": "a",
+        "created_at": "2020-01-01T00:00:00+0000",
+        "updated_at": "2020-01-01T00:00:00+0000"
+      },
+      {
+        "id": "T-QBAD",
+        "title": "Bad options JSON",
+        "body": "Waiting.",
+        "state": "blocked",
+        "blocked_question": "Bad?",
+        "blocked_options": "[nope",
+        "blocked_default": "[nope",
+        "created_at": "2020-01-01T00:00:00+0000",
+        "updated_at": "2020-01-01T00:00:00+0000"
+      },
+      {
+        "id": "T-QEMPTY",
+        "title": "Empty options",
+        "body": "Waiting.",
+        "state": "blocked",
+        "blocked_question": "Now?",
+        "blocked_options": "",
+        "blocked_default": "",
+        "created_at": "2020-01-01T00:00:00+0000",
+        "updated_at": "2020-01-01T00:00:00+0000"
+      },
+      {
+        "id": "T-BLK",
+        "title": "Blocked without a question",
+        "body": "Stuck on design.",
+        "state": "blocked",
+        "blocked_detail": "needs design",
+        "created_at": "2020-01-01T00:00:00+0000",
+        "updated_at": "2020-01-01T00:00:00+0000"
+      },
+      {
+        "id": "T-REV",
+        "title": "In review",
+        "body": "Look at this.",
+        "state": "review",
+        "created_at": "2020-01-01T00:00:00+0000",
+        "updated_at": "2020-01-01T00:00:00+0000"
+      },
+      {
+        "id": "T-DONE",
+        "title": "Already done",
+        "body": "Shipped.",
+        "state": "done",
+        "created_at": "2020-01-01T00:00:00+0000",
+        "updated_at": "2020-01-01T00:00:00+0000"
+      },
+      {
+        "id": "T-CAN",
+        "title": "Cancelled work",
+        "body": "Dropped.",
+        "state": "cancelled",
+        "created_at": "2020-01-01T00:00:00+0000",
+        "updated_at": "2020-01-01T00:00:00+0000"
+      },
+      {
+        "id": "T-EMPTY",
+        "title": "",
+        "body": "No title.",
+        "state": "todo",
+        "created_at": "2020-01-01T00:00:00+0000",
+        "updated_at": "2020-01-01T00:00:00+0000"
+      },
+      {
+        "id": "T-WAT",
+        "title": "Unknown state",
+        "body": "Somewhere else.",
+        "state": "archived",
+        "created_at": "2020-01-01T00:00:00+0000",
+        "updated_at": "2020-01-01T00:00:00+0000"
+      }
+    ],
+    "comments": [
+      {
+        "issue_id": "T-TODO",
+        "author": "ada",
+        "body": "note from the archive",
+        "ts": "2020-01-02T00:00:00+0000"
+      }
+    ]
+  },
+  "steps": [
+    {
+      "name": "dry-run does not create the turbo file",
+      "op": "module",
+      "module": "turbo.migrate",
+      "args": ["--legacy", "$legacy", "--turbo", "$turbo", "--dry-run"],
+      "expect": {
+        "status": 0,
+        "turbo_exists": false,
+        "text_contains": [
+          "\"dry_run\": true",
+          "\"mapped\": 10",
+          "\"skipped\": 3",
+          "\"comments\": 1",
+          "T-TODO:open",
+          "T-BACK:open",
+          "T-BUSY:open",
+          "T-Q:awaiting-human",
+          "T-DONE:merged",
+          "T-REV:review",
+          "T-BLK:open",
+          "previous assignee: ada",
+          "previous lease: old-runner",
+          "blocked_detail: needs design",
+          "cancelled is not a turbo state",
+          "empty title",
+          "unknown state",
+          "note from the archive"
+        ]
+      }
+    },
+    {
+      "name": "import into turbo",
+      "op": "module",
+      "module": "turbo.migrate",
+      "args": ["--legacy", "$legacy", "--turbo", "$turbo"],
+      "expect": {
+        "status": 0,
+        "turbo_exists": true,
+        "text_contains": ["\"dry_run\": false", "\"mapped\": 10", "\"comments\": 1"]
+      }
+    },
+    {
+      "name": "a second dry-run sees the imported ids",
+      "op": "module",
+      "module": "turbo.migrate",
+      "args": ["--legacy", "$legacy", "--turbo", "$turbo", "--dry-run"],
+      "expect": {
+        "status": 0,
+        "turbo_exists": true,
+        "text_contains": ["\"dry_run\": true", "\"mapped\": 0", "already imported"]
+      }
+    },
+    {
+      "name": "a second import does not duplicate",
+      "op": "module",
+      "module": "turbo.migrate",
+      "args": ["--legacy", "$legacy", "--turbo", "$turbo"],
+      "expect": {
+        "status": 0,
+        "text_contains": ["\"mapped\": 0", "\"skipped\": 13", "\"comments\": 0", "already imported"]
+      }
+    },
+    {
+      "name": "a database with no issues table is rejected",
+      "op": "module",
+      "module": "turbo.migrate",
+      "args": ["--legacy", "$empty", "--turbo", "$out2"],
+      "expect": {"status": 1, "text_contains": "legacy database has no issues table"}
+    },
+    {
+      "name": "a thin issues table still imports",
+      "op": "module",
+      "module": "turbo.migrate",
+      "args": ["--legacy", "$thin", "--turbo", "$out2"],
+      "expect": {
+        "status": 0,
+        "text_contains": ["THIN1:awaiting-human", "\"mapped\": 1", "\"comments\": 0"]
+      }
+    }
+  ]
+}

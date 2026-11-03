@@ -1,0 +1,127 @@
+{
+  "name": "empty-sha",
+  "description": "gh is not asked to merge when the sha is empty. The server also refuses a merge with no sha.",
+  "actors": [
+    {
+      "name": "ada",
+      "role": "human"
+    },
+    {
+      "name": "run-1",
+      "role": "runner",
+      "harnesses": [
+        "claude"
+      ]
+    },
+    {
+      "name": "worker",
+      "role": "agent"
+    },
+    {
+      "name": "probe",
+      "role": "probe"
+    }
+  ],
+  "git": {
+    "changed": [
+      "turbo/app.py"
+    ],
+    "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "pr_number": 4
+  },
+  "cards": [
+    {
+      "ref": "gate",
+      "title": "Gate the submit",
+      "body": "Implement the gate.",
+      "contract": "The runner submits. The agent does not.",
+      "harness": "claude",
+      "scope": {
+        "paths": [
+          "turbo/"
+        ],
+        "forbidden": [],
+        "verify": [
+          {
+            "cmd": "python3 -c \"import sys; raise SystemExit(0)\"",
+            "kind": "unit"
+          }
+        ]
+      }
+    }
+  ],
+  "steps": [
+    {
+      "name": "git merge refuses an empty sha",
+      "op": "git-merge",
+      "number": 4,
+      "sha": "",
+      "expect": {
+        "status": 409,
+        "error": "submitted sha",
+        "no_merge": true
+      }
+    },
+    {
+      "name": "runner claims",
+      "op": "tick",
+      "arm": {
+        "alive": true,
+        "exit": 0
+      },
+      "expect": {
+        "state": "working",
+        "assignee": "run-1"
+      }
+    },
+    {
+      "name": "agent acks",
+      "op": "ack",
+      "actor": "worker",
+      "expect": {
+        "status": 200
+      }
+    },
+    {
+      "name": "agent marks ready",
+      "op": "ready",
+      "expect": {
+        "status": 200,
+        "ready": true
+      }
+    },
+    {
+      "name": "submit stores a sha",
+      "op": "submit",
+      "expect": {
+        "status": 200,
+        "state": "review"
+      }
+    },
+    {
+      "name": "probe approves",
+      "op": "verdict",
+      "result": "approve",
+      "expect": {
+        "status": 200
+      }
+    },
+    {
+      "name": "sha disappears",
+      "op": "tamper",
+      "set": {
+        "sha": ""
+      }
+    },
+    {
+      "name": "server refuses the merge",
+      "op": "merge",
+      "expect": {
+        "status": 409,
+        "error": "submitted sha",
+        "state": "review",
+        "no_merge": true
+      }
+    }
+  ]
+}
