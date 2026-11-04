@@ -293,3 +293,57 @@ def test_invalid_pr_target_is_rejected_on_submit(client):
     proof["delivery"] = {**SPEC, "head_sha": "abcdef12"}
     r = client.patch(f"/issues/{issue['id']}", json={"state": "done", "completion_report": proof})
     assert r.status_code == 422
+
+
+# M6KNSCP9-VTX7: 체크 0개 PR은 gh pr checks가 exit 1 — 관측 불가 오판 금지.
+def test_zero_check_pr_is_observable_not_unknown(client, monkeypatch):
+    from probe.providers import inspect_delivery
+
+    def query(*args):
+        if args[:2] == ("pr", "checks"):
+            raise RuntimeError("gh pr checks: no checks reported on the branch")
+        return {"state": "OPEN", "headRefOid": HEAD, "baseRefName": "main",
+                "isDraft": False, "mergeCommit": None, "mergedAt": None,
+                "statusCheckRollup": []}
+
+    obs = inspect_delivery(SPEC, query)
+    assert obs["state"] == "OPEN" and obs["head_sha"] == HEAD and obs["checks"] == []
+    issue = approve(client, resubmit(client, submitted(client), SPEC))
+    assert [a["action"] for a in actions(issue, obs)] == ["tt-deliver"]
+
+
+def test_status_check_rollup_maps_conclusions(client):
+    from probe.providers import inspect_delivery
+
+    def query(*args):
+        if args[:2] == ("pr", "checks"):
+            raise RuntimeError("no checks")
+        return {"state": "OPEN", "headRefOid": HEAD, "baseRefName": "main",
+                "isDraft": False, "mergedAt": None,
+                "statusCheckRollup": [
+                    {"__typename": "CheckRun", "name": "ci", "conclusion": "SUCCESS"},
+                    {"__typename": "CheckRun", "name": "lint", "conclusion": "FAILURE"},
+                    {"__typename": "StatusContext", "context": "docs", "state": "SUCCESS"},
+                    {"__typename": "CheckRun", "name": "slow", "conclusion": None}]}
+
+    obs = inspect_delivery(SPEC, query)
+    by_name = {c["name"]: c["state"] for c in obs["checks"]}
+    assert by_name == {"ci": "SUCCESS", "lint": "FAILURE",
+                       "docs": "SUCCESS", "slow": "PENDING"}
+    issue = approve(client, resubmit(client, submitted(client), SPEC))
+    acts = actions(issue, obs)
+    assert not any(a["action"] in ("tt-verify", "tt-deliver") for a in acts)
+
+
+def test_zero_check_discovered_pr_uses_rollup_fallback(monkeypatch):
+    from probe.providers import collect_github
+
+    def query(*args):
+        if args[:2] == ("pr", "list"):
+            return [{"number": 7, "headRefName": "v", "headRefOid": HEAD,
+                     "baseRefName": "main", "title": "t", "isDraft": False,
+                     "labels": [], "statusCheckRollup": []}]
+        raise RuntimeError("no checks")
+
+    prs, observed = collect_github(["example/project"], query)
+    assert observed == {"example/project": "ok"} and prs[0]["checks"] == []

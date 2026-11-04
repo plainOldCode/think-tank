@@ -7,13 +7,28 @@ import os
 import re
 
 
+def _rollup_checks(rollup):
+    """statusCheckRollup → gh pr checks --json name,state 동형 변환(M6KNSCP9-VTX7).
+
+    CheckRun은 conclusion이, StatusContext는 state가 판정값이다. 진행 중은
+    conclusion이 비어 PENDING이 된다. 체크 0개는 [] — 관측 실패(None)와 구별."""
+    out = []
+    for c in rollup or []:
+        state = (c.get("conclusion") or c.get("state") or "PENDING").upper()
+        out.append({"name": c.get("name") or c.get("context") or "",
+                    "state": state if state in ("SUCCESS", "FAILURE", "PENDING",
+                                                "SKIPPING", "EXPECTED") else "PENDING"})
+    return out
+
+
 def collect_github(repos, query):
     out = []
     observed = {}
     for repo in dict.fromkeys(repos):
             try:
                 prs = query("pr", "list", "--repo", repo, "--state", "open",
-                            "--json", "number,headRefName,headRefOid,baseRefName,title,isDraft,labels") or []
+                            "--json", "number,headRefName,headRefOid,baseRefName,"
+                            "title,isDraft,labels,statusCheckRollup") or []
             except Exception:
                 # T3YT(M58SPT6D-T3YT): 조회 실패를 조용히 누락하면 'PR 없음'과
                 # 구분이 사라진다 — 관측 결과를 repo 단위로 기록해 판정이 구분하게 한다.
@@ -25,7 +40,10 @@ def collect_github(repos, query):
                     checks = query("pr", "checks", p["number"], "--repo", repo, "--json", "name,state")
                     checks = list(checks) if checks is not None else []
                 except Exception:
-                    checks = None  # observation failure is not confirmed zero checks
+                    # M6KNSCP9-VTX7: 체크 0개 PR은 gh pr checks가 exit 1 —
+                    # 조회 실패가 아니라 rollup으로 보완 관측한다.
+                    checks = _rollup_checks(p.get("statusCheckRollup")) \
+                        if p.get("statusCheckRollup") is not None else None
                 out.append({"number": p["number"], "repo": repo, "branch": p.get("headRefName", ""),
                             "title": p.get("title", ""), "head_sha": p.get("headRefOid", ""),
                             "base": p.get("baseRefName", ""),
@@ -86,9 +104,17 @@ def inspect_delivery(spec, query):
         return unknown
     try:
         info = query("pr", "view", spec["number"], "--repo", spec["repo"], "--json",
-                     "state,headRefOid,baseRefName,isDraft,mergedAt,mergeCommit") or {}
-        checks = query("pr", "checks", spec["number"], "--repo", spec["repo"],
-                       "--json", "name,state")
+                     "state,headRefOid,baseRefName,isDraft,mergedAt,mergeCommit,statusCheckRollup") or {}
+        try:
+            checks = query("pr", "checks", spec["number"], "--repo", spec["repo"],
+                           "--json", "name,state")
+        except Exception:
+            # M6KNSCP9-VTX7: 체크 0개 PR은 gh pr checks가 exit 1(빈 목록이 아닌
+            # 실패) — 이를 관측 불가로 치환하면 정당한 PR이 홀드된다. rollup으로 보완.
+            if info.get("statusCheckRollup") is not None:
+                checks = _rollup_checks(info["statusCheckRollup"])
+            else:  # 이전 gh/mock 응답엔 rollup이 없다 — 기존 계약 유지(unknown)
+                checks = None
         return {**spec, "state": "MERGED" if info.get("mergedAt") else info.get("state", "UNKNOWN"),
                 "head_sha": info.get("headRefOid"), "base": info.get("baseRefName"),
                 "isDraft": info.get("isDraft", True), "checks": checks,
